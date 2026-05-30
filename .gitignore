@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+.downloads/
+.uv-cache/
+.python/
+runtime/
