@@ -4,3 +4,9 @@ __pycache__/
 .uv-cache/
 .python/
 runtime/
+*.obj
+*.exe
+*.pdb
+logs/
+dist/
+_backups/

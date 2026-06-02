@@ -8,13 +8,33 @@ Right: human-readable MediaPipe metrics, posture state, and manual calibration.
 from __future__ import annotations
 
 import argparse
+import ctypes
 import os
 import sys
+import time
 from typing import Dict, Optional
 
 import cv2
+
+QT_PLUGIN_ROOT = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    "runtime",
+    "python311",
+    "Lib",
+    "site-packages",
+    "PyQt5",
+    "Qt5",
+    "plugins",
+)
+if os.path.isdir(QT_PLUGIN_ROOT):
+    os.environ.setdefault("QT_PLUGIN_PATH", QT_PLUGIN_ROOT)
+    os.environ.setdefault(
+        "QT_QPA_PLATFORM_PLUGIN_PATH",
+        os.path.join(QT_PLUGIN_ROOT, "platforms"),
+    )
+
 from PyQt5.QtCore import Qt, QTimer
-from PyQt5.QtGui import QFont, QImage, QPixmap
+from PyQt5.QtGui import QColor, QFont, QGuiApplication, QImage, QPainter, QPixmap
 from PyQt5.QtWidgets import (
     QApplication,
     QFrame,
@@ -25,11 +45,13 @@ from PyQt5.QtWidgets import (
     QMessageBox,
     QPushButton,
     QCheckBox,
+    QDoubleSpinBox,
     QVBoxLayout,
     QWidget,
 )
 
 from vision_test import (
+    HighPrecisionPostureAnalyzer,
     PostureAnalyzer,
     PostureDecision,
     VisionEngine,
@@ -42,7 +64,12 @@ from vision_test import (
 STATUS_TEXT: Dict[str, str] = {
     "GOOD": "正常",
     "GOOD_PART": "部分正常",
+    "WATCH": "观察中",
     "BAD": "需要调整",
+    "CRITICAL": "高风险",
+    "AWAY": "已离开",
+    "MULTI_USER": "多人",
+    "PROFILE_MISMATCH": "疑似换人",
     "UNKNOWN": "未识别",
     "CALIBRATING": "校准中",
     "NEEDS_CALIB": "等待校准",
@@ -57,11 +84,205 @@ REASON_TEXT: Dict[str, str] = {
     "no_usable_metrics": "暂时没有可用视觉指标",
     "face_within_baseline": "脸部距离正常",
     "shoulder_within_baseline": "肩膀高度正常",
+    "within_scientific_limits": "高精度指标在建议范围内",
+    "distance_calibration": "校准距离",
+    "distance_unreliable_head_turn": "转头时距离估算不可靠",
+    "head_turn": "头部转向",
+    "head_not_facing_camera": "头部未正对屏幕",
+    "head_turn_eye_width_ratio": "头部转向眼距比例",
+    "head_turn_ratio_delta": "头部转向偏移",
+    "multiple_faces_detected": "检测到多张脸",
+    "user_away_s": "用户离开秒数",
+    "user_missing_observing_s": "用户缺失观察秒数",
+    "profile_check_waiting": "等待用户轮廓校验",
+    "profile_face_shoulder_delta": "脸肩比例变化",
+    "profile_torso_shoulder_delta": "躯干肩宽比例变化",
+    "distance_too_close": "距离过近",
+    "distance_near": "距离偏近",
+    "distance_too_far": "距离过远",
+    "distance_far": "距离偏远",
+    "shoulder_asymmetry": "肩颈不对称",
+    "shoulder_width": "肩宽",
+    "shoulder_width_narrow": "肩宽明显缩窄",
+    "trunk_lean": "躯干倾斜",
+    "sustained_risk_s": "持续风险秒数",
+    "smoothed_risk_score": "平滑风险评分",
+    "risk_score": "风险评分",
+    "risk_observing": "风险观察中",
 }
 
 
+class PostureInterventionOverlay(QWidget):
+    MAX_DIM_ALPHA = 0.32
+    LIVE_BLUR_SUPPORTED = False
+    RAMP_UP_SECONDS = 45.0
+    RAMP_DOWN_SECONDS = 0.3
+    TICK_MS = 80
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._target_level = 0.0
+        self._level = 0.0
+        self._last_tick = time.perf_counter()
+        self._live_blur_enabled = False
+
+        self.setWindowTitle("EchoPosture Intervention Overlay")
+        self.setAttribute(Qt.WA_TranslucentBackground, True)
+        self.setAttribute(Qt.WA_ShowWithoutActivating, True)
+        self.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        self.setWindowFlags(
+            Qt.FramelessWindowHint
+            | Qt.WindowStaysOnTopHint
+            | Qt.Tool
+            | Qt.WindowTransparentForInput
+        )
+
+        self._cover_all_screens()
+        self._timer = QTimer(self)
+        self._timer.timeout.connect(self._tick)
+        self._timer.start(self.TICK_MS)
+        self.hide()
+
+    def set_warning_active(self, active: bool) -> None:
+        target = 1.0 if active else 0.0
+        if target == self._target_level:
+            return
+
+        self._target_level = target
+        if active:
+            self._cover_all_screens()
+            self._last_tick = time.perf_counter()
+            if not self.isVisible():
+                self.show()
+                self.raise_()
+                self._enable_windows_click_through()
+        else:
+            self._last_tick = time.perf_counter()
+
+    def force_clear(self) -> None:
+        self._target_level = 0.0
+        self._level = 0.0
+        self._set_live_blur(False)
+        self.hide()
+
+    def paintEvent(self, event) -> None:
+        if self._level <= 0.001:
+            return
+
+        painter = QPainter(self)
+        try:
+            dim_alpha = int(255 * self.MAX_DIM_ALPHA * self._level)
+            painter.fillRect(self.rect(), QColor(0, 0, 0, dim_alpha))
+        finally:
+            painter.end()
+
+    def _tick(self) -> None:
+        now = time.perf_counter()
+        elapsed = max(0.0, now - self._last_tick)
+        self._last_tick = now
+
+        if self._target_level > self._level:
+            self._level = min(self._target_level, self._level + elapsed / self.RAMP_UP_SECONDS)
+        elif self._target_level < self._level:
+            self._level = max(self._target_level, self._level - elapsed / self.RAMP_DOWN_SECONDS)
+
+        if self._level <= 0.001 and self._target_level <= 0.001:
+            if self.isVisible():
+                self.hide()
+            self._set_live_blur(False)
+            return
+
+        if not self.isVisible():
+            self.show()
+            self.raise_()
+            self._enable_windows_click_through()
+        self._set_live_blur(self.LIVE_BLUR_SUPPORTED and self._level > 0.01)
+        self.update()
+
+    @property
+    def dim_level(self) -> float:
+        return min(1.0, max(0.0, self._level))
+
+    @property
+    def blur_level(self) -> float:
+        return self.dim_level if self.LIVE_BLUR_SUPPORTED and self._live_blur_enabled else 0.0
+
+    def _cover_all_screens(self) -> None:
+        screens = QGuiApplication.screens()
+        if not screens:
+            return
+
+        rect = screens[0].geometry()
+        for screen in screens[1:]:
+            rect = rect.united(screen.geometry())
+        self.setGeometry(rect)
+
+    def _enable_windows_click_through(self) -> None:
+        if sys.platform != "win32":
+            return
+
+        hwnd = int(self.winId())
+        user32 = ctypes.windll.user32
+
+        gwl_exstyle = -20
+        ws_ex_layered = 0x00080000
+        ws_ex_transparent = 0x00000020
+        ws_ex_toolwindow = 0x00000080
+
+        style = user32.GetWindowLongW(hwnd, gwl_exstyle)
+        style |= ws_ex_layered | ws_ex_transparent | ws_ex_toolwindow
+        user32.SetWindowLongW(hwnd, gwl_exstyle, style)
+
+    def _set_live_blur(self, enabled: bool) -> None:
+        if sys.platform != "win32" or enabled == self._live_blur_enabled:
+            return
+
+        hwnd = int(self.winId())
+
+        class AccentPolicy(ctypes.Structure):
+            _fields_ = [
+                ("AccentState", ctypes.c_int),
+                ("AccentFlags", ctypes.c_int),
+                ("GradientColor", ctypes.c_int),
+                ("AnimationId", ctypes.c_int),
+            ]
+
+        class WindowCompositionAttributeData(ctypes.Structure):
+            _fields_ = [
+                ("Attribute", ctypes.c_int),
+                ("Data", ctypes.c_void_p),
+                ("SizeOfData", ctypes.c_size_t),
+            ]
+
+        accent_disabled = 0
+        accent_blur_behind = 3
+        wca_accent_policy = 19
+        accent = AccentPolicy()
+        accent.AccentState = accent_blur_behind if enabled else accent_disabled
+        accent.AccentFlags = 0
+        accent.GradientColor = 0
+        accent.AnimationId = 0
+        data = WindowCompositionAttributeData()
+        data.Attribute = wca_accent_policy
+        data.Data = ctypes.cast(ctypes.pointer(accent), ctypes.c_void_p)
+        data.SizeOfData = ctypes.sizeof(accent)
+
+        try:
+            ctypes.windll.user32.SetWindowCompositionAttribute(hwnd, ctypes.byref(data))
+            self._live_blur_enabled = enabled
+        except Exception:
+            self._live_blur_enabled = False
+
+
 class DebugWindow(QMainWindow):
-    def __init__(self, camera_id: int, fps: float, width: int, height: int) -> None:
+    def __init__(
+        self,
+        camera_id: int,
+        fps: float,
+        width: int,
+        height: int,
+        intervention_enabled: bool = True,
+    ) -> None:
         super().__init__()
         self.setWindowTitle("EchoPosture Debug Monitor")
         self.resize(980, 580)
@@ -71,6 +292,10 @@ class DebugWindow(QMainWindow):
         self.current_sample: Optional[VisionSample] = None
         self.normal_fps = fps
         self.high_performance_fps = 72.0
+        self.high_precision_enabled = False
+        self.intervention_overlay = (
+            PostureInterventionOverlay() if intervention_enabled else None
+        )
 
         self.video_label = QLabel("Camera starting...")
         self.video_label.setAlignment(Qt.AlignCenter)
@@ -87,12 +312,25 @@ class DebugWindow(QMainWindow):
 
         self.face_label = QLabel("--")
         self.shoulder_label = QLabel("--")
+        self.distance_label = QLabel("--")
+        self.trunk_label = QLabel("--")
+        self.risk_label = QLabel("--")
         self.baseline_label = QLabel("--")
         self.calibration_label = QLabel("未校准")
         self.calibration_label.setWordWrap(True)
 
         self.calibrate_button = QPushButton("校准当前姿势")
         self.calibrate_button.clicked.connect(self.calibrate_current_sample)
+        self.precision_checkbox = QCheckBox("高精度模式（需要输入校准距离）")
+        self.precision_checkbox.toggled.connect(self.toggle_high_precision)
+        self.distance_input = QDoubleSpinBox()
+        self.distance_input.setRange(35.0, 150.0)
+        self.distance_input.setDecimals(0)
+        self.distance_input.setSingleStep(5.0)
+        self.distance_input.setValue(60.0)
+        self.distance_input.setSuffix(" cm")
+        self.distance_input.setEnabled(False)
+        self.distance_input.valueChanged.connect(self.update_reference_distance)
         self.performance_checkbox = QCheckBox("高性能模式（72帧捕捉用于高流畅度）")
         self.performance_checkbox.toggled.connect(self.toggle_high_performance)
 
@@ -104,6 +342,8 @@ class DebugWindow(QMainWindow):
         self.timer.start(self._interval_ms(self.normal_fps))
 
         self.engine.start()
+        self.precision_checkbox.setChecked(True)
+        self.performance_checkbox.setChecked(True)
 
     def _build_layout(self) -> None:
         root = QWidget()
@@ -127,8 +367,14 @@ class DebugWindow(QMainWindow):
         metric_grid.addWidget(self.face_label, 0, 1)
         metric_grid.addWidget(QLabel("肩膀倾斜"), 1, 0)
         metric_grid.addWidget(self.shoulder_label, 1, 1)
-        metric_grid.addWidget(QLabel("当前基准"), 2, 0)
-        metric_grid.addWidget(self.baseline_label, 2, 1)
+        metric_grid.addWidget(QLabel("估算距离"), 2, 0)
+        metric_grid.addWidget(self.distance_label, 2, 1)
+        metric_grid.addWidget(QLabel("躯干倾斜"), 3, 0)
+        metric_grid.addWidget(self.trunk_label, 3, 1)
+        metric_grid.addWidget(QLabel("风险评分"), 4, 0)
+        metric_grid.addWidget(self.risk_label, 4, 1)
+        metric_grid.addWidget(QLabel("当前基准"), 5, 0)
+        metric_grid.addWidget(self.baseline_label, 5, 1)
 
         panel_layout.addWidget(title)
         panel_layout.addWidget(self.status_label)
@@ -136,6 +382,8 @@ class DebugWindow(QMainWindow):
         panel_layout.addSpacing(8)
         panel_layout.addLayout(metric_grid)
         panel_layout.addWidget(self.calibration_label)
+        panel_layout.addWidget(self.precision_checkbox)
+        panel_layout.addWidget(self.distance_input)
         panel_layout.addWidget(self.performance_checkbox)
         panel_layout.addStretch(1)
         panel_layout.addWidget(self.calibrate_button)
@@ -175,13 +423,15 @@ class DebugWindow(QMainWindow):
         decision = self.analyzer.evaluate(sample)
         self._show_frame(frame, sample)
         self._show_metrics(sample, decision)
+        self._update_intervention(decision)
 
     def calibrate_current_sample(self) -> None:
         if self.current_sample is None:
             self.calibration_label.setText("还没有摄像头样本")
             return
 
-        if not self.analyzer.set_baseline_from_sample(self.current_sample):
+        distance_cm = float(self.distance_input.value()) if self.high_precision_enabled else None
+        if not self.analyzer.set_baseline_from_sample(self.current_sample, distance_cm):
             self.calibration_label.setText("校准失败：没有识别到脸部或肩膀")
             return
 
@@ -189,11 +439,37 @@ class DebugWindow(QMainWindow):
         self.baseline_label.setText(format_baseline(self.analyzer.baseline))
         decision = self.analyzer.evaluate(self.current_sample)
         self._show_metrics(self.current_sample, decision)
+        self._update_intervention(decision)
 
     def toggle_high_performance(self, enabled: bool) -> None:
         target_fps = self.high_performance_fps if enabled else self.normal_fps
         self.timer.setInterval(self._interval_ms(target_fps))
         self.engine.set_capture_fps(target_fps)
+
+    def toggle_high_precision(self, enabled: bool) -> None:
+        old_baseline = self.analyzer.baseline
+        distance_cm = float(self.distance_input.value())
+        self.high_precision_enabled = enabled
+        self.distance_input.setEnabled(enabled)
+        if enabled:
+            self.analyzer = HighPrecisionPostureAnalyzer(
+                auto_calibrate=False,
+                baseline=old_baseline,
+                calibrated_distance_cm=distance_cm,
+            )
+            self.analyzer.set_calibrated_distance_cm(distance_cm)
+        else:
+            self.analyzer = PostureAnalyzer(auto_calibrate=False, baseline=old_baseline)
+        if self.current_sample is not None:
+            decision = self.analyzer.evaluate(self.current_sample)
+            self._show_metrics(self.current_sample, decision)
+
+    def update_reference_distance(self, value: float) -> None:
+        if isinstance(self.analyzer, HighPrecisionPostureAnalyzer):
+            self.analyzer.set_calibrated_distance_cm(float(value))
+            if self.current_sample is not None:
+                decision = self.analyzer.evaluate(self.current_sample)
+                self._show_metrics(self.current_sample, decision)
 
     def _show_frame(self, frame, sample: VisionSample) -> None:
         annotated = frame.copy()
@@ -221,6 +497,7 @@ class DebugWindow(QMainWindow):
         shoulder_color = (80, 220, 80)
         neck_color = (255, 120, 220)
         center_color = (0, 180, 255)
+        trunk_color = (255, 180, 80)
 
         left_eye = self._point(sample.left_eye_center)
         right_eye = self._point(sample.right_eye_center)
@@ -261,6 +538,10 @@ class DebugWindow(QMainWindow):
         if nose:
             cv2.circle(frame, nose, 6, neck_color, -1, cv2.LINE_AA)
 
+        face_nose = self._point(sample.face_nose_point)
+        if face_nose:
+            cv2.circle(frame, face_nose, 4, eye_color, -1, cv2.LINE_AA)
+
         if nose and shoulder_center:
             cv2.circle(frame, shoulder_center, 5, center_color, -1, cv2.LINE_AA)
             cv2.line(frame, nose, shoulder_center, neck_color, 2, cv2.LINE_AA)
@@ -274,6 +555,18 @@ class DebugWindow(QMainWindow):
                 1,
                 cv2.LINE_AA,
             )
+
+        left_hip = self._point(sample.left_hip_point)
+        right_hip = self._point(sample.right_hip_point)
+        hip_center = self._point(sample.hip_center)
+        if left_hip and right_hip:
+            cv2.line(frame, left_hip, right_hip, trunk_color, 2, cv2.LINE_AA)
+            cv2.circle(frame, left_hip, 5, trunk_color, -1, cv2.LINE_AA)
+            cv2.circle(frame, right_hip, 5, trunk_color, -1, cv2.LINE_AA)
+
+        if shoulder_center and hip_center:
+            cv2.circle(frame, hip_center, 5, trunk_color, -1, cv2.LINE_AA)
+            cv2.line(frame, shoulder_center, hip_center, trunk_color, 2, cv2.LINE_AA)
 
     @staticmethod
     def _point(point) -> Optional[tuple]:
@@ -292,9 +585,30 @@ class DebugWindow(QMainWindow):
 
         face_text = f"{format_value(sample.interpupillary_px)}  越大越近"
         shoulder_text = f"{format_value(sample.shoulder_diff_px)}  越大越歪"
+        estimated_distance = None
+        if isinstance(self.analyzer, HighPrecisionPostureAnalyzer):
+            estimated_distance = self.analyzer.estimated_distance_cm(sample)
+        distance_text = format_value(estimated_distance, "cm")
+        trunk_text = format_value(sample.trunk_lean_deg, "deg")
+        risk_text = (
+            f"{decision.risk_score:.0f} / {decision.sustained_seconds:.1f}s"
+            if decision.risk_score
+            else "--"
+        )
         self.face_label.setText(face_text)
         self.shoulder_label.setText(shoulder_text)
+        self.distance_label.setText(distance_text)
+        self.trunk_label.setText(trunk_text)
+        self.risk_label.setText(risk_text)
         self.baseline_label.setText(format_baseline(self.analyzer.baseline))
+
+    def _update_intervention(self, decision: PostureDecision) -> None:
+        if self.intervention_overlay is None:
+            return
+
+        self.intervention_overlay.set_warning_active(
+            decision.status in {"BAD", "CRITICAL"}
+        )
 
     def _human_reason(self, reason: str) -> str:
         if not reason:
@@ -306,6 +620,8 @@ class DebugWindow(QMainWindow):
         translated = translated.replace("missing=", "缺失：")
         translated = translated.replace("face", "脸部")
         translated = translated.replace("shoulder", "肩膀")
+        translated = translated.replace("trunk", "躯干")
+        translated = translated.replace("distance", "距离")
         translated = translated.replace("baseline", "基准")
         translated = translated.replace("+", " / ")
         translated = translated.replace(",", "，")
@@ -314,14 +630,21 @@ class DebugWindow(QMainWindow):
 
     @staticmethod
     def _status_style(status: str) -> str:
-        if status == "BAD":
+        if status in {"BAD", "CRITICAL"}:
             return "color: #b42318;"
+        if status in {"AWAY", "MULTI_USER", "PROFILE_MISMATCH"}:
+            return "color: #6b7280;"
+        if status == "WATCH":
+            return "color: #b7791f;"
         if status in {"GOOD", "GOOD_PART"}:
             return "color: #157347;"
         return "color: #6b7280;"
 
     def closeEvent(self, event) -> None:
         self.timer.stop()
+        if self.intervention_overlay is not None:
+            self.intervention_overlay.force_clear()
+            self.intervention_overlay.close()
         self.engine.close()
         super().closeEvent(event)
 
@@ -337,6 +660,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Create the debug window offscreen, process one frame, calibrate, and exit.",
     )
+    parser.add_argument(
+        "--disable-intervention",
+        action="store_true",
+        help="Disable gradual dimming and blur intervention overlay.",
+    )
     return parser.parse_args()
 
 
@@ -347,7 +675,13 @@ def main() -> int:
 
     app = QApplication(sys.argv)
     try:
-        window = DebugWindow(args.camera, args.fps, args.width, args.height)
+        window = DebugWindow(
+            args.camera,
+            args.fps,
+            args.width,
+            args.height,
+            intervention_enabled=not args.self_test and not args.disable_intervention,
+        )
     except Exception as exc:
         QMessageBox.critical(None, "Startup error", str(exc))
         return 1
@@ -360,6 +694,8 @@ def main() -> int:
         print(f"shoulder={window.shoulder_label.text()}")
         print(f"baseline={window.baseline_label.text()}")
         print(f"calibration={window.calibration_label.text()}")
+        print(f"high_precision={window.precision_checkbox.isChecked()}")
+        print(f"high_performance={window.performance_checkbox.isChecked()}")
         window.close()
         return 0
 
