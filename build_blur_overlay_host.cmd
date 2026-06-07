@@ -28,7 +28,7 @@ if errorlevel 1 exit /b 1
 
 cl /nologo /std:c++17 /EHsc /O2 /W4 /DUNICODE /D_UNICODE ^
     /Fe:BlurOverlayHost.exe native\BlurOverlayHost.cpp ^
-    /link d3d11.lib dxgi.lib dcomp.lib d3dcompiler.lib user32.lib gdi32.lib dxguid.lib
+    /link d3d11.lib dxgi.lib dcomp.lib d3dcompiler.lib dwmapi.lib user32.lib gdi32.lib dxguid.lib
 if errorlevel 1 exit /b 1
 
 exit /b 0

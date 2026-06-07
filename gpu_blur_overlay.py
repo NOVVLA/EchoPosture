@@ -16,12 +16,14 @@ import time
 from pathlib import Path
 from typing import Optional
 
-from PyQt5.QtCore import QObject, QTimer
+from PyQt5.QtCore import QObject, QTimer, pyqtSignal
 
 from debug_ui import PostureInterventionOverlay
 
 
 class GpuBlurOverlayController(QObject):
+    screen_capture_warning = pyqtSignal(str)
+
     def __init__(self, enabled: bool = True) -> None:
         super().__init__()
         self._fallback = PostureInterventionOverlay()
@@ -38,7 +40,12 @@ class GpuBlurOverlayController(QObject):
         self._host_reason: Optional[str] = None
         self._host_level = 0.0
         self._host_fps = 0.0
+        self._host_blur_available = False
         self._use_fallback = True
+        self._screen_capture_warning_reason: Optional[str] = None
+        self._max_dim_alpha = 0.32
+        self._blur_scale = 1.0
+        self._fallback.set_visual_config(self._max_dim_alpha, self._blur_scale)
 
         if enabled:
             self._start_host()
@@ -55,9 +62,9 @@ class GpuBlurOverlayController(QObject):
 
     @property
     def blur_level(self) -> float:
-        if self._gpu_ready:
-            return min(1.0, max(0.0, self._host_level))
-        return 0.0
+        if self._gpu_ready and self._host_blur_available:
+            return min(1.0, max(0.0, self._host_level * self._blur_scale))
+        return self._fallback.blur_level
 
     @property
     def mode(self) -> str:
@@ -68,12 +75,17 @@ class GpuBlurOverlayController(QObject):
         return self._host_reason
 
     @property
+    def screen_capture_warning_reason(self) -> Optional[str]:
+        return self._screen_capture_warning_reason
+
+    @property
     def _gpu_ready(self) -> bool:
         return self._host_mode == "gpu" and self._host_healthy and self._process_is_running()
 
     def set_warning_active(self, active: bool) -> None:
         self._target_active = active
         if self._process_is_running() and not self._use_fallback:
+            self._send_visual_config()
             self._send({"type": "set_target", "active": active})
             if self._gpu_ready:
                 self._fallback.set_warning_active(False)
@@ -86,10 +98,38 @@ class GpuBlurOverlayController(QObject):
 
         self._fallback.set_warning_active(active)
 
+    def set_visual_config(self, max_dim_alpha: float, blur_scale: float) -> None:
+        self._max_dim_alpha = min(0.85, max(0.0, float(max_dim_alpha)))
+        self._blur_scale = min(1.0, max(0.0, float(blur_scale)))
+        self._fallback.set_visual_config(self._max_dim_alpha, self._blur_scale)
+        self._send_visual_config()
+
+    @property
+    def max_dim_alpha(self) -> float:
+        return self._max_dim_alpha
+
+    @property
+    def blur_scale(self) -> float:
+        return self._blur_scale
+
     def force_clear(self) -> None:
         self._target_active = False
         self._send({"type": "clear"})
         self._fallback.force_clear()
+
+    def trigger_max_effect(self) -> None:
+        self._target_active = True
+        self._fallback.trigger_max_effect()
+        if self._process_is_running() and not self._use_fallback:
+            self._send_visual_config()
+            self._send({"type": "boost"})
+            if self._gpu_ready:
+                self._fallback.set_warning_active(False)
+            return
+        if self._process_is_running() and self._host_mode == "starting":
+            self._send_visual_config()
+            self._send({"type": "boost"})
+            self._fallback.set_warning_active(False)
 
     def close(self) -> None:
         self._closed = True
@@ -204,13 +244,17 @@ class GpuBlurOverlayController(QObject):
             self._host_reason = message.get("reason")
             self._host_level = float(message.get("level") or 0.0)
             self._host_fps = float(message.get("fps") or 0.0)
+            self._host_blur_available = bool(message.get("blur_available", False))
 
             if self._gpu_ready:
                 self._use_fallback = False
                 self._fallback.set_warning_active(False)
+                self._send_visual_config()
                 self._send({"type": "set_target", "active": self._target_active})
             elif self._host_mode in {"dim_fallback", "disabled"}:
                 self._use_fallback = True
+                if self._host_reason:
+                    self._maybe_report_screen_capture_warning(str(self._host_reason))
                 self._fallback.set_warning_active(self._target_active)
 
     def _refresh_process_state(self) -> None:
@@ -234,6 +278,17 @@ class GpuBlurOverlayController(QObject):
 
         self._last_heartbeat_at = now
         self._send({"type": "heartbeat"})
+
+    def _send_visual_config(self) -> None:
+        if not self._process_is_running() or self._use_fallback:
+            return
+        self._send(
+            {
+                "type": "set_config",
+                "max_dim": self._max_dim_alpha,
+                "blur": self._blur_scale,
+            }
+        )
 
     def _send(self, message: dict) -> None:
         process = self._process
@@ -270,8 +325,34 @@ class GpuBlurOverlayController(QObject):
         self._host_healthy = False
         self._host_reason = reason
         self._host_level = 0.0
+        self._host_blur_available = False
         self._use_fallback = True
+        self._maybe_report_screen_capture_warning(reason)
         self._fallback.set_warning_active(self._target_active)
+
+    def _maybe_report_screen_capture_warning(self, reason: str) -> None:
+        if self._screen_capture_warning_reason is not None:
+            return
+        if not self._looks_like_screen_capture_failure(reason):
+            return
+        self._screen_capture_warning_reason = reason
+        self.screen_capture_warning.emit(reason)
+
+    @staticmethod
+    def _looks_like_screen_capture_failure(reason: str) -> bool:
+        lowered = reason.lower()
+        capture_terms = (
+            "desktop capture",
+            "desktop duplication",
+            "duplicateoutput",
+            "gdi capture",
+            "bitblt",
+            "self-capture",
+            "acquirenextframe",
+            "acquireframe",
+            "capture fallback",
+        )
+        return any(term in lowered for term in capture_terms)
 
 
 def run_host_self_test(timeout_seconds: float = 8.0) -> tuple[bool, str]:

@@ -27,6 +27,14 @@ import mediapipe as mp
 Point = Tuple[float, float]
 
 
+class CameraPermissionError(RuntimeError):
+    """Raised when the camera cannot be opened by the OS or privacy policy."""
+
+
+class CameraBlackFrameError(RuntimeError):
+    """Raised when the camera opens but returns unusably dark frames."""
+
+
 LEFT_IRIS = (468, 469, 470, 471, 472)
 RIGHT_IRIS = (473, 474, 475, 476, 477)
 FACE_NOSE = 1
@@ -709,6 +717,13 @@ class HighPrecisionPostureAnalyzer(PostureAnalyzer):
 
 
 class VisionEngine:
+    BLACK_FRAME_MEAN_LIMIT = 8.0
+    BLACK_FRAME_VISIBLE_THRESHOLD = 20
+    BLACK_FRAME_VISIBLE_RATIO_LIMIT = 0.015
+    EXTREME_BLACK_MEAN_LIMIT = 2.5
+    EXTREME_BLACK_MAX_LIMIT = 10
+    BLACK_FRAME_WARNING_FRAMES = 5
+
     def __init__(
         self,
         camera_id: int = 0,
@@ -721,6 +736,7 @@ class VisionEngine:
         self.width = width
         self.height = height
         self._cap: Optional[cv2.VideoCapture] = None
+        self._black_frame_count = 0
 
         self._mp_face_mesh = mp.solutions.face_mesh
         self._mp_pose = mp.solutions.pose
@@ -747,7 +763,8 @@ class VisionEngine:
         cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
 
         if not cap.isOpened():
-            raise RuntimeError(f"Cannot open camera #{self.camera_id}.")
+            cap.release()
+            raise CameraPermissionError(f"Cannot open camera #{self.camera_id}.")
 
         self._cap = cap
 
@@ -763,6 +780,7 @@ class VisionEngine:
         if not ok or frame is None:
             raise RuntimeError("Failed to read a frame from the camera.")
 
+        self._check_frame_visibility(frame)
         frame = cv2.flip(frame, 1)
         frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         frame_rgb.flags.writeable = False
@@ -843,6 +861,35 @@ class VisionEngine:
     def read_sample(self) -> VisionSample:
         _frame, sample = self.read_frame_sample()
         return sample
+
+    def _check_frame_visibility(self, frame) -> None:
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        mean_luma = float(gray.mean())
+        max_luma = float(gray.max())
+        visible_ratio = float((gray > self.BLACK_FRAME_VISIBLE_THRESHOLD).mean())
+        almost_black = (
+            mean_luma <= self.BLACK_FRAME_MEAN_LIMIT
+            and visible_ratio <= self.BLACK_FRAME_VISIBLE_RATIO_LIMIT
+        )
+        extreme_black = (
+            mean_luma <= self.EXTREME_BLACK_MEAN_LIMIT
+            and max_luma <= self.EXTREME_BLACK_MAX_LIMIT
+        )
+
+        if not almost_black and not extreme_black:
+            self._black_frame_count = 0
+            return
+
+        self._black_frame_count += 1
+        if (
+            extreme_black
+            or self._black_frame_count >= self.BLACK_FRAME_WARNING_FRAMES
+        ):
+            raise CameraBlackFrameError(
+                "Camera permission is available, but the camera is returning an "
+                "all-black or nearly all-black image "
+                f"(mean luma {mean_luma:.1f}, visible pixels {visible_ratio:.1%})."
+            )
 
     def close(self) -> None:
         if self._cap is not None:

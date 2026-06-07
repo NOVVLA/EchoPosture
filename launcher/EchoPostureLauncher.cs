@@ -108,10 +108,63 @@ namespace EchoPostureLauncher
             }
             catch
             {
-                // Fall back to the package directory. The bridge is only a compatibility layer for non-ASCII paths.
+                // Fall through to the mirror copy below. The bridge is only a compatibility layer for non-ASCII paths.
+            }
+
+            try
+            {
+                string mirrorRoot = Path.Combine(bridgeBase, "current-copy");
+                MirrorDirectory(packageRoot, mirrorRoot);
+                string mirroredPython = Path.Combine(mirrorRoot, "runtime", "python311", "python.exe");
+                if (File.Exists(mirroredPython))
+                {
+                    return mirrorRoot;
+                }
+            }
+            catch
+            {
+                // Fall back to the package directory. Some locked-down environments deny writes to LocalAppData.
             }
 
             return packageRoot;
+        }
+
+        private static void MirrorDirectory(string sourceRoot, string destinationRoot)
+        {
+            if (Directory.Exists(destinationRoot))
+            {
+                Directory.Delete(destinationRoot, true);
+            }
+            Directory.CreateDirectory(destinationRoot);
+            CopyDirectory(sourceRoot, destinationRoot);
+        }
+
+        private static void CopyDirectory(string sourceRoot, string destinationRoot)
+        {
+            foreach (string sourceFile in Directory.GetFiles(sourceRoot))
+            {
+                string name = Path.GetFileName(sourceFile);
+                if (string.Equals(name, "EchoPostureSelfTest.exe", StringComparison.OrdinalIgnoreCase))
+                {
+                    // Keep the diagnostic entry in the original package root so self-test logs stay there.
+                }
+                string destinationFile = Path.Combine(destinationRoot, name);
+                File.Copy(sourceFile, destinationFile, true);
+            }
+
+            foreach (string sourceDirectory in Directory.GetDirectories(sourceRoot))
+            {
+                string name = Path.GetFileName(sourceDirectory);
+                if (string.Equals(name, "logs", StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(name, "__pycache__", StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                string destinationDirectory = Path.Combine(destinationRoot, name);
+                Directory.CreateDirectory(destinationDirectory);
+                CopyDirectory(sourceDirectory, destinationDirectory);
+            }
         }
 
         private static void ConfigureEnvironment(string runRoot)

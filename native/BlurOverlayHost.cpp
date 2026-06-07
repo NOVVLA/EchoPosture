@@ -9,11 +9,13 @@
 #include <d3d11.h>
 #include <d3dcompiler.h>
 #include <dcomp.h>
+#include <dwmapi.h>
 #include <dxgi1_2.h>
 #include <wrl/client.h>
 
 #include <algorithm>
 #include <atomic>
+#include <cctype>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
@@ -37,6 +39,37 @@ constexpr double kRampUpSeconds = 45.0;
 constexpr double kRampDownSeconds = 0.3;
 constexpr float kMaxDimAmount = 0.32f;
 constexpr const wchar_t* kWindowClassName = L"EchoPostureBlurOverlayHost";
+
+enum class CaptureMode
+{
+    None,
+    DesktopDuplication,
+    Gdi,
+    SystemBackdrop
+};
+
+struct AccentPolicy
+{
+    int accent_state;
+    int accent_flags;
+    DWORD gradient_color;
+    int animation_id;
+};
+
+struct WindowCompositionAttributeData
+{
+    int attribute;
+    void* data;
+    SIZE_T size_of_data;
+};
+
+using SetWindowCompositionAttributeFn = BOOL(WINAPI*)(HWND, WindowCompositionAttributeData*);
+
+constexpr int kWcaAccentPolicy = 19;
+constexpr int kAccentDisabled = 0;
+constexpr int kAccentEnableTransparentGradient = 2;
+constexpr int kAccentEnableBlurBehind = 3;
+constexpr int kAccentEnableAcrylicBlurBehind = 4;
 
 struct ShaderParams
 {
@@ -87,6 +120,34 @@ std::string HrToString(HRESULT hr)
     std::ostringstream output;
     output << "HRESULT 0x" << std::hex << static_cast<unsigned long>(hr);
     return output.str();
+}
+
+bool ExtractJsonFloat(const std::string& line, const char* key, float& value)
+{
+    std::string needle = "\"";
+    needle += key;
+    needle += "\":";
+    size_t pos = line.find(needle);
+    if (pos == std::string::npos)
+    {
+        return false;
+    }
+
+    pos += needle.size();
+    while (pos < line.size() && std::isspace(static_cast<unsigned char>(line[pos])))
+    {
+        ++pos;
+    }
+
+    char* end = nullptr;
+    float parsed = std::strtof(line.c_str() + pos, &end);
+    if (end == line.c_str() + pos)
+    {
+        return false;
+    }
+
+    value = parsed;
+    return true;
 }
 
 bool IsWindows10_2004OrNewer()
@@ -297,11 +358,15 @@ cbuffer Params : register(b0) {
     float output_h;
     float marker;
 };
-Texture2D input_tex : register(t0);
+Texture2D blurred_tex : register(t0);
+Texture2D source_tex : register(t1);
 SamplerState linear_sampler : register(s0);
 
 float4 main(float4 pos : SV_POSITION, float2 uv : TEXCOORD0) : SV_TARGET {
-    float4 color = input_tex.Sample(linear_sampler, uv);
+    float4 source = source_tex.Sample(linear_sampler, uv);
+    float4 blurred = blurred_tex.Sample(linear_sampler, uv);
+    float blur_mix = saturate(level);
+    float4 color = lerp(source, blurred, blur_mix);
     color.rgb = lerp(color.rgb, float3(0.0, 0.0, 0.0), dim_amount);
 
     if (marker > 0.5 && pos.x >= 8.0 && pos.x < 12.0 && pos.y >= 8.0 && pos.y < 12.0) {
@@ -317,6 +382,7 @@ public:
     ~OutputPipeline()
     {
         Hide();
+        DestroyGdiCaptureResources();
         if (hwnd_)
         {
             DestroyWindow(hwnd_);
@@ -349,21 +415,53 @@ public:
 
         if (!CreateDevice(reason) ||
             !CreateWindowAndComposition(reason) ||
-            !CreateDuplication(reason) ||
             !CreateShaders(reason) ||
             !CreateResources(reason))
         {
             return false;
         }
 
+        std::string duplication_reason;
+        if (CreateDuplication(duplication_reason))
+        {
+            capture_mode_ = CaptureMode::DesktopDuplication;
+            return true;
+        }
+
+        std::string gdi_reason;
+        if (!CreateGdiCaptureResources(gdi_reason))
+        {
+            reason = duplication_reason + "; GDI capture fallback failed: " + gdi_reason;
+            capture_mode_ = CaptureMode::None;
+            return false;
+        }
+
+        capture_mode_ = CaptureMode::Gdi;
         return true;
     }
 
     bool SelfCaptureProbe(std::string& reason)
     {
         // Capture once while hidden so the probe frame has real desktop content.
-        std::string ignored;
-        AcquireFrame(100, ignored);
+        std::string initial_reason;
+        if (!AcquireFrame(100, initial_reason))
+        {
+            std::string backdrop_reason;
+            if (SwitchToSystemBackdrop(backdrop_reason))
+            {
+                return true;
+            }
+            reason = "self-capture probe could not acquire initial desktop frame";
+            if (!initial_reason.empty())
+            {
+                reason += ": " + initial_reason;
+            }
+            if (!backdrop_reason.empty())
+            {
+                reason += "; system backdrop fallback failed: " + backdrop_reason;
+            }
+            return false;
+        }
         if (!has_frame_)
         {
             reason = "self-capture probe could not acquire initial desktop frame";
@@ -385,7 +483,20 @@ public:
         if (!capture_ok)
         {
             // A timeout means the excluded overlay did not produce a desktop frame, which is acceptable.
-            return reason == "desktop duplication probe timed out";
+            if (reason == "desktop duplication probe timed out")
+            {
+                return true;
+            }
+            std::string backdrop_reason;
+            if (SwitchToSystemBackdrop(backdrop_reason))
+            {
+                return true;
+            }
+            if (!backdrop_reason.empty())
+            {
+                reason += "; system backdrop fallback failed: " + backdrop_reason;
+            }
+            return false;
         }
 
         if (marker_seen)
@@ -405,8 +516,24 @@ public:
             return true;
         }
 
+        if (capture_mode_ == CaptureMode::SystemBackdrop)
+        {
+            Show();
+            return ApplySystemBackdrop(level, reason);
+        }
+
         if (!AcquireFrame(0, reason))
         {
+            std::string backdrop_reason;
+            if (SwitchToSystemBackdrop(backdrop_reason))
+            {
+                Show();
+                return ApplySystemBackdrop(level, reason);
+            }
+            if (!backdrop_reason.empty())
+            {
+                reason += "; system backdrop fallback failed: " + backdrop_reason;
+            }
             return false;
         }
 
@@ -419,6 +546,19 @@ public:
         return Render(level, false, reason);
     }
 
+    void SetVisualConfig(float max_dim_amount, float blur_scale)
+    {
+        max_dim_amount_ = std::max(0.0f, std::min(0.85f, max_dim_amount));
+        blur_scale_ = std::max(0.0f, std::min(1.0f, blur_scale));
+    }
+
+    bool HasVariableBlur() const
+    {
+        return capture_mode_ == CaptureMode::DesktopDuplication ||
+            capture_mode_ == CaptureMode::Gdi ||
+            capture_mode_ == CaptureMode::SystemBackdrop;
+    }
+
     void Hide()
     {
         if (hwnd_ && visible_)
@@ -429,6 +569,108 @@ public:
     }
 
 private:
+    bool SwitchToSystemBackdrop(std::string& reason)
+    {
+        capture_mode_ = CaptureMode::SystemBackdrop;
+        Show();
+        if (!ApplySystemBackdrop(0.25f, reason))
+        {
+            Hide();
+            capture_mode_ = CaptureMode::None;
+            return false;
+        }
+        Sleep(120);
+        Hide();
+        return true;
+    }
+
+    bool ApplySystemBackdrop(float level, std::string& reason)
+    {
+        if (!hwnd_)
+        {
+            reason = "system backdrop window is not initialized";
+            return false;
+        }
+
+        HMODULE user32 = GetModuleHandleW(L"user32.dll");
+        if (!user32)
+        {
+            reason = "GetModuleHandle(user32.dll) failed";
+            return false;
+        }
+
+        auto set_window_composition_attribute =
+            reinterpret_cast<SetWindowCompositionAttributeFn>(
+                GetProcAddress(user32, "SetWindowCompositionAttribute"));
+        if (!set_window_composition_attribute)
+        {
+            reason = "SetWindowCompositionAttribute was not found";
+            return false;
+        }
+
+        float clamped = std::max(0.0f, std::min(1.0f, level));
+        float blur_mix = std::max(0.0f, std::min(1.0f, clamped * blur_scale_));
+        float target_dim = std::max(0.0f, std::min(1.0f, max_dim_amount_ * clamped));
+        float surface_opacity = std::max(blur_mix, target_dim);
+        BYTE surface_alpha = static_cast<BYTE>(
+            std::max(0.0f, std::min(255.0f, std::round(255.0f * surface_opacity))));
+        BYTE tint_alpha = 0;
+        if (surface_opacity > 0.001f)
+        {
+            tint_alpha = static_cast<BYTE>(
+                std::max(0.0f, std::min(255.0f, std::round(255.0f * target_dim / surface_opacity))));
+        }
+
+        if (!SetLayeredWindowAttributes(hwnd_, 0, surface_alpha, LWA_ALPHA))
+        {
+            reason = "SetLayeredWindowAttributes failed: GetLastError " +
+                std::to_string(GetLastError());
+            return false;
+        }
+
+        AccentPolicy accent = {};
+        accent.accent_state = blur_mix > 0.001f
+            ? kAccentEnableAcrylicBlurBehind
+            : kAccentEnableTransparentGradient;
+        accent.accent_flags = 0;
+        accent.gradient_color = static_cast<DWORD>(tint_alpha) << 24;
+        accent.animation_id = 0;
+
+        WindowCompositionAttributeData data = {};
+        data.attribute = kWcaAccentPolicy;
+        data.data = &accent;
+        data.size_of_data = sizeof(accent);
+
+        if (set_window_composition_attribute(hwnd_, &data))
+        {
+            return true;
+        }
+
+        DWORD acrylic_error = GetLastError();
+        if (blur_mix > 0.001f)
+        {
+            accent.accent_state = kAccentEnableBlurBehind;
+            if (set_window_composition_attribute(hwnd_, &data))
+            {
+                return true;
+            }
+        }
+
+        DWORD blur_error = GetLastError();
+        accent.accent_state = kAccentEnableTransparentGradient;
+        if (set_window_composition_attribute(hwnd_, &data))
+        {
+            return true;
+        }
+
+        DWORD gradient_error = GetLastError();
+        reason = "SetWindowCompositionAttribute failed: acrylic GetLastError " +
+            std::to_string(acrylic_error) + ", blur GetLastError " +
+            std::to_string(blur_error) + ", gradient GetLastError " +
+            std::to_string(gradient_error);
+        return false;
+    }
+
     bool CreateDevice(std::string& reason)
     {
         UINT flags = D3D11_CREATE_DEVICE_BGRA_SUPPORT;
@@ -480,7 +722,8 @@ private:
             WS_EX_TOPMOST |
             WS_EX_NOACTIVATE |
             WS_EX_TRANSPARENT |
-            WS_EX_TOOLWINDOW;
+            WS_EX_TOOLWINDOW |
+            WS_EX_LAYERED;
 
         hwnd_ = CreateWindowExW(
             ex_style,
@@ -611,6 +854,73 @@ private:
             return false;
         }
         return true;
+    }
+
+    bool CreateGdiCaptureResources(std::string& reason)
+    {
+        if (memory_dc_ && dib_bits_)
+        {
+            return true;
+        }
+
+        HDC setup_dc = GetDC(nullptr);
+        if (!setup_dc)
+        {
+            reason = "GetDC(NULL) failed";
+            return false;
+        }
+
+        memory_dc_ = CreateCompatibleDC(setup_dc);
+        if (!memory_dc_)
+        {
+            ReleaseDC(nullptr, setup_dc);
+            reason = "CreateCompatibleDC failed";
+            return false;
+        }
+
+        BITMAPINFO info = {};
+        info.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+        info.bmiHeader.biWidth = static_cast<LONG>(width_);
+        info.bmiHeader.biHeight = -static_cast<LONG>(height_);
+        info.bmiHeader.biPlanes = 1;
+        info.bmiHeader.biBitCount = 32;
+        info.bmiHeader.biCompression = BI_RGB;
+
+        dib_ = CreateDIBSection(setup_dc, &info, DIB_RGB_COLORS, &dib_bits_, nullptr, 0);
+        ReleaseDC(nullptr, setup_dc);
+        if (!dib_ || !dib_bits_)
+        {
+            reason = "CreateDIBSection failed";
+            return false;
+        }
+
+        previous_bitmap_ = SelectObject(memory_dc_, dib_);
+        if (!previous_bitmap_)
+        {
+            reason = "SelectObject capture bitmap failed";
+            return false;
+        }
+        return true;
+    }
+
+    void DestroyGdiCaptureResources()
+    {
+        if (memory_dc_ && previous_bitmap_)
+        {
+            SelectObject(memory_dc_, previous_bitmap_);
+            previous_bitmap_ = nullptr;
+        }
+        if (dib_)
+        {
+            DeleteObject(dib_);
+            dib_ = nullptr;
+            dib_bits_ = nullptr;
+        }
+        if (memory_dc_)
+        {
+            DeleteDC(memory_dc_);
+            memory_dc_ = nullptr;
+        }
     }
 
     bool CreateShaders(std::string& reason)
@@ -767,11 +1077,30 @@ private:
 
     bool AcquireFrame(UINT timeout_ms, std::string& reason)
     {
+        if (capture_mode_ == CaptureMode::Gdi)
+        {
+            return AcquireGdiFrame(reason);
+        }
+
         DXGI_OUTDUPL_FRAME_INFO frame_info = {};
         ComPtr<IDXGIResource> resource;
         HRESULT hr = duplication_->AcquireNextFrame(timeout_ms, &frame_info, resource.GetAddressOf());
         if (hr == DXGI_ERROR_WAIT_TIMEOUT)
         {
+            std::string gdi_reason;
+            if (CreateGdiCaptureResources(gdi_reason) && AcquireGdiFrame(gdi_reason))
+            {
+                return true;
+            }
+            if (!has_frame_)
+            {
+                reason = "desktop duplication timed out before first frame";
+                if (!gdi_reason.empty())
+                {
+                    reason += "; GDI capture fallback failed: " + gdi_reason;
+                }
+                return false;
+            }
             return true;
         }
         if (hr == DXGI_ERROR_ACCESS_LOST)
@@ -803,9 +1132,139 @@ private:
         return true;
     }
 
+    bool AcquireGdiFrame(std::string& reason)
+    {
+        if (!memory_dc_ || !dib_bits_)
+        {
+            reason = "GDI capture resources are not initialized";
+            return false;
+        }
+
+        if (visible_)
+        {
+            Hide();
+            DwmFlush();
+        }
+
+        DWORD error = 0;
+        HWND desktop = GetDesktopWindow();
+        HDC source_dc = GetDC(nullptr);
+        BOOL copied = source_dc ? BitBlt(
+            memory_dc_,
+            0,
+            0,
+            static_cast<int>(width_),
+            static_cast<int>(height_),
+            source_dc,
+            rect_.left,
+            rect_.top,
+            SRCCOPY | CAPTUREBLT) : FALSE;
+        if (!copied)
+        {
+            error = GetLastError();
+        }
+        if (source_dc)
+        {
+            ReleaseDC(nullptr, source_dc);
+        }
+
+        if (!copied)
+        {
+            source_dc = GetWindowDC(desktop);
+            copied = source_dc ? BitBlt(
+                memory_dc_,
+                0,
+                0,
+                static_cast<int>(width_),
+                static_cast<int>(height_),
+                source_dc,
+                rect_.left,
+                rect_.top,
+                SRCCOPY | CAPTUREBLT) : FALSE;
+            if (!copied)
+            {
+                error = GetLastError();
+            }
+            if (source_dc)
+            {
+                ReleaseDC(desktop, source_dc);
+            }
+        }
+
+        if (!copied)
+        {
+            source_dc = CreateDCW(L"DISPLAY", nullptr, nullptr, nullptr);
+            copied = source_dc ? BitBlt(
+                memory_dc_,
+                0,
+                0,
+                static_cast<int>(width_),
+                static_cast<int>(height_),
+                source_dc,
+                rect_.left,
+                rect_.top,
+                SRCCOPY | CAPTUREBLT) : FALSE;
+            if (!copied)
+            {
+                error = GetLastError();
+            }
+            if (source_dc)
+            {
+                DeleteDC(source_dc);
+            }
+        }
+
+        if (!copied)
+        {
+            reason = "BitBlt desktop capture failed: GetLastError " + std::to_string(error);
+            return false;
+        }
+
+        context_->UpdateSubresource(
+            frame_texture_.Get(),
+            0,
+            nullptr,
+            dib_bits_,
+            width_ * 4,
+            0);
+        has_frame_ = true;
+        return true;
+    }
+
     bool DetectMarkerInCapture(bool& marker_seen, std::string& reason)
     {
         marker_seen = false;
+
+        if (capture_mode_ == CaptureMode::Gdi)
+        {
+            if (!AcquireGdiFrame(reason))
+            {
+                return false;
+            }
+
+            const unsigned char* base = static_cast<const unsigned char*>(dib_bits_);
+            for (UINT y = 0; y < std::min<UINT>(16, height_); ++y)
+            {
+                const unsigned char* row = base + y * width_ * 4;
+                for (UINT x = 0; x < std::min<UINT>(16, width_); ++x)
+                {
+                    const unsigned char* pixel = row + x * 4;
+                    unsigned char blue = pixel[0];
+                    unsigned char green = pixel[1];
+                    unsigned char red = pixel[2];
+                    if (red > 220 && blue > 220 && green < 80)
+                    {
+                        marker_seen = true;
+                        break;
+                    }
+                }
+                if (marker_seen)
+                {
+                    break;
+                }
+            }
+            return true;
+        }
 
         DXGI_OUTDUPL_FRAME_INFO frame_info = {};
         ComPtr<IDXGIResource> resource;
@@ -910,14 +1369,16 @@ private:
             return false;
         }
 
-        float radius = 0.4f + 7.0f * std::max(0.0f, std::min(1.0f, level));
-        float dim = kMaxDimAmount * std::max(0.0f, std::min(1.0f, level));
+        float clamped_level = std::max(0.0f, std::min(1.0f, level));
+        float blur_mix = clamped_level * blur_scale_;
+        float radius = 0.4f + 7.0f * blur_mix;
+        float dim = max_dim_amount_ * clamped_level;
 
         SetCommonState();
-        DrawPass(temp_a_rtv_.Get(), low_width_, low_height_, frame_srv_.Get(), copy_shader_.Get(), 1.0f / low_width_, 1.0f / low_height_, radius, level, dim, marker);
-        DrawPass(temp_b_rtv_.Get(), low_width_, low_height_, temp_a_srv_.Get(), blur_h_shader_.Get(), 1.0f / low_width_, 1.0f / low_height_, radius, level, dim, marker);
-        DrawPass(temp_a_rtv_.Get(), low_width_, low_height_, temp_b_srv_.Get(), blur_v_shader_.Get(), 1.0f / low_width_, 1.0f / low_height_, radius, level, dim, marker);
-        DrawPass(back_buffer_rtv.Get(), width_, height_, temp_a_srv_.Get(), composite_shader_.Get(), 1.0f / width_, 1.0f / height_, radius, level, dim, marker);
+        DrawPass(temp_a_rtv_.Get(), low_width_, low_height_, frame_srv_.Get(), copy_shader_.Get(), 1.0f / low_width_, 1.0f / low_height_, radius, blur_mix, dim, marker);
+        DrawPass(temp_b_rtv_.Get(), low_width_, low_height_, temp_a_srv_.Get(), blur_h_shader_.Get(), 1.0f / low_width_, 1.0f / low_height_, radius, blur_mix, dim, marker);
+        DrawPass(temp_a_rtv_.Get(), low_width_, low_height_, temp_b_srv_.Get(), blur_v_shader_.Get(), 1.0f / low_width_, 1.0f / low_height_, radius, blur_mix, dim, marker);
+        DrawPass(back_buffer_rtv.Get(), width_, height_, temp_a_srv_.Get(), composite_shader_.Get(), 1.0f / width_, 1.0f / height_, radius, blur_mix, dim, marker, frame_srv_.Get());
         UnbindSrv();
 
         hr = swap_chain_->Present(1, 0);
@@ -959,7 +1420,8 @@ private:
         float radius,
         float level,
         float dim,
-        bool marker)
+        bool marker,
+        ID3D11ShaderResourceView* secondary_srv = nullptr)
     {
         UnbindSrv();
         D3D11_VIEWPORT viewport = {};
@@ -990,16 +1452,16 @@ private:
             context_->Unmap(constant_buffer_.Get(), 0);
         }
 
-        ID3D11ShaderResourceView* srvs[] = { srv };
-        context_->PSSetShaderResources(0, 1, srvs);
+        ID3D11ShaderResourceView* srvs[] = { srv, secondary_srv };
+        context_->PSSetShaderResources(0, 2, srvs);
         context_->PSSetShader(shader, nullptr, 0);
         context_->Draw(3, 0);
     }
 
     void UnbindSrv()
     {
-        ID3D11ShaderResourceView* null_srvs[] = { nullptr };
-        context_->PSSetShaderResources(0, 1, null_srvs);
+        ID3D11ShaderResourceView* null_srvs[] = { nullptr, nullptr };
+        context_->PSSetShaderResources(0, 2, null_srvs);
     }
 
     void Show()
@@ -1031,6 +1493,9 @@ private:
     HWND hwnd_ = nullptr;
     bool visible_ = false;
     bool has_frame_ = false;
+    float max_dim_amount_ = kMaxDimAmount;
+    float blur_scale_ = 1.0f;
+    CaptureMode capture_mode_ = CaptureMode::None;
 
     ComPtr<ID3D11Device> device_;
     ComPtr<ID3D11DeviceContext> context_;
@@ -1056,6 +1521,11 @@ private:
     ComPtr<ID3D11Texture2D> temp_b_;
     ComPtr<ID3D11RenderTargetView> temp_b_rtv_;
     ComPtr<ID3D11ShaderResourceView> temp_b_srv_;
+
+    HDC memory_dc_ = nullptr;
+    HBITMAP dib_ = nullptr;
+    HGDIOBJ previous_bitmap_ = nullptr;
+    void* dib_bits_ = nullptr;
 };
 
 class BlurOverlayHost
@@ -1210,7 +1680,7 @@ public:
         if (!initialized || mode_ != "gpu")
         {
             PrintStatus();
-            return 0;
+            return 1;
         }
         HideAll();
         PrintStatus("disabled", true, nullptr);
@@ -1265,6 +1735,7 @@ private:
                 std::string pipeline_reason;
                 if (pipeline->Initialize(instance_, adapter.Get(), output.Get(), pipeline_reason))
                 {
+                    pipeline->SetVisualConfig(max_dim_amount_, blur_scale_);
                     pipelines_.push_back(std::move(pipeline));
                 }
                 else if (reason.empty())
@@ -1306,6 +1777,12 @@ private:
             target_active_.store(false);
             level_ = 0.0f;
             HideAll();
+        }
+
+        if (boost_requested_.exchange(false))
+        {
+            target_active_.store(true);
+            level_ = 1.0f;
         }
 
         if (mode_ != "gpu")
@@ -1372,6 +1849,16 @@ private:
         }
     }
 
+    void SetVisualConfig(float max_dim_amount, float blur_scale)
+    {
+        max_dim_amount_ = std::max(0.0f, std::min(0.85f, max_dim_amount));
+        blur_scale_ = std::max(0.0f, std::min(1.0f, blur_scale));
+        for (auto& pipeline : pipelines_)
+        {
+            pipeline->SetVisualConfig(max_dim_amount_, blur_scale_);
+        }
+    }
+
     void StartInputThread()
     {
         input_thread_ = std::thread([this]() {
@@ -1393,12 +1880,26 @@ private:
                     clear_requested_.store(true);
                     continue;
                 }
+                if (line.find("boost") != std::string::npos)
+                {
+                    boost_requested_.store(true);
+                    continue;
+                }
                 if (line.find("set_target") != std::string::npos)
                 {
                     bool active =
                         line.find("\"active\":true") != std::string::npos ||
                         line.find("\"active\": true") != std::string::npos;
                     target_active_.store(active);
+                    continue;
+                }
+                if (line.find("set_config") != std::string::npos)
+                {
+                    float max_dim = max_dim_amount_;
+                    float blur = blur_scale_;
+                    ExtractJsonFloat(line, "max_dim", max_dim);
+                    ExtractJsonFloat(line, "blur", blur);
+                    SetVisualConfig(max_dim, blur);
                 }
             }
         });
@@ -1461,6 +1962,7 @@ private:
 
     void PrintStatus(const char* mode, bool healthy, const char* reason)
     {
+        bool blur_available = healthy && std::strcmp(mode, "gpu") == 0 && VariableBlurAvailable();
         std::lock_guard<std::mutex> lock(output_mutex_);
         std::cout
             << "{\"type\":\"status\","
@@ -1468,6 +1970,7 @@ private:
             << "\"level\":" << level_ << ","
             << "\"fps\":" << fps_ << ","
             << "\"healthy\":" << (healthy ? "true" : "false") << ","
+            << "\"blur_available\":" << (blur_available ? "true" : "false") << ","
             << "\"reason\":";
         if (reason && reason[0] != '\0')
         {
@@ -1478,6 +1981,22 @@ private:
             std::cout << "null";
         }
         std::cout << "}" << std::endl;
+    }
+
+    bool VariableBlurAvailable() const
+    {
+        if (pipelines_.empty())
+        {
+            return false;
+        }
+        for (const auto& pipeline : pipelines_)
+        {
+            if (!pipeline->HasVariableBlur())
+            {
+                return false;
+            }
+        }
+        return true;
     }
 
     int64_t NowMs() const
@@ -1495,6 +2014,7 @@ private:
     std::atomic<bool> running_{ true };
     std::atomic<bool> target_active_{ false };
     std::atomic<bool> clear_requested_{ false };
+    std::atomic<bool> boost_requested_{ false };
     std::atomic<bool> shutdown_requested_{ false };
     std::atomic<int64_t> last_input_ms_{ 0 };
 
@@ -1505,6 +2025,8 @@ private:
     std::string fallback_reason_;
     bool probe_complete_ = false;
     float level_ = 0.0f;
+    float max_dim_amount_ = kMaxDimAmount;
+    float blur_scale_ = 1.0f;
     double fps_ = 0.0;
     int frame_interval_ms_ = 16;
     int slow_frames_ = 0;

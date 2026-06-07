@@ -1,5 +1,22 @@
 # Changelog
 
+## 2026-06-07
+
+### Added
+
+- Added `ui/index.html` as a non-invasive offline HTML/SVG prototype that replicates the OCULI / VERTEBRA UI sample with an eye master switch, vertebra feature switches, status readout, keyboard focus, and accessible switch states.
+- Added tray controls for immediate recalibration, max visual effect testing, max dimming, and blur strength adjustment.
+
+### Changed
+
+- Updated GPU blur behavior to prefer the native host while falling back to Windows compositor blur when desktop capture is unavailable.
+- Updated DEV package metadata and documentation for `EchoPosture-DEV-20260607-144042-win-x64`.
+
+### Fixed
+
+- Added dedicated warnings for camera permission failures, black camera frames, and screen capture limits.
+- Improved the offline UI hit targets so SVG switches can be clicked reliably.
+
 ## 2026-06-02
 
 ### Added
@@ -7,7 +24,7 @@
 - Added `tray_app.py` as the production-style tray runtime with startup calibration, background posture monitoring, a tray status panel, and a stop action that clears overlays and releases the camera.
 - Added high-precision posture analysis in `vision_test.py`, including distance estimation, head-turn detection, shoulder width narrowing, shoulder asymmetry, trunk lean, sustained-risk scoring, and presence/profile suppression states.
 - Added gradual visual intervention controls that only activate after confirmed `BAD` or `CRITICAL` posture decisions with sustained risk.
-- Added `gpu_blur_overlay.py` and `native/BlurOverlayHost.cpp` for optional D3D11/DXGI GPU blur overlay support with dim-only fallback.
+- Added `gpu_blur_overlay.py` and `native/BlurOverlayHost.cpp` for optional D3D11/DXGI GPU blur overlay support with Windows compositor blur fallback.
 - Added C# launcher sources and build scripts for `EchoPosture.exe`, `EchoPostureSelfTest.exe`, and `BlurOverlayHost.exe`.
 - Added `README_EXE.md` with launcher, self-test, GPU blur fallback, and emergency clear notes.
 

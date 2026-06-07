@@ -51,6 +51,8 @@ from PyQt5.QtWidgets import (
 )
 
 from vision_test import (
+    CameraBlackFrameError,
+    CameraPermissionError,
     HighPrecisionPostureAnalyzer,
     PostureAnalyzer,
     PostureDecision,
@@ -114,7 +116,7 @@ REASON_TEXT: Dict[str, str] = {
 
 class PostureInterventionOverlay(QWidget):
     MAX_DIM_ALPHA = 0.32
-    LIVE_BLUR_SUPPORTED = False
+    LIVE_BLUR_SUPPORTED = True
     RAMP_UP_SECONDS = 45.0
     RAMP_DOWN_SECONDS = 0.3
     TICK_MS = 80
@@ -123,6 +125,9 @@ class PostureInterventionOverlay(QWidget):
         super().__init__()
         self._target_level = 0.0
         self._level = 0.0
+        self._max_dim_alpha = self.MAX_DIM_ALPHA
+        self._blur_scale = 1.0
+        self._layer_opacity = 1.0
         self._last_tick = time.perf_counter()
         self._live_blur_enabled = False
 
@@ -165,13 +170,30 @@ class PostureInterventionOverlay(QWidget):
         self._set_live_blur(False)
         self.hide()
 
+    def trigger_max_effect(self) -> None:
+        self._target_level = 1.0
+        self._level = 1.0
+        self._cover_all_screens()
+        self._last_tick = time.perf_counter()
+        if not self.isVisible():
+            self.show()
+            self.raise_()
+            self._enable_windows_click_through()
+        self._set_live_blur(
+            self.LIVE_BLUR_SUPPORTED and self._blur_scale > 0.01,
+            self._level * self._blur_scale,
+        )
+        self.update()
+
     def paintEvent(self, event) -> None:
         if self._level <= 0.001:
             return
 
         painter = QPainter(self)
         try:
-            dim_alpha = int(255 * self.MAX_DIM_ALPHA * self._level)
+            target_alpha = 255 * self._max_dim_alpha * self._level
+            opacity = self._layer_opacity if self._live_blur_enabled else 1.0
+            dim_alpha = int(min(255, target_alpha / max(0.001, opacity)))
             painter.fillRect(self.rect(), QColor(0, 0, 0, dim_alpha))
         finally:
             painter.end()
@@ -196,7 +218,10 @@ class PostureInterventionOverlay(QWidget):
             self.show()
             self.raise_()
             self._enable_windows_click_through()
-        self._set_live_blur(self.LIVE_BLUR_SUPPORTED and self._level > 0.01)
+        self._set_live_blur(
+            self.LIVE_BLUR_SUPPORTED and self._blur_scale > 0.01 and self._level > 0.01,
+            self._level * self._blur_scale,
+        )
         self.update()
 
     @property
@@ -205,7 +230,18 @@ class PostureInterventionOverlay(QWidget):
 
     @property
     def blur_level(self) -> float:
-        return self.dim_level if self.LIVE_BLUR_SUPPORTED and self._live_blur_enabled else 0.0
+        if self.LIVE_BLUR_SUPPORTED and self._live_blur_enabled:
+            return min(1.0, max(0.0, self.dim_level * self._blur_scale))
+        return 0.0
+
+    def set_visual_config(self, max_dim_alpha: float, blur_scale: float) -> None:
+        self._max_dim_alpha = min(0.85, max(0.0, float(max_dim_alpha)))
+        self._blur_scale = min(1.0, max(0.0, float(blur_scale)))
+        if self._blur_scale <= 0.01:
+            self._set_live_blur(False)
+        elif self._live_blur_enabled:
+            self._set_live_blur(True, self._level * self._blur_scale)
+        self.update()
 
     def _cover_all_screens(self) -> None:
         screens = QGuiApplication.screens()
@@ -233,11 +269,24 @@ class PostureInterventionOverlay(QWidget):
         style |= ws_ex_layered | ws_ex_transparent | ws_ex_toolwindow
         user32.SetWindowLongW(hwnd, gwl_exstyle, style)
 
-    def _set_live_blur(self, enabled: bool) -> None:
-        if sys.platform != "win32" or enabled == self._live_blur_enabled:
+    def _set_live_blur(self, enabled: bool, blur_mix: float = 0.0) -> None:
+        if sys.platform != "win32":
             return
 
         hwnd = int(self.winId())
+        blur_mix = min(1.0, max(0.0, float(blur_mix))) if enabled else 0.0
+        target_dim = min(1.0, max(0.0, self._max_dim_alpha * self._level))
+        layer_opacity = max(blur_mix, target_dim) if enabled else 1.0
+        layer_alpha = int(min(255, max(0, round(255 * layer_opacity))))
+
+        try:
+            ctypes.windll.user32.SetLayeredWindowAttributes(hwnd, 0, layer_alpha, 0x00000002)
+            self._layer_opacity = layer_opacity
+        except Exception:
+            self._layer_opacity = 1.0
+
+        if enabled == self._live_blur_enabled:
+            return
 
         class AccentPolicy(ctypes.Structure):
             _fields_ = [
@@ -268,8 +317,8 @@ class PostureInterventionOverlay(QWidget):
         data.SizeOfData = ctypes.sizeof(accent)
 
         try:
-            ctypes.windll.user32.SetWindowCompositionAttribute(hwnd, ctypes.byref(data))
-            self._live_blur_enabled = enabled
+            result = ctypes.windll.user32.SetWindowCompositionAttribute(hwnd, ctypes.byref(data))
+            self._live_blur_enabled = bool(result) if enabled else False
         except Exception:
             self._live_blur_enabled = False
 
@@ -414,6 +463,14 @@ class DebugWindow(QMainWindow):
     def update_frame(self) -> None:
         try:
             frame, sample = self.engine.read_frame_sample()
+        except CameraPermissionError as exc:
+            self.timer.stop()
+            self._show_camera_permission_warning(str(exc))
+            return
+        except CameraBlackFrameError as exc:
+            self.timer.stop()
+            self._show_camera_black_frame_warning(str(exc))
+            return
         except Exception as exc:
             self.timer.stop()
             QMessageBox.critical(self, "Camera error", str(exc))
@@ -610,6 +667,29 @@ class DebugWindow(QMainWindow):
             decision.status in {"BAD", "CRITICAL"}
         )
 
+    def _show_camera_permission_warning(self, detail: str) -> None:
+        self._show_warning_dialog(
+            "摄像头权限不可用",
+            "EchoPosture 无法打开摄像头。\n\n"
+            "请在 Windows 设置 > 隐私和安全性 > 摄像头 中允许桌面应用访问摄像头，"
+            "确认没有其他程序独占摄像头，然后重新启动 EchoPosture。\n\n"
+            f"详细信息：{detail}",
+        )
+
+    def _show_camera_black_frame_warning(self, detail: str) -> None:
+        self._show_warning_dialog(
+            "摄像头画面不可用",
+            "EchoPosture 已取得摄像头访问权限，但摄像头输出是全黑或几乎全黑，"
+            "当前无法看清姿态。\n\n"
+            "请检查镜头遮挡、隐私挡片、驱动禁用、虚拟摄像头输出或环境光线，然后重新启动监测。\n\n"
+            f"详细信息：{detail}",
+        )
+
+    def _show_warning_dialog(self, title: str, message: str) -> None:
+        box = QMessageBox(QMessageBox.Warning, title, message, QMessageBox.Ok, self)
+        box.setWindowFlags(box.windowFlags() | Qt.WindowStaysOnTopHint)
+        box.exec_()
+
     def _human_reason(self, reason: str) -> str:
         if not reason:
             return "--"
@@ -682,6 +762,16 @@ def main() -> int:
             args.height,
             intervention_enabled=not args.self_test and not args.disable_intervention,
         )
+    except CameraPermissionError as exc:
+        QMessageBox.warning(
+            None,
+            "摄像头权限不可用",
+            "EchoPosture 无法打开摄像头。\n\n"
+            "请在 Windows 设置 > 隐私和安全性 > 摄像头 中允许桌面应用访问摄像头，"
+            "确认没有其他程序独占摄像头，然后重新启动 EchoPosture。\n\n"
+            f"详细信息：{exc}",
+        )
+        return 1
     except Exception as exc:
         QMessageBox.critical(None, "Startup error", str(exc))
         return 1

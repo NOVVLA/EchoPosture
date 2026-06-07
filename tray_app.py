@@ -11,7 +11,7 @@ import argparse
 import signal
 import sys
 from dataclasses import replace
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import List, Optional
 
 from PyQt5.QtCore import Qt, QTimer
@@ -22,6 +22,9 @@ from PyQt5.QtWidgets import (
     QDialog,
     QLabel,
     QMenu,
+    QMessageBox,
+    QPushButton,
+    QSlider,
     QStyle,
     QSystemTrayIcon,
     QWidget,
@@ -30,6 +33,8 @@ from PyQt5.QtWidgets import (
 
 from gpu_blur_overlay import GpuBlurOverlayController
 from vision_test import (
+    CameraBlackFrameError,
+    CameraPermissionError,
     HighPrecisionPostureAnalyzer,
     PostureDecision,
     VisionEngine,
@@ -98,7 +103,7 @@ class StatusPanel(QWidget):
         self.monitor = monitor
         self.setWindowTitle("EchoPosture")
         self.setWindowFlags(Qt.Tool | Qt.WindowStaysOnTopHint)
-        self.setFixedSize(260, 150)
+        self.setFixedSize(320, 285)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(18, 16, 18, 16)
@@ -107,9 +112,34 @@ class StatusPanel(QWidget):
         self.status_label = QLabel()
         self.dim_label = QLabel()
         self.blur_label = QLabel()
-        for label in (self.status_label, self.dim_label, self.blur_label):
+        self.max_dim_label = QLabel()
+        self.blur_scale_label = QLabel()
+        for label in (
+            self.status_label,
+            self.dim_label,
+            self.blur_label,
+            self.max_dim_label,
+            self.blur_scale_label,
+        ):
             label.setFont(QFont("Microsoft YaHei", 11))
             layout.addWidget(label)
+
+        self.max_dim_slider = QSlider(Qt.Horizontal)
+        self.max_dim_slider.setRange(0, 85)
+        self.max_dim_slider.setValue(round(self.monitor.overlay.max_dim_alpha * 100))
+        self.max_dim_slider.valueChanged.connect(self._visual_config_changed)
+        layout.addWidget(self.max_dim_slider)
+
+        self.blur_scale_slider = QSlider(Qt.Horizontal)
+        self.blur_scale_slider.setRange(0, 100)
+        self.blur_scale_slider.setValue(round(self.monitor.overlay.blur_scale * 100))
+        self.blur_scale_slider.valueChanged.connect(self._visual_config_changed)
+        layout.addWidget(self.blur_scale_slider)
+
+        self.max_effect_button = QPushButton("立即测试最深效果")
+        self.max_effect_button.clicked.connect(self.monitor.trigger_max_visual_effect)
+        layout.addWidget(self.max_effect_button)
+
         layout.addStretch(1)
         self.setStyleSheet(
             """
@@ -131,6 +161,18 @@ class StatusPanel(QWidget):
         self.status_label.setText(f"当前状态：{status}")
         self.dim_label.setText(f"压暗程度：{dim}%")
         self.blur_label.setText(f"模糊程度：{blur}%")
+        self._refresh_control_labels()
+
+    def _visual_config_changed(self) -> None:
+        self.monitor.overlay.set_visual_config(
+            self.max_dim_slider.value() / 100.0,
+            self.blur_scale_slider.value() / 100.0,
+        )
+        self._refresh_control_labels()
+
+    def _refresh_control_labels(self) -> None:
+        self.max_dim_label.setText(f"最深压暗：{self.max_dim_slider.value()}%")
+        self.blur_scale_label.setText(f"模糊强度：{self.blur_scale_slider.value()}%")
 
 
 class TrayMonitor:
@@ -151,7 +193,9 @@ class TrayMonitor:
             auto_calibrate=False,
             calibrated_distance_cm=calibrated_distance_cm,
         )
+        self._shown_warning_keys: set[str] = set()
         self.overlay = GpuBlurOverlayController(enabled=gpu_blur_enabled)
+        self.overlay.screen_capture_warning.connect(self._show_screen_capture_warning)
         self.last_decision: Optional[PostureDecision] = None
         self.last_calibration_sample: Optional[VisionSample] = None
         self.calibration_samples: List[VisionSample] = []
@@ -159,12 +203,20 @@ class TrayMonitor:
         self._calibrated = False
         self._monitoring_started = False
         self._intervention_candidate_started_at: Optional[datetime] = None
+        self._manual_effect_until: Optional[datetime] = None
         self.calibration_dialog: Optional[StartupCalibrationDialog] = None
         self.status_panel: Optional[StatusPanel] = None
 
         self.tray = QSystemTrayIcon(self._icon(), self.app)
         self.tray.setToolTip("EchoPosture")
         self.menu = QMenu()
+        self.recalibrate_action = QAction("立即重新校准", self.menu)
+        self.recalibrate_action.triggered.connect(self.recalibrate_now)
+        self.menu.addAction(self.recalibrate_action)
+        self.max_effect_action = QAction("立即测试最深效果", self.menu)
+        self.max_effect_action.triggered.connect(self.trigger_max_visual_effect)
+        self.menu.addAction(self.max_effect_action)
+        self.menu.addSeparator()
         self.stop_action = QAction("停止", self.menu)
         self.stop_action.triggered.connect(self.stop)
         self.menu.addAction(self.stop_action)
@@ -184,9 +236,14 @@ class TrayMonitor:
         self.countdown_timer.setInterval(1000)
 
     def start(self, show_calibration: bool = True) -> None:
-        self.engine.start()
+        try:
+            self.engine.start()
+        except CameraPermissionError as exc:
+            self._show_camera_permission_warning(str(exc))
+            raise
         self.engine.set_capture_fps(72.0)
         self.tray.show()
+        self._show_pending_screen_capture_warning()
         if show_calibration:
             self._start_calibration_prompt()
         else:
@@ -218,10 +275,57 @@ class TrayMonitor:
         self._tick()
         return self._calibrated
 
+    def recalibrate_now(self) -> None:
+        if self._stopping:
+            return
+
+        was_monitoring = self.timer.isActive()
+        self.timer.stop()
+        self.calibration_timer.stop()
+        self.countdown_timer.stop()
+        if self.calibration_dialog is not None:
+            self.calibration_dialog.close()
+            self.calibration_dialog = None
+
+        self.calibration_samples.clear()
+        self.last_calibration_sample = None
+        for _ in range(18):
+            self._capture_calibration_sample()
+            if self._stopping:
+                return
+
+        if self._calibrate_from_camera():
+            self._intervention_candidate_started_at = None
+            self._manual_effect_until = None
+            self.overlay.force_clear()
+            if self._monitoring_started or was_monitoring:
+                self.timer.start()
+            else:
+                self._start_monitoring()
+            self.tray.showMessage(
+                "EchoPosture",
+                "已按当前姿势重新校准。",
+                QSystemTrayIcon.Information,
+                2200,
+            )
+            return
+
+        if was_monitoring:
+            self.timer.start()
+        self.tray.showMessage(
+            "EchoPosture",
+            "重新校准失败：没有识别到可用姿态。",
+            QSystemTrayIcon.Warning,
+            4000,
+        )
+
     def _tick(self) -> None:
         try:
             sample = self.engine.read_sample()
             decision = self.analyzer.evaluate(sample)
+        except (CameraPermissionError, CameraBlackFrameError) as exc:
+            self._handle_camera_failure(exc)
+            return
         except Exception as exc:
             self.tray.showMessage(
                 "EchoPosture",
@@ -233,7 +337,25 @@ class TrayMonitor:
             return
 
         self.last_decision = decision
-        self.overlay.set_warning_active(self._should_intervene(decision))
+        self.overlay.set_warning_active(self._manual_effect_active() or self._should_intervene(decision))
+
+    def trigger_max_visual_effect(self) -> None:
+        self._manual_effect_until = datetime.now() + timedelta(seconds=8)
+        self.overlay.trigger_max_effect()
+        self.tray.showMessage(
+            "EchoPosture",
+            "已触发 8 秒最深压暗和模糊。",
+            QSystemTrayIcon.Information,
+            1800,
+        )
+
+    def _manual_effect_active(self) -> bool:
+        if self._manual_effect_until is None:
+            return False
+        if datetime.now() < self._manual_effect_until:
+            return True
+        self._manual_effect_until = None
+        return False
 
     def _start_calibration_prompt(self) -> None:
         self.calibration_dialog = StartupCalibrationDialog(seconds=5)
@@ -264,6 +386,9 @@ class TrayMonitor:
             self._start_monitoring()
             return
 
+        if self._stopping:
+            return
+
         self.tray.showMessage(
             "EchoPosture",
             "校准失败：没有识别到可用姿态。请重新启动并坐直。",
@@ -275,6 +400,9 @@ class TrayMonitor:
     def _capture_calibration_sample(self) -> None:
         try:
             sample = self.engine.read_sample()
+        except (CameraPermissionError, CameraBlackFrameError) as exc:
+            self._handle_camera_failure(exc)
+            return
         except Exception:
             return
         if (
@@ -335,6 +463,55 @@ class TrayMonitor:
             return
         self._monitoring_started = True
         self.timer.start()
+
+    def _handle_camera_failure(self, exc: Exception) -> None:
+        if isinstance(exc, CameraPermissionError):
+            self._show_camera_permission_warning(str(exc))
+        elif isinstance(exc, CameraBlackFrameError):
+            self._show_camera_black_frame_warning(str(exc))
+        self.stop()
+
+    def _show_camera_permission_warning(self, detail: str) -> None:
+        self._show_warning_once(
+            "camera_permission",
+            "摄像头权限不可用",
+            "EchoPosture 无法打开摄像头。\n\n"
+            "请在 Windows 设置 > 隐私和安全性 > 摄像头 中允许桌面应用访问摄像头，"
+            "确认没有其他程序独占摄像头，然后重新启动 EchoPosture。\n\n"
+            f"详细信息：{detail}",
+        )
+
+    def _show_camera_black_frame_warning(self, detail: str) -> None:
+        self._show_warning_once(
+            "camera_black_frame",
+            "摄像头画面不可用",
+            "EchoPosture 已取得摄像头访问权限，但摄像头输出是全黑或几乎全黑，"
+            "当前无法看清姿态。\n\n"
+            "请检查镜头遮挡、隐私挡片、驱动禁用、虚拟摄像头输出或环境光线，然后重新启动监测。\n\n"
+            f"详细信息：{detail}",
+        )
+
+    def _show_screen_capture_warning(self, detail: str) -> None:
+        self._show_warning_once(
+            "screen_capture_permission",
+            "屏幕捕获权限受限",
+            "EchoPosture 无法读取桌面画面用于 GPU 模糊，已切换到基础压暗 fallback。\n\n"
+            "请检查屏幕捕获权限、显卡/远程桌面限制或安全软件拦截。\n\n"
+            f"详细信息：{detail}",
+        )
+
+    def _show_pending_screen_capture_warning(self) -> None:
+        reason = self.overlay.screen_capture_warning_reason
+        if reason:
+            self._show_screen_capture_warning(reason)
+
+    def _show_warning_once(self, key: str, title: str, message: str) -> None:
+        if key in self._shown_warning_keys:
+            return
+        self._shown_warning_keys.add(key)
+        box = QMessageBox(QMessageBox.Warning, title, message, QMessageBox.Ok)
+        box.setWindowFlags(box.windowFlags() | Qt.WindowStaysOnTopHint)
+        box.exec_()
 
     def _should_intervene(self, decision: PostureDecision) -> bool:
         if decision.status not in {"BAD", "CRITICAL"}:

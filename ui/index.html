@@ -1,0 +1,539 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>EchoPosture · OCULI VERTEBRA</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='12' fill='%230c0d0f'/%3E%3Cpath d='M17 32q15-17 30 0q-15 17-30 0z' fill='none' stroke='%23eef1f4' stroke-width='4'/%3E%3Ccircle cx='33' cy='32' r='7' fill='%23ff2f43'/%3E%3C/svg%3E" />
+<style>
+  /* ============================================================
+     EchoPosture 核心选择页 — 纯离线 UI 原型
+     背景：深邃的亮光银 / 蓝图线稿 / 脊柱功能开关 / 眼睛总开关
+     无任何外部字体、库或网络依赖
+     ============================================================ */
+
+  :root{
+    --silver-hi:#eef1f4;
+    --silver:#c3c8cf;
+    --silver-lo:#7d838c;
+    --line:#d8dde3;
+    --line-dim:rgba(216,221,227,.35);
+    --red:#ff2f43;
+    --red-soft:#ff6473;
+    --bg-0:#0c0d0f;
+    --ink:#e8ebef;
+  }
+
+  *{ box-sizing:border-box; margin:0; padding:0; }
+
+  html,body{ height:100%; }
+
+  body{
+    font-family:"Helvetica Neue",Helvetica,Arial,"PingFang SC","Microsoft YaHei",sans-serif;
+    color:var(--ink);
+    overflow:hidden;
+    /* 深邃的亮光银：深石墨底色 + 偏移的银色高光 + 暗角 */
+    background:
+      radial-gradient(130% 120% at 32% 18%, #4a4f56 0%, #30343a 28%, #1c1f23 60%, #101113 86%, #08090a 100%);
+    position:relative;
+  }
+  /* 斜向的明亮银光扫光 + 拉丝金属质感 */
+  body::before{
+    content:"";
+    position:absolute; inset:0;
+    background:
+      linear-gradient(125deg, rgba(255,255,255,.10) 0%, rgba(255,255,255,0) 38%),
+      linear-gradient(305deg, rgba(255,255,255,.05) 0%, rgba(255,255,255,0) 42%),
+      repeating-linear-gradient(90deg, rgba(255,255,255,.018) 0 1px, rgba(0,0,0,0) 1px 3px);
+    pointer-events:none;
+    mix-blend-mode:screen;
+  }
+  /* 暗角 */
+  body::after{
+    content:"";
+    position:absolute; inset:0;
+    background:radial-gradient(120% 120% at 50% 45%, rgba(0,0,0,0) 52%, rgba(0,0,0,.55) 100%);
+    pointer-events:none;
+  }
+
+  .stage{
+    position:relative;
+    height:100vh;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    z-index:1;
+  }
+
+  svg.canvas{
+    height:96vh;
+    max-width:96vw;
+    width:auto;
+    overflow:visible;
+    user-select:none;
+  }
+
+  /* ---------- 线稿通用 ---------- */
+  .stroke{ fill:none; stroke:var(--line); }
+  .thin{ stroke-width:1; }
+  .hair{ stroke-width:.75; stroke:var(--line-dim); }
+  .dot{ stroke-dasharray:1 7; stroke-linecap:round; stroke:var(--line-dim); stroke-width:1; fill:none; }
+  .hit{ fill:transparent; pointer-events:all; }
+
+  /* ---------- 文字标签 ---------- */
+  .label{
+    fill:var(--silver-hi);
+    font-size:21px;
+    letter-spacing:.62em;
+    font-weight:300;
+  }
+  .tick{
+    fill:var(--silver-lo);
+    font-size:10px;
+    letter-spacing:.34em;
+    font-weight:300;
+  }
+
+  /* ============================================================
+     入场动画
+     ============================================================ */
+  /* 蓝图圈层缓慢自转 + 浮现 */
+  @keyframes drawIn{ to{ stroke-dashoffset:0; } }
+  @keyframes fadeUp{ from{ opacity:0; transform:translateY(14px);} to{ opacity:1; transform:translateY(0);} }
+  @keyframes fadeIn{ from{ opacity:0;} to{ opacity:1;} }
+  @keyframes spinIn{
+    from{ opacity:0; transform:rotate(-26deg) scale(.92); }
+    to{   opacity:.9; transform:rotate(0deg) scale(1); }
+  }
+  @keyframes vertIn{
+    0%{   opacity:0; transform:translateY(26px) scale(.6); }
+    70%{  opacity:1; transform:translateY(-3px) scale(1.04); }
+    100%{ opacity:1; transform:translateY(0) scale(1); }
+  }
+  @keyframes breathe{
+    0%,100%{ filter:drop-shadow(0 0 0 rgba(255,255,255,0)); }
+    50%{ filter:drop-shadow(0 0 6px rgba(255,255,255,.18)); }
+  }
+
+  /* 构造圈：以中心自转 */
+  .ring{ transform-box:fill-box; transform-origin:center; opacity:0; }
+  .play .ring{ animation:spinIn 2.4s cubic-bezier(.16,.8,.27,1) forwards; }
+  .play .ring.r2{ animation-delay:.25s; }
+  .play .ring.r3{ animation-delay:.45s; }
+
+  /* 描边线：用大 dash 做"绘制"效果 */
+  .ink{ stroke-dasharray:4000; stroke-dashoffset:4000; }
+  .play .ink{ animation:drawIn 2.2s ease forwards; }
+  .play .ink.d1{ animation-delay:.5s; }
+  .play .ink.d2{ animation-delay:.8s; }
+
+  /* 标签与刻度 */
+  .lab{ opacity:0; }
+  .play .lab{ animation:fadeUp .9s ease forwards; }
+  .play #oculi.lab{ animation-delay:1.5s; }
+  .play #vert.lab{ animation-delay:1.7s; }
+  .play .tickline{ opacity:0; animation:fadeIn 1.2s ease forwards; animation-delay:1.6s; }
+
+  /* ---------- 眼睛 ---------- */
+  #eyeGroup{ cursor:pointer; opacity:0; }
+  .play #eyeGroup{ animation:fadeIn 1s ease forwards; animation-delay:1.2s; }
+
+  #eyeShape{
+    transform-box:fill-box;
+    transform-origin:center;
+    transform:scaleY(.07);                 /* 默认闭眼 */
+    transition:transform 620ms cubic-bezier(.34,1.4,.5,1);
+  }
+  #eyeGroup.open #eyeShape{ transform:scaleY(1); }
+
+  #iris{ opacity:0; transition:opacity 240ms ease 120ms; }
+  #eyeGroup.open #iris{ opacity:1; }
+
+  /* 眼框柔光 */
+  #eyeHalo{
+    opacity:0;
+    transform-box:fill-box; transform-origin:center;
+    transform:scale(.6);
+    transition:opacity 500ms ease, transform 600ms cubic-bezier(.2,.8,.2,1);
+    pointer-events:none;
+  }
+  #eyeGroup.open #eyeHalo{ opacity:.9; transform:scale(1); }
+
+  #eyeGroup:hover #eyeShape{ filter:drop-shadow(0 0 5px rgba(255,255,255,.25)); }
+
+  /* ---------- 脊柱（功能开关）---------- */
+  .vert{
+    cursor:pointer;
+    transform-box:fill-box;
+    transform-origin:center;
+    opacity:0;
+  }
+  .play .vert{ animation:vertIn 1.05s cubic-bezier(.2,.9,.25,1) forwards; }
+
+  .vert .body{
+    transition:filter 480ms ease;
+  }
+  .vert:hover .body{ filter:drop-shadow(0 0 7px rgba(255,255,255,.45)); }
+
+  /* 点亮态：变红 + 柔光呼吸 */
+  .vert.on .body{ animation:breatheRed 3.2s ease-in-out infinite; }
+  @keyframes breatheRed{
+    0%,100%{ filter:drop-shadow(0 0 6px rgba(255,47,67,.55)); }
+    50%{ filter:drop-shadow(0 0 16px rgba(255,47,67,.95)); }
+  }
+  .vert .fillW{ transition:opacity 520ms ease; }
+  .vert .fillR{ opacity:0; transition:opacity 520ms ease; }
+  .vert.on .fillW{ opacity:0; }
+  .vert.on .fillR{ opacity:1; }
+
+  /* 点击瞬间的柔光环 */
+  .flash{
+    transform-box:fill-box; transform-origin:center;
+    opacity:0; pointer-events:none;
+  }
+  .vert.flash-on .flash{ animation:flashPop .7s ease-out; }
+  @keyframes flashPop{
+    0%{ opacity:.8; transform:scale(.5); }
+    100%{ opacity:0; transform:scale(2.4); }
+  }
+
+  .vert .vlabel{
+    fill:var(--silver-lo);
+    font-size:9.5px; letter-spacing:.3em; font-weight:300;
+    opacity:0; transition:opacity .4s ease, fill .4s ease;
+    pointer-events:none;
+  }
+  .vert:hover .vlabel,
+  .vert.on .vlabel{ opacity:1; }
+  .vert.on .vlabel{ fill:var(--red-soft); }
+
+  /* ---------- 状态读出面板 ---------- */
+  .readout{
+    position:fixed; left:38px; bottom:34px; z-index:5;
+    font-weight:300; color:var(--silver);
+    opacity:0; animation:fadeUp 1s ease forwards; animation-delay:2.1s;
+    pointer-events:none;
+  }
+  .readout .ttl{ font-size:11px; letter-spacing:.42em; color:var(--silver-lo); }
+  .readout .state{
+    font-size:15px; letter-spacing:.22em; margin-top:8px;
+    color:var(--silver-lo); transition:color .4s ease;
+  }
+  .readout.live .state{ color:var(--silver-hi); }
+  .readout .mods{ margin-top:14px; font-size:10.5px; letter-spacing:.18em; line-height:1.9; color:var(--silver-lo); }
+  .readout .mods .m{ opacity:.35; transition:opacity .4s ease, color .4s ease; }
+  .readout .mods .m.act{ opacity:1; color:var(--red-soft); }
+  .readout .mods .m.act::before{ content:"● "; color:var(--red); }
+  .readout .mods .m::before{ content:"○ "; }
+
+  .hint{
+    position:fixed; right:40px; bottom:34px; z-index:5;
+    font-size:10.5px; letter-spacing:.26em; color:var(--silver-lo);
+    font-weight:300; opacity:0;
+    animation:fadeIn 1s ease forwards; animation-delay:2.4s;
+  }
+</style>
+</head>
+<body>
+  <div class="stage">
+    <svg class="canvas" viewBox="0 0 1180 1380" id="root">
+
+      <!-- ===== 渐变 / 滤镜定义 ===== -->
+      <defs>
+        <!-- 椎骨白瓷光泽 -->
+        <linearGradient id="vGloss" x1="0" y1="0" x2="0.85" y2="1">
+          <stop offset="0%"  stop-color="#ffffff"/>
+          <stop offset="42%" stop-color="#e7eaee"/>
+          <stop offset="100%" stop-color="#9aa0a8"/>
+        </linearGradient>
+        <!-- 椎骨点亮红 -->
+        <linearGradient id="vRed" x1="0" y1="0" x2="0.85" y2="1">
+          <stop offset="0%"  stop-color="#ff8a96"/>
+          <stop offset="40%" stop-color="#ff3145"/>
+          <stop offset="100%" stop-color="#b00d1d"/>
+        </linearGradient>
+        <!-- 眼球虹膜 -->
+        <radialGradient id="irisGrad" cx="50%" cy="45%" r="55%">
+          <stop offset="0%"  stop-color="#aeb7c2"/>
+          <stop offset="55%" stop-color="#5d646e"/>
+          <stop offset="100%" stop-color="#23272d"/>
+        </radialGradient>
+        <radialGradient id="halo" cx="50%" cy="50%" r="50%">
+          <stop offset="0%"  stop-color="rgba(255,255,255,.5)"/>
+          <stop offset="60%" stop-color="rgba(255,255,255,.08)"/>
+          <stop offset="100%" stop-color="rgba(255,255,255,0)"/>
+        </radialGradient>
+        <radialGradient id="flashG" cx="50%" cy="50%" r="50%">
+          <stop offset="0%"  stop-color="rgba(255,120,135,.9)"/>
+          <stop offset="100%" stop-color="rgba(255,47,67,0)"/>
+        </radialGradient>
+      </defs>
+
+      <!-- ============================================================
+           构造蓝图层（圆 / 十字 / 虚线）
+           ============================================================ -->
+      <g stroke-linecap="round">
+        <!-- 头部大圆 -->
+        <circle class="ring stroke hair" cx="648" cy="335" r="168"/>
+        <!-- 脊柱上的两个交错构造圆，模仿参考图的 S 结构 -->
+        <circle class="ring r2 stroke hair" cx="560" cy="640" r="150"/>
+        <circle class="ring r3 stroke hair" cx="720" cy="820" r="150"/>
+        <ellipse class="ring r3 stroke hair" cx="612" cy="1060" rx="150" ry="92"/>
+
+        <!-- 中央垂直十字主轴 -->
+        <line class="ink d1 stroke thin" x1="640" y1="150" x2="640" y2="1190"/>
+        <!-- 头顶水平基准 -->
+        <line class="ink d1 stroke hair" x1="470" y1="335" x2="820" y2="335"/>
+      </g>
+
+      <!-- ============================================================
+           头部侧脸线稿
+           ============================================================ -->
+      <g>
+        <!-- 颅顶到额、鼻、唇、颏、颈：一条连续的优雅曲线 -->
+        <path class="ink d1 stroke thin" d="
+          M 612 196
+          C 700 168, 800 220, 812 318
+          C 818 372, 806 404, 786 430
+          C 800 446, 802 462, 788 470
+          C 778 476, 770 472, 766 466
+          C 760 488, 742 506, 726 512
+          C 740 520, 742 540, 728 556
+          C 716 570, 702 600, 700 642
+        "/>
+        <!-- 后脑到颈背 -->
+        <path class="ink d1 stroke thin" d="
+          M 612 196
+          C 540 224, 500 300, 512 372
+          C 520 420, 548 452, 574 470
+        "/>
+        <!-- 鼻尖小钩 -->
+        <path class="ink d2 stroke thin" d="M 786 430 C 792 436, 790 444, 782 446"/>
+      </g>
+
+      <!-- ===== OCULI 标签 + 指向眼睛的引线 ===== -->
+      <line class="tickline stroke hair" x1="452" y1="332" x2="612" y2="332"/>
+      <text id="oculi" class="label lab" x="300" y="340" text-anchor="end">OCULI</text>
+
+      <!-- ===== VERTEBRA 竖排标签 + 刻度引线 ===== -->
+      <g id="vert" class="lab">
+        <text class="label" x="372" y="560">V</text>
+        <text class="label" x="372" y="630">E</text>
+        <text class="label" x="372" y="700">R</text>
+        <text class="label" x="372" y="770">T</text>
+        <text class="label" x="372" y="840">E</text>
+        <text class="label" x="372" y="910">B</text>
+        <text class="label" x="372" y="980">R</text>
+        <text class="label" x="372" y="1050">A</text>
+      </g>
+
+      <!-- ============================================================
+           眼睛 = 总监测开关
+           ============================================================ -->
+      <g id="eyeGroup" transform="translate(726,332)" role="switch" aria-label="监测总开关" aria-checked="false" tabindex="0">
+        <circle class="hit" cx="0" cy="0" r="66"/>
+        <!-- 睁眼时的柔光 -->
+        <circle id="eyeHalo" cx="0" cy="0" r="54" fill="url(#halo)"/>
+
+        <!-- 眼形：闭合时纵向压扁成一条线 -->
+        <g id="eyeShape">
+          <!-- 杏仁眼框 -->
+          <path d="M -46 0 Q 0 -27 46 0 Q 0 27 -46 0 Z"
+                fill="#0e0f12" stroke="var(--line)" stroke-width="1.4"/>
+          <!-- 眼白 -->
+          <clipPath id="eyeClip"><path d="M -45 0 Q 0 -26 45 0 Q 0 26 -45 0 Z"/></clipPath>
+          <g clip-path="url(#eyeClip)">
+            <rect x="-46" y="-28" width="92" height="56" fill="#eef1f4"/>
+            <g id="iris">
+              <circle cx="6" cy="0" r="17" fill="url(#irisGrad)"/>
+              <circle cx="6" cy="0" r="7.5" fill="#0c0d0f"/>
+              <circle cx="1" cy="-5" r="3" fill="#ffffff" opacity=".9"/>
+            </g>
+          </g>
+          <!-- 上睑加深 -->
+          <path d="M -46 0 Q 0 -27 46 0" fill="none" stroke="var(--silver-hi)" stroke-width="1.8" stroke-linecap="round"/>
+        </g>
+      </g>
+
+      <!-- ============================================================
+           脊柱：功能开关由 JS 生成并挂入此层
+           ============================================================ -->
+      <g id="spine"></g>
+
+    </svg>
+  </div>
+
+  <!-- 状态读出 -->
+  <div class="readout" id="readout">
+    <div class="ttl">SYSTEM</div>
+    <div class="state" id="stateText">监测已暂停 · STANDBY</div>
+    <div class="mods" id="modList"></div>
+  </div>
+  <div class="hint">点击眼睛启停监测 · 点击椎骨切换功能</div>
+
+<script>
+/* ============================================================
+   EchoPosture 核心选择页 · 交互逻辑（纯前端，无外部依赖）
+   ============================================================ */
+(function(){
+  const SVGNS = "http://www.w3.org/2000/svg";
+  const spine = document.getElementById("spine");
+
+  // 7 节椎骨 → 7 个核心功能，沿 S 形脊柱自上而下排布
+  // x,y 为中心坐标，rot 为倾角（贴合脊柱曲线）
+  const VERTEBRAE = [
+    { id:"calib",  name:"CALIBRATION", cn:"启动校准",        x:596, y:486, rot:-12 },
+    { id:"prec",   name:"PRECISION",   cn:"高精度评分",      x:606, y:574, rot:2   },
+    { id:"perf",   name:"PERFORMANCE", cn:"72FPS 采集",      x:634, y:662, rot:14  },
+    { id:"dim",    name:"DIMMING",     cn:"压暗干预",        x:658, y:752, rot:9   },
+    { id:"blur",   name:"BLUR",        cn:"GPU 模糊",        x:648, y:844, rot:-7  },
+    { id:"pres",   name:"PRESENCE",    cn:"离开/多人检测",   x:620, y:936, rot:-17 },
+    { id:"ident",  name:"IDENTITY",    cn:"换人保护",        x:600, y:1026,rot:-11 },
+  ];
+
+  // 椎骨"透镜"主体形状（横向，中心在原点，约 152×64）
+  const VERT_PATH = "M -76 0 C -52 -32, 52 -32, 76 0 C 52 32, -52 32, -76 0 Z";
+  // 顶部高光（更小的透镜）
+  const GLOSS_PATH = "M -58 -7 C -38 -22, 38 -22, 58 -7 C 38 -14, -38 -14, -58 -7 Z";
+
+  function el(tag, attrs){
+    const n = document.createElementNS(SVGNS, tag);
+    for(const k in attrs) n.setAttribute(k, attrs[k]);
+    return n;
+  }
+
+  const state = { eye:false, on:new Set() };
+
+  // ---- 构建每节椎骨 ----
+  // 注意：定位（translate/rotate）放在外层 g 的属性上；CSS 入场/缩放动画作用于
+  // 内层 g。否则 CSS transform 会覆盖 SVG 的 transform 属性，导致定位失效。
+  VERTEBRAE.forEach((v, i) => {
+    const pos = el("g", { transform:`translate(${v.x} ${v.y}) rotate(${v.rot})` });
+    const g = el("g", { class:"vert", id:"v-"+v.id,
+      style:`animation-delay:${1.45 + i*0.12}s`, role:"switch",
+      "aria-label":v.name + " " + v.cn, "aria-checked":"false", tabindex:"0" });
+
+    g.appendChild(el("rect", { class:"hit", x:-88, y:-42, width:176, height:84, rx:42 }));
+
+    // 点击柔光环
+    g.appendChild(el("circle", { class:"flash", cx:0, cy:0, r:60, fill:"url(#flashG)" }));
+
+    const body = el("g", { class:"body" });
+    // 白瓷态
+    body.appendChild(el("path", { class:"fillW", d:VERT_PATH, fill:"url(#vGloss)",
+      stroke:"rgba(255,255,255,.55)", "stroke-width":".75" }));
+    // 红色态（叠加，初始透明）
+    body.appendChild(el("path", { class:"fillR", d:VERT_PATH, fill:"url(#vRed)",
+      stroke:"rgba(255,120,135,.7)", "stroke-width":".75" }));
+    // 高光
+    body.appendChild(el("path", { class:"fillW", d:GLOSS_PATH, fill:"rgba(255,255,255,.55)" }));
+    g.appendChild(body);
+
+    // 引线 + 标签（向左指向 VERTEBRA 文字一侧）
+    g.appendChild(el("line", { class:"vlabel", x1:-78, y1:0, x2:-150, y2:0,
+      stroke:"currentColor", "stroke-width":".75", "stroke-dasharray":"1 5" }));
+    const t = el("text", { class:"vlabel", x:-158, y:3.5, "text-anchor":"end" });
+    t.textContent = v.name;
+    g.appendChild(t);
+
+    g.addEventListener("click", (e)=>{ e.stopPropagation(); toggleVert(v, g); });
+    g.addEventListener("keydown", (e)=>{
+      if(e.key === "Enter" || e.key === " "){
+        e.preventDefault();
+        toggleVert(v, g);
+      }
+    });
+    pos.appendChild(g);
+    spine.appendChild(pos);
+  });
+
+  // ---- 椎骨开关 ----
+  function toggleVert(v, g){
+    if(!state.eye){            // 未开启监测时，先柔性提示让用户开眼
+      pulseEye();
+      return;
+    }
+    const now = !state.on.has(v.id);
+    if(now) state.on.add(v.id); else state.on.delete(v.id);
+    g.classList.toggle("on", now);
+    g.setAttribute("aria-checked", String(now));
+
+    // 触发一次柔光环
+    g.classList.remove("flash-on");
+    void g.offsetWidth;                 // 重排以重启动画
+    g.classList.add("flash-on");
+    setTimeout(()=>g.classList.remove("flash-on"), 720);
+
+    updateReadout();
+  }
+
+  // ---- 眼睛总开关 ----
+  const eyeGroup = document.getElementById("eyeGroup");
+  eyeGroup.addEventListener("click", ()=>{
+    state.eye = !state.eye;
+    eyeGroup.classList.toggle("open", state.eye);
+    eyeGroup.setAttribute("aria-checked", String(state.eye));
+    if(!state.eye){
+      // 关闭监测：所有椎骨随之熄灭
+      state.on.clear();
+      document.querySelectorAll(".vert.on").forEach(n=>{
+        n.classList.remove("on");
+        n.setAttribute("aria-checked", "false");
+      });
+    }
+    updateReadout();
+  });
+  eyeGroup.addEventListener("keydown", (e)=>{
+    if(e.key === "Enter" || e.key === " "){
+      e.preventDefault();
+      eyeGroup.dispatchEvent(new MouseEvent("click", { bubbles:true }));
+    }
+  });
+
+  function pulseEye(){
+    eyeGroup.animate(
+      [{ filter:"drop-shadow(0 0 0 rgba(255,47,67,0))" },
+       { filter:"drop-shadow(0 0 12px rgba(255,47,67,.8))" },
+       { filter:"drop-shadow(0 0 0 rgba(255,47,67,0))" }],
+      { duration:700, easing:"ease-out" });
+  }
+
+  // ---- 状态读出 ----
+  const readout   = document.getElementById("readout");
+  const stateText = document.getElementById("stateText");
+  const modList   = document.getElementById("modList");
+
+  // 初始化模块列表
+  VERTEBRAE.forEach(v=>{
+    const div = document.createElement("div");
+    div.className = "m"; div.id = "m-"+v.id;
+    div.textContent = v.name + "  " + v.cn;
+    modList.appendChild(div);
+  });
+
+  function updateReadout(){
+    readout.classList.toggle("live", state.eye);
+    if(!state.eye){
+      stateText.textContent = "监测已暂停 · STANDBY";
+    }else{
+      const n = state.on.size;
+      stateText.textContent = n>0
+        ? `监测中 · ${n} 项功能已启用`
+        : "监测中 · 等待启用功能";
+    }
+    VERTEBRAE.forEach(v=>{
+      document.getElementById("m-"+v.id)
+        .classList.toggle("act", state.eye && state.on.has(v.id));
+    });
+  }
+
+  // ---- 入场动画：下一帧给 svg 根加 .play，触发全部 CSS 入场动画 ----
+  requestAnimationFrame(()=> requestAnimationFrame(()=>{
+    document.getElementById("root").classList.add("play");
+  }));
+
+  updateReadout();
+})();
+</script>
+</body>
+</html>
