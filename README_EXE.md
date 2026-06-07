@@ -42,4 +42,4 @@ Use `EchoPosture.exe --disable-gpu-blur` to skip the native host and use the PyQ
 
 Use `EchoPosture.exe --debug-ui` to open the older visual debug window.
 
-The offline UI prototype is included at `ui/index.html`. It is a non-invasive HTML/SVG prototype and does not connect to the camera, tray runtime, or overlay system.
+The offline UI prototype is included at `ui/index.html`. It is a frozen visual reference file for the OCULI / VERTEBRA HTML sample; do not change that file for general fixes or enhancements unless the UI reference itself is explicitly requested. It is non-invasive and does not connect to the camera, tray runtime, or overlay system.

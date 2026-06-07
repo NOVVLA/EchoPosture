@@ -4,7 +4,6 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>EchoPosture · OCULI VERTEBRA</title>
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='12' fill='%230c0d0f'/%3E%3Cpath d='M17 32q15-17 30 0q-15 17-30 0z' fill='none' stroke='%23eef1f4' stroke-width='4'/%3E%3Ccircle cx='33' cy='32' r='7' fill='%23ff2f43'/%3E%3C/svg%3E" />
 <style>
   /* ============================================================
      EchoPosture 核心选择页 — 纯离线 UI 原型
@@ -78,7 +77,6 @@
   .thin{ stroke-width:1; }
   .hair{ stroke-width:.75; stroke:var(--line-dim); }
   .dot{ stroke-dasharray:1 7; stroke-linecap:round; stroke:var(--line-dim); stroke-width:1; fill:none; }
-  .hit{ fill:transparent; pointer-events:all; }
 
   /* ---------- 文字标签 ---------- */
   .label{
@@ -330,8 +328,7 @@
       <!-- ============================================================
            眼睛 = 总监测开关
            ============================================================ -->
-      <g id="eyeGroup" transform="translate(726,332)" role="switch" aria-label="监测总开关" aria-checked="false" tabindex="0">
-        <circle class="hit" cx="0" cy="0" r="66"/>
+      <g id="eyeGroup" transform="translate(726,332)" role="switch" aria-label="监测总开关">
         <!-- 睁眼时的柔光 -->
         <circle id="eyeHalo" cx="0" cy="0" r="54" fill="url(#halo)"/>
 
@@ -410,10 +407,7 @@
   VERTEBRAE.forEach((v, i) => {
     const pos = el("g", { transform:`translate(${v.x} ${v.y}) rotate(${v.rot})` });
     const g = el("g", { class:"vert", id:"v-"+v.id,
-      style:`animation-delay:${1.45 + i*0.12}s`, role:"switch",
-      "aria-label":v.name + " " + v.cn, "aria-checked":"false", tabindex:"0" });
-
-    g.appendChild(el("rect", { class:"hit", x:-88, y:-42, width:176, height:84, rx:42 }));
+      style:`animation-delay:${1.45 + i*0.12}s` });
 
     // 点击柔光环
     g.appendChild(el("circle", { class:"flash", cx:0, cy:0, r:60, fill:"url(#flashG)" }));
@@ -437,12 +431,6 @@
     g.appendChild(t);
 
     g.addEventListener("click", (e)=>{ e.stopPropagation(); toggleVert(v, g); });
-    g.addEventListener("keydown", (e)=>{
-      if(e.key === "Enter" || e.key === " "){
-        e.preventDefault();
-        toggleVert(v, g);
-      }
-    });
     pos.appendChild(g);
     spine.appendChild(pos);
   });
@@ -456,7 +444,6 @@
     const now = !state.on.has(v.id);
     if(now) state.on.add(v.id); else state.on.delete(v.id);
     g.classList.toggle("on", now);
-    g.setAttribute("aria-checked", String(now));
 
     // 触发一次柔光环
     g.classList.remove("flash-on");
@@ -472,22 +459,12 @@
   eyeGroup.addEventListener("click", ()=>{
     state.eye = !state.eye;
     eyeGroup.classList.toggle("open", state.eye);
-    eyeGroup.setAttribute("aria-checked", String(state.eye));
     if(!state.eye){
       // 关闭监测：所有椎骨随之熄灭
       state.on.clear();
-      document.querySelectorAll(".vert.on").forEach(n=>{
-        n.classList.remove("on");
-        n.setAttribute("aria-checked", "false");
-      });
+      document.querySelectorAll(".vert.on").forEach(n=>n.classList.remove("on"));
     }
     updateReadout();
-  });
-  eyeGroup.addEventListener("keydown", (e)=>{
-    if(e.key === "Enter" || e.key === " "){
-      e.preventDefault();
-      eyeGroup.dispatchEvent(new MouseEvent("click", { bubbles:true }));
-    }
   });
 
   function pulseEye(){

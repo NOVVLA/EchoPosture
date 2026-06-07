@@ -4,7 +4,7 @@
 
 ### Added
 
-- Added `ui/index.html` as a non-invasive offline HTML/SVG prototype that replicates the OCULI / VERTEBRA UI sample with an eye master switch, vertebra feature switches, status readout, keyboard focus, and accessible switch states.
+- Added `ui/index.html` as a non-invasive offline HTML/SVG prototype that replicates the frozen OCULI / VERTEBRA UI sample with an eye master switch, vertebra feature switches, and status readout.
 - Added tray controls for immediate recalibration, max visual effect testing, max dimming, and blur strength adjustment.
 
 ### Changed
@@ -15,7 +15,7 @@
 ### Fixed
 
 - Added dedicated warnings for camera permission failures, black camera frames, and screen capture limits.
-- Improved the offline UI hit targets so SVG switches can be clicked reliably.
+- Documented `ui/index.html` as a frozen visual reference file that should not be changed unless the UI reference itself is explicitly requested.
 
 ## 2026-06-02
 
