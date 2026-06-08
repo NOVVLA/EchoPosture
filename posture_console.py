@@ -37,11 +37,12 @@ from PyQt5.QtGui import (
     QPainter,
     QPainterPath,
     QPen,
+    QPixmap,
     QRadialGradient,
 )
 from PyQt5.QtSvg import QGraphicsSvgItem, QSvgRenderer
 from PyQt5.QtWidgets import (
-    QGraphicsDropShadowEffect,
+    QGraphicsItem,
     QGraphicsObject,
     QGraphicsScene,
     QGraphicsView,
@@ -197,15 +198,12 @@ class EyeItem(QGraphicsObject):
     def __init__(self) -> None:
         super().__init__()
         self._eye_open = 0.0
+        self._pulse = 0.0       # 红色提示脉冲 0..1（手绘，不用 graphics effect）
         self._hover = False
         self.setAcceptHoverEvents(True)
         self.setOpacity(0.0)  # 入场前隐藏
-        self._effect = QGraphicsDropShadowEffect()
-        self._effect.setColor(QColor(255, 255, 255, 0))
-        self._effect.setOffset(0, 0)
-        self._effect.setBlurRadius(0)
-        self.setGraphicsEffect(self._effect)
         self._pulse_anim: Optional[QPropertyAnimation] = None
+        self.setToolTip("监测总开关 · 点击启停")
 
     # ---- 动画属性：睁眼程度 0(闭)..1(睁) ----
     def _get_eye_open(self) -> float:
@@ -217,8 +215,17 @@ class EyeItem(QGraphicsObject):
 
     eyeOpen = pyqtProperty(float, _get_eye_open, _set_eye_open)
 
+    def _get_pulse(self) -> float:
+        return self._pulse
+
+    def _set_pulse(self, value: float) -> None:
+        self._pulse = value
+        self.update()
+
+    pulseGlow = pyqtProperty(float, _get_pulse, _set_pulse)
+
     def boundingRect(self) -> QRectF:
-        return QRectF(-70, -70, 140, 140)
+        return QRectF(-78, -78, 156, 156)
 
     def shape(self) -> QPainterPath:
         path = QPainterPath()
@@ -234,34 +241,24 @@ class EyeItem(QGraphicsObject):
         anim.start(QPropertyAnimation.DeleteWhenStopped)
 
     def pulse(self) -> None:
-        """监测未开启时点击椎骨的柔性提示：眼睛红色脉冲一下。"""
-        self._effect.setColor(QColor(255, 47, 67))
-        anim = QPropertyAnimation(self._effect, b"blurRadius", self)
+        """监测未开启时点击椎骨的柔性提示：眼睛红色脉冲一下（手绘光环）。"""
+        anim = QPropertyAnimation(self, b"pulseGlow", self)
         anim.setDuration(700)
-        anim.setStartValue(0)
-        anim.setKeyValueAt(0.5, 14)
-        anim.setEndValue(0)
+        anim.setStartValue(0.0)
+        anim.setKeyValueAt(0.5, 1.0)
+        anim.setEndValue(0.0)
         anim.setEasingCurve(QEasingCurve.OutCubic)
-        anim.finished.connect(self._restore_hover_effect)
         anim.start(QPropertyAnimation.DeleteWhenStopped)
         self._pulse_anim = anim
 
-    def _restore_hover_effect(self) -> None:
-        if self._hover:
-            self._effect.setColor(QColor(255, 255, 255))
-            self._effect.setBlurRadius(6)
-        else:
-            self._effect.setBlurRadius(0)
-
     def hoverEnterEvent(self, event) -> None:
         self._hover = True
-        self._effect.setColor(QColor(255, 255, 255))
-        self._effect.setBlurRadius(6)
+        self.update()
         super().hoverEnterEvent(event)
 
     def hoverLeaveEvent(self, event) -> None:
         self._hover = False
-        self._effect.setBlurRadius(0)
+        self.update()
         super().hoverLeaveEvent(event)
 
     def mousePressEvent(self, event) -> None:
@@ -275,6 +272,29 @@ class EyeItem(QGraphicsObject):
     def paint(self, painter: QPainter, option, widget=None) -> None:
         painter.setRenderHint(QPainter.Antialiasing, True)
         t = self._eye_open
+
+        # 红色提示脉冲（手绘外光环，替代原 drop-shadow）
+        if self._pulse > 0.001:
+            pr = 50 + 18 * self._pulse
+            pg = QRadialGradient(QPointF(0, 0), pr)
+            a = int(200 * self._pulse)
+            pg.setColorAt(0.55, QColor(255, 47, 67, 0))
+            pg.setColorAt(0.85, QColor(255, 47, 67, a))
+            pg.setColorAt(1.0, QColor(255, 47, 67, 0))
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(QBrush(pg))
+            painter.drawEllipse(QPointF(0, 0), pr, pr)
+
+        # hover 白色微光环（手绘，替代原 drop-shadow）
+        if self._hover:
+            hr = 58
+            hg = QRadialGradient(QPointF(0, 0), hr)
+            hg.setColorAt(0.6, QColor(255, 255, 255, 0))
+            hg.setColorAt(0.86, QColor(255, 255, 255, 60))
+            hg.setColorAt(1.0, QColor(255, 255, 255, 0))
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(QBrush(hg))
+            painter.drawEllipse(QPointF(0, 0), hr, hr)
 
         # 柔光 halo（睁眼淡入、放大）
         if t > 0.001:
@@ -356,12 +376,11 @@ class VertebraItem(QGraphicsObject):
         self._body = _outline_path(_VERT_OUTLINE)
         self._gloss = _outline_path(_GLOSS_OUTLINE)
 
-        self._effect = QGraphicsDropShadowEffect()
-        self._effect.setOffset(0, 0)
-        self._effect.setColor(QColor(255, 255, 255, 0))
-        self._effect.setBlurRadius(0)
-        self.setGraphicsEffect(self._effect)
+        self._glow = 0.0        # 红色辉光呼吸 0..1（手绘，不用 graphics effect）
         self._breathe: Optional[QPropertyAnimation] = None
+
+        verb = {"toggle": "点击切换", "action": "点击触发"}.get(spec.kind, "即将开放")
+        self.setToolTip(f"{spec.cn}（{spec.name}） — {verb}")
 
     # ---- 动画属性 ----
     def _get_on(self) -> float:
@@ -373,6 +392,15 @@ class VertebraItem(QGraphicsObject):
 
     on = pyqtProperty(float, _get_on, _set_on)
 
+    def _get_glow(self) -> float:
+        return self._glow
+
+    def _set_glow(self, value: float) -> None:
+        self._glow = value
+        self.update()
+
+    glow = pyqtProperty(float, _get_glow, _set_glow)
+
     def _get_flash(self) -> float:
         return self._flash
 
@@ -383,8 +411,8 @@ class VertebraItem(QGraphicsObject):
     flash = pyqtProperty(float, _get_flash, _set_flash)
 
     def boundingRect(self) -> QRectF:
-        # 含左侧引线/标签 + 点击柔光环（r≈60）
-        return QRectF(-360, -65, 440, 130)
+        # 含左侧引线/标签 + 点击柔光环 + 呼吸辉光
+        return QRectF(-360, -95, 440, 190)
 
     def shape(self) -> QPainterPath:
         # 命中区仅限透镜本体，避免点到标签
@@ -403,14 +431,18 @@ class VertebraItem(QGraphicsObject):
             anim.start(QPropertyAnimation.DeleteWhenStopped)
         else:
             self._set_on(target)
-        self._update_glow(active)
+        self._update_glow(active and self._enabled_visual)
 
     def set_enabled_visual(self, enabled: bool) -> None:
         """眼睛闭合时椎骨变灰不可点（仅视觉，不改后端开关值）。"""
+        if enabled == self._enabled_visual:
+            return  # 脏检查：状态没变就不重绘
         self._enabled_visual = enabled
         self.setOpacity(1.0 if enabled else 0.32)
         if not enabled:
             self._update_glow(False)
+        elif self._on > 0.5:
+            self._update_glow(True)
         self.update()
 
     def do_flash(self) -> None:
@@ -422,36 +454,29 @@ class VertebraItem(QGraphicsObject):
         anim.start(QPropertyAnimation.DeleteWhenStopped)
 
     def _update_glow(self, active: bool) -> None:
+        """on 时启动手绘红色辉光呼吸（仅 self.update()，无 graphics effect）。"""
         if self._breathe is not None:
             self._breathe.stop()
             self._breathe = None
-        if active and self._enabled_visual:
-            self._effect.setColor(QColor(255, 47, 67))
-            anim = QPropertyAnimation(self._effect, b"blurRadius", self)
+        if active:
+            anim = QPropertyAnimation(self, b"glow", self)
             anim.setDuration(3200)
-            anim.setStartValue(6)
-            anim.setKeyValueAt(0.5, 16)
-            anim.setEndValue(6)
+            anim.setStartValue(0.35)
+            anim.setKeyValueAt(0.5, 1.0)
+            anim.setEndValue(0.35)
             anim.setLoopCount(-1)
             anim.start()
             self._breathe = anim
-        elif self._hover and self._enabled_visual:
-            self._effect.setColor(QColor(255, 255, 255))
-            self._effect.setBlurRadius(7)
         else:
-            self._effect.setBlurRadius(0)
+            self._set_glow(0.0)
 
     def hoverEnterEvent(self, event) -> None:
         self._hover = True
-        if self._on < 0.5:
-            self._update_glow(False)
         self.update()
         super().hoverEnterEvent(event)
 
     def hoverLeaveEvent(self, event) -> None:
         self._hover = False
-        if self._on < 0.5:
-            self._update_glow(False)
         self.update()
         super().hoverLeaveEvent(event)
 
@@ -465,13 +490,35 @@ class VertebraItem(QGraphicsObject):
 
     def paint(self, painter: QPainter, option, widget=None) -> None:
         painter.setRenderHint(QPainter.Antialiasing, True)
+        on = self._on
 
-        # 点击柔光环
+        # 红色呼吸辉光（手绘，替代 drop-shadow）——画在本体下方
+        if on > 0.01 and self._glow > 0.01:
+            gr = 54 + 16 * self._glow
+            a = int(130 * self._glow * on)
+            gg = QRadialGradient(QPointF(0, 0), gr)
+            gg.setColorAt(0.45, QColor(255, 47, 67, 0))
+            gg.setColorAt(0.78, QColor(255, 47, 67, a))
+            gg.setColorAt(1.0, QColor(255, 47, 67, 0))
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(QBrush(gg))
+            painter.drawEllipse(QPointF(0, 0), gr, gr)
+        # hover 白色微光（仅未点亮时）
+        elif self._hover and on < 0.5:
+            hr = 50
+            hg = QRadialGradient(QPointF(0, 0), hr)
+            hg.setColorAt(0.5, QColor(255, 255, 255, 0))
+            hg.setColorAt(0.82, QColor(255, 255, 255, 55))
+            hg.setColorAt(1.0, QColor(255, 255, 255, 0))
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(QBrush(hg))
+            painter.drawEllipse(QPointF(0, 0), hr, hr)
+
+        # 点击柔光环（半径已收敛到 boundingRect 内）
         if self._flash < 0.999:
             t = self._flash
-            scale = 0.5 + 1.9 * t
+            r = 46 * (0.5 + 1.7 * t)
             opacity = 0.8 * (1.0 - t)
-            r = 60 * scale
             grad = QRadialGradient(QPointF(0, 0), r)
             grad.setColorAt(0.0, QColor(255, 120, 135, int(0.9 * 255 * opacity)))
             grad.setColorAt(1.0, QColor(255, 47, 67, 0))
@@ -479,7 +526,6 @@ class VertebraItem(QGraphicsObject):
             painter.setBrush(QBrush(grad))
             painter.drawEllipse(QPointF(0, 0), r, r)
 
-        on = self._on
         # 白瓷态（随点亮淡出）
         white_grad = QLinearGradient(QPointF(-76, -32), QPointF(53.2, 32))
         white_grad.setColorAt(0.0, QColor("#ffffff"))
@@ -506,25 +552,50 @@ class VertebraItem(QGraphicsObject):
             painter.drawPath(self._body)
         painter.setOpacity(1.0)
 
-        # 引线 + 标签（hover 或点亮时显示）
-        label_alpha = max(1.0 if self._hover else 0.0, on)
-        if label_alpha > 0.01 and self._enabled_visual:
-            color = QColor(SILVER_LO)
-            if on > 0.01:
-                color = QColor(RED_SOFT)
-            color.setAlphaF(label_alpha)
-            pen = QPen(color, 0.75)
-            pen.setDashPattern([1, 5])
-            painter.setPen(pen)
-            painter.drawLine(QPointF(-78, 0), QPointF(-150, 0))
+        self._paint_label(painter, on)
 
-            font = QFont("Helvetica Neue", 7)
-            font.setLetterSpacing(QFont.AbsoluteSpacing, 2.8)
-            font.setWeight(QFont.Light)
-            painter.setFont(font)
-            painter.setPen(color)
-            painter.drawText(QRectF(-360, -9, 200, 18),
-                             int(Qt.AlignRight | Qt.AlignVCenter), self.spec.name)
+    def _paint_label(self, painter: QPainter, on: float) -> None:
+        """常驻引线 + 中文功能名（主）+ 英文（副）。hover/点亮时提亮。"""
+        placeholder = not self.spec.enabled
+        # 基础低调，hover/点亮提亮
+        if on > 0.01:
+            base_alpha = 1.0
+            text_color = QColor(RED_SOFT)
+        elif self._hover:
+            base_alpha = 1.0
+            text_color = QColor(SILVER_HI)
+        else:
+            base_alpha = 0.4 if placeholder else 0.62
+            text_color = QColor(SILVER_LO)
+
+        line_color = QColor(text_color)
+        line_color.setAlphaF(base_alpha * 0.7)
+        pen = QPen(line_color, 0.75)
+        pen.setDashPattern([1, 5])
+        painter.setPen(pen)
+        painter.drawLine(QPointF(-78, 0), QPointF(-150, 0))
+
+        # 中文主名
+        cn_color = QColor(text_color)
+        cn_color.setAlphaF(base_alpha)
+        cn = self.spec.cn + ("（即将开放）" if placeholder else "")
+        cn_font = QFont("Microsoft YaHei", 9)
+        cn_font.setWeight(QFont.Normal)
+        painter.setFont(cn_font)
+        painter.setPen(cn_color)
+        painter.drawText(QRectF(-360, -16, 200, 16),
+                         int(Qt.AlignRight | Qt.AlignVCenter), cn)
+
+        # 英文副名（更小更暗）
+        en_color = QColor(text_color)
+        en_color.setAlphaF(base_alpha * 0.72)
+        en_font = QFont("Helvetica Neue", 6)
+        en_font.setLetterSpacing(QFont.AbsoluteSpacing, 2.0)
+        en_font.setWeight(QFont.Light)
+        painter.setFont(en_font)
+        painter.setPen(en_color)
+        painter.drawText(QRectF(-360, 1, 200, 14),
+                         int(Qt.AlignRight | Qt.AlignVCenter), self.spec.name)
 
 
 # ============================================================
@@ -544,17 +615,25 @@ class ArtView(QGraphicsView):
         self.setRenderHint(QPainter.Antialiasing, True)
         self.setFrameShape(QGraphicsView.NoFrame)
         self.setStyleSheet("background:#0c0d0f;")
+        # 性能：只重绘变化 item 的包围盒（脏区最小化）
+        self.setViewportUpdateMode(QGraphicsView.BoundingRectViewportUpdate)
+
+        self._bg_pixmap: Optional[QPixmap] = None
+        self.drag_bar: Optional["DragBar"] = None
+        self.side_panel: Optional["SidePanel"] = None
 
         # 左下状态读出 + 右下提示（叠加在视图上，保持清晰、不随场景缩放）
         self.readout_title = self._mk_label("SYSTEM", 8, SILVER_LO, 4.2)
         self.readout_state = self._mk_label("监测已暂停 · STANDBY", 11, SILVER_LO, 2.2)
-        self.readout_mods = self._mk_label("", 8, SILVER_LO, 1.8)
+        self.readout_mods = self._mk_label("", 8, SILVER_LO, 1.0)
+        self.readout_mods.setTextFormat(Qt.RichText)
         self.readout_mods.setWordWrap(False)
         self.hint = self._mk_label("点击眼睛启停监测 · 点击椎骨切换功能", 8, SILVER_LO, 2.6)
         self.hint.setAlignment(Qt.AlignRight)
 
     def _mk_label(self, text: str, pt: int, color: QColor, spacing: float) -> QLabel:
-        lab = QLabel(text, self)
+        # 浮层挂在 viewport 上，确保始终显示在场景渲染之上
+        lab = QLabel(text, self.viewport())
         font = QFont("Helvetica Neue", pt)
         font.setLetterSpacing(QFont.AbsoluteSpacing, spacing)
         font.setWeight(QFont.Light)
@@ -567,16 +646,41 @@ class ArtView(QGraphicsView):
         super().resizeEvent(event)
         if self.scene() is not None:
             self.fitInView(self.scene().sceneRect(), Qt.KeepAspectRatio)
+        self._render_background()
         self._place_overlays()
 
     def showEvent(self, event) -> None:
         super().showEvent(event)
         if self.scene() is not None:
             self.fitInView(self.scene().sceneRect(), Qt.KeepAspectRatio)
+        self._render_background()
+        self._place_overlays()
+
+    def attach_overlays(self, drag_bar: "DragBar", side_panel: "SidePanel") -> None:
+        self.drag_bar = drag_bar
+        self.side_panel = side_panel
         self._place_overlays()
 
     def _place_overlays(self) -> None:
-        w, h = self.width(), self.height()
+        vp = self.viewport().rect()
+        w, h = vp.width(), vp.height()
+
+        # 顶部拖动条（全宽，透明）
+        if self.drag_bar is not None:
+            self.drag_bar.setGeometry(0, 0, w, 32)
+
+        # 右侧控制栏浮层（垂直居中，贴右）
+        side_left = w
+        if self.side_panel is not None:
+            sw = self.side_panel.width()
+            sh = self.side_panel.sizeHint().height()
+            margin = 18
+            x = w - sw - margin
+            y = max(44, (h - sh) // 2)
+            self.side_panel.setGeometry(x, y, sw, sh)
+            side_left = x
+
+        # 左下状态读出
         self.readout_title.adjustSize()
         self.readout_state.adjustSize()
         self.readout_mods.adjustSize()
@@ -584,15 +688,19 @@ class ArtView(QGraphicsView):
                                 - self.readout_state.height() - self.readout_title.height())
         self.readout_state.move(20, self.readout_title.y() + self.readout_title.height() + 6)
         self.readout_mods.move(20, self.readout_state.y() + self.readout_state.height() + 8)
-        self.hint.adjustSize()
-        self.hint.move(w - self.hint.width() - 16, h - self.hint.height() - 14)
 
-    def drawBackground(self, painter: QPainter, rect) -> None:
-        # 在视口坐标系画“深邃亮光银”径向渐变 + 暗角，铺满整个视图
-        painter.save()
-        painter.resetTransform()
+        # 右下提示（避让右侧控制栏）
+        self.hint.adjustSize()
+        self.hint.move(side_left - self.hint.width() - 20, h - self.hint.height() - 14)
+
+    def _render_background(self) -> None:
+        """把“深邃亮光银”径向渐变 + 暗角预渲染成一张 pixmap，仅尺寸变化时重建。"""
         vp = self.viewport().rect()
         w, h = vp.width(), vp.height()
+        if w <= 0 or h <= 0:
+            return
+        pm = QPixmap(w, h)
+        p = QPainter(pm)
         radius = 1.3 * max(w, h)
         grad = QRadialGradient(QPointF(0.32 * w, 0.18 * h), radius)
         grad.setColorAt(0.0, QColor("#4a4f56"))
@@ -600,44 +708,121 @@ class ArtView(QGraphicsView):
         grad.setColorAt(0.60, QColor("#1c1f23"))
         grad.setColorAt(0.86, QColor("#101113"))
         grad.setColorAt(1.0, QColor("#08090a"))
-        painter.fillRect(vp, QBrush(grad))
-        # 暗角
+        p.fillRect(vp, QBrush(grad))
         vig = QRadialGradient(QPointF(0.5 * w, 0.45 * h), 0.72 * max(w, h))
         vig.setColorAt(0.0, QColor(0, 0, 0, 0))
         vig.setColorAt(0.72, QColor(0, 0, 0, 0))
         vig.setColorAt(1.0, QColor(0, 0, 0, 140))
-        painter.fillRect(vp, QBrush(vig))
+        p.fillRect(vp, QBrush(vig))
+        p.end()
+        self._bg_pixmap = pm
+
+    def drawBackground(self, painter: QPainter, rect) -> None:
+        # 只做一次 blit（缓存的 pixmap），不再每帧重算渐变
+        if self._bg_pixmap is None:
+            self._render_background()
+        painter.save()
+        painter.resetTransform()
+        if self._bg_pixmap is not None:
+            painter.drawPixmap(0, 0, self._bg_pixmap)
         painter.restore()
+
+
+# ============================================================
+# 顶部拖动条（无边框窗口的自定义标题栏）
+# ============================================================
+class DragBar(QWidget):
+    def __init__(self, parent: QWidget) -> None:
+        super().__init__(parent)
+        self.setAttribute(Qt.WA_StyledBackground, True)
+        self.setStyleSheet("background: transparent;")
+        self._drag_offset = None
+
+        self.title = QLabel("ECHOPOSTURE", self)
+        f = QFont("Helvetica Neue", 8)
+        f.setLetterSpacing(QFont.AbsoluteSpacing, 4.0)
+        f.setWeight(QFont.Light)
+        self.title.setFont(f)
+        self.title.setStyleSheet("color:#7d838c; background:transparent;")
+
+        self.close_btn = QPushButton("✕", self)
+        self.close_btn.setCursor(Qt.PointingHandCursor)
+        self.close_btn.setFixedSize(26, 24)
+        self.close_btn.setStyleSheet(
+            "QPushButton{color:#7d838c; background:transparent; border:none; font-size:14px;}"
+            "QPushButton:hover{color:#ff3145;}"
+        )
+        self.close_btn.clicked.connect(lambda: self.window().hide())
+
+    def resizeEvent(self, event) -> None:
+        self.title.adjustSize()
+        self.title.move(22, (self.height() - self.title.height()) // 2)
+        self.close_btn.move(self.width() - self.close_btn.width() - 12,
+                            (self.height() - self.close_btn.height()) // 2)
+
+    def mousePressEvent(self, event) -> None:
+        if event.button() == Qt.LeftButton:
+            self._drag_offset = event.globalPos() - self.window().frameGeometry().topLeft()
+            event.accept()
+
+    def mouseMoveEvent(self, event) -> None:
+        if self._drag_offset is not None and (event.buttons() & Qt.LeftButton):
+            self.window().move(event.globalPos() - self._drag_offset)
+            event.accept()
+
+    def mouseReleaseEvent(self, event) -> None:
+        self._drag_offset = None
+        event.accept()
 
 
 # ============================================================
 # 侧边栏（迁移自旧 StatusPanel）
 # ============================================================
 class SidePanel(QWidget):
-    def __init__(self, window: "PostureConsoleWindow") -> None:
-        super().__init__()
+    def __init__(self, window: "PostureConsoleWindow", parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
         self.window_ref = window
-        self.setFixedWidth(210)
+        # 磨砂玻璃浮层，叠在主体右侧的渐变背景之上，与艺术区同一主题
+        self.setObjectName("sideCard")
+        self.setAttribute(Qt.WA_StyledBackground, True)
+        self.setFixedWidth(204)
         self.setStyleSheet(
             """
-            QWidget { background: rgba(18,20,24,0.92); }
-            QLabel { color: #c3c8cf; background: transparent; }
-            QPushButton {
-                color: #e8ebef; background: #1f6feb; border: none;
-                padding: 7px; border-radius: 4px;
+            #sideCard {
+                background: rgba(255,255,255,0.045);
+                border: 1px solid rgba(255,255,255,0.09);
+                border-radius: 12px;
             }
-            QPushButton:hover { background: #2f7ff6; }
-            QSlider::groove:horizontal { height: 4px; background: #3a3f47; border-radius: 2px; }
+            QLabel { color: #c3c8cf; background: transparent; border: none; }
+            QLabel#sideTitle { color: #7d838c; }
+            QPushButton {
+                color: #ff6473; background: transparent;
+                border: 1px solid rgba(255,100,115,0.55);
+                padding: 7px; border-radius: 6px;
+            }
+            QPushButton:hover { background: rgba(255,47,67,0.18); color: #ffffff; }
+            QSlider::groove:horizontal { height: 4px; background: transparent; }
+            QSlider::sub-page:horizontal { height: 4px; background: #ff3145; border-radius: 2px; }
+            QSlider::add-page:horizontal { height: 4px; background: #3a3f47; border-radius: 2px; }
             QSlider::handle:horizontal {
-                width: 12px; margin: -5px 0; border-radius: 6px; background: #c3c8cf;
+                width: 12px; margin: -5px 0; border-radius: 6px; background: #e8ebef;
             }
             """
         )
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(16, 18, 16, 16)
+        layout.setContentsMargins(18, 16, 18, 16)
         layout.setSpacing(8)
         self._content_layout = layout
+
+        self.title_label = QLabel("CONTROL · 调节")
+        self.title_label.setObjectName("sideTitle")
+        title_font = QFont("Helvetica Neue", 8)
+        title_font.setLetterSpacing(QFont.AbsoluteSpacing, 3.0)
+        title_font.setWeight(QFont.Light)
+        self.title_label.setFont(title_font)
+        layout.addWidget(self.title_label)
+        layout.addSpacing(4)
 
         self.status_label = QLabel()
         self.dim_label = QLabel()
@@ -682,10 +867,15 @@ class PostureConsoleWindow(QWidget):
         self.ctrl = _ControlState()
         self.registry = _build_registry(self.ctrl)
         self._registry_by_id = {spec.id: spec for spec in self.registry}
+        # 脏检查缓存：仅在文本变化时才 setText + 重新定位叠加层
+        self._last_state_text: Optional[str] = None
+        self._last_mods_html: Optional[str] = None
 
         self.setWindowTitle("EchoPosture")
-        self.setWindowFlags(Qt.Tool | Qt.WindowStaysOnTopHint)
-        self.resize(620, 470)
+        self.setWindowFlags(
+            Qt.Tool | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint
+        )
+        self.resize(880, 600)
 
         root = QHBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -693,13 +883,15 @@ class PostureConsoleWindow(QWidget):
 
         self.scene = ConsoleScene()
         self.view = ArtView(self.scene)
-        root.addWidget(self.view, 1)
+        root.addWidget(self.view, 1)  # 艺术区充满整窗
 
-        self.side = SidePanel(self)
-        root.addWidget(self.side, 0)
+        # 控制栏与拖动条作为视图浮层（挂在 viewport 上），坐在同一渐变背景之上
+        self.drag_bar = DragBar(self.view.viewport())
+        self.side = SidePanel(self, parent=self.view.viewport())
 
         self._build_scene()
         self._wire_side_panel()
+        self.view.attach_overlays(self.drag_bar, self.side)
 
         # 250ms 刷新：从 monitor 拉状态，同步眼睛/椎骨/读出/侧栏
         self.refresh_timer = QTimer(self)
@@ -716,6 +908,7 @@ class PostureConsoleWindow(QWidget):
         self.blueprint.setSharedRenderer(renderer)
         self.blueprint.setPos(0, 0)
         self.blueprint.setOpacity(0.0)
+        self.blueprint.setCacheMode(QGraphicsItem.DeviceCoordinateCache)
         self.scene.addItem(self.blueprint)
 
         # 文字标签 OCULI / VERTEBRA + 引线
@@ -746,6 +939,7 @@ class PostureConsoleWindow(QWidget):
         item.setFont(font)
         item.setDefaultTextColor(color)
         item.setOpacity(0.0)
+        item.setCacheMode(QGraphicsItem.DeviceCoordinateCache)
         br = item.boundingRect()
         if align == Qt.AlignRight:
             item.setPos(x - br.width(), y - br.height() / 2)
@@ -763,6 +957,7 @@ class PostureConsoleWindow(QWidget):
         pen.setColor(QColor(216, 221, 227, int(0.35 * 255)))
         line.setPen(pen)
         line.setOpacity(0.0)
+        line.setCacheMode(QGraphicsItem.DeviceCoordinateCache)
         self.scene.addItem(line)
         if not hasattr(self, "_label_items"):
             self._label_items = []
@@ -860,18 +1055,46 @@ class PostureConsoleWindow(QWidget):
             return False
 
     def _note(self, text: str) -> None:
-        self.view.readout_state.setText(text)
+        self._set_state_text(text)
 
-    # ---- 250ms 刷新：单向从后端同步到 UI ----
+    def _set_state_text(self, text: str) -> None:
+        if text == self._last_state_text:
+            return
+        self._last_state_text = text
+        self.view.readout_state.setText(text)
+        self.view._place_overlays()
+
+    def _build_mods_html(self, monitoring: bool) -> str:
+        """左下功能清单：● 红=已启用 / ○ 灰=未启用 / 占位灰显。"""
+        rows = []
+        for spec in self.registry:
+            active = monitoring and spec.kind == "toggle" and self._is_active(spec)
+            if active:
+                marker, color = "●", RED_SOFT.name()
+                name_color = RED_SOFT.name()
+            elif not spec.enabled:
+                marker, color = "○", "#5a5f66"
+                name_color = "#5a5f66"
+            else:
+                marker, color = "○", SILVER_LO.name()
+                name_color = SILVER.name() if monitoring else SILVER_LO.name()
+            suffix = " <span style='color:#5a5f66'>· 即将开放</span>" if not spec.enabled else ""
+            rows.append(
+                f"<span style='color:{color}'>{marker}</span> "
+                f"<span style='color:{name_color}'>{spec.cn}</span>{suffix}"
+            )
+        return "<br>".join(rows)
+
+    # ---- 250ms 刷新：单向从后端同步到 UI（带脏检查） ----
     def refresh(self) -> None:
         monitoring = self.monitor.is_monitoring()
 
-        # 眼睛睁闭跟随监测状态
+        # 眼睛睁闭跟随监测状态（set_open 内部按差值守卫）
         target_open = 1.0 if monitoring else 0.0
         if abs(self.eye.eyeOpen - target_open) > 0.01:
             self.eye.set_open(monitoring)
 
-        # 椎骨：可点性 + 点亮态
+        # 椎骨：可点性 + 点亮态（set_enabled_visual / set_active 内部均有脏守卫）
         active_count = 0
         for item in self.vertebrae:
             item.set_enabled_visual(monitoring)
@@ -884,7 +1107,7 @@ class PostureConsoleWindow(QWidget):
             elif not monitoring and item.on > 0.5:
                 item.set_active(False)
 
-        # 侧栏读出
+        # 侧栏读出（QLabel.setText 对相同文本会自动 no-op）
         decision = self.monitor.last_decision
         status = decision.status if decision is not None else "WAITING"
         overlay = self.monitor.overlay
@@ -896,15 +1119,20 @@ class PostureConsoleWindow(QWidget):
         self.side.max_dim_label.setText(f"最深压暗：{self.side.max_dim_slider.value()}%")
         self.side.blur_scale_label.setText(f"模糊强度：{self.side.blur_scale_slider.value()}%")
 
-        # 左下读出
+        # 左下状态行（仅变化时更新）
         if monitoring:
-            if active_count > 0:
-                self.view.readout_state.setText(f"监测中 · {active_count} 项功能已启用")
-            else:
-                self.view.readout_state.setText("监测中 · 等待启用功能")
+            state_text = (f"监测中 · {active_count} 项功能已启用"
+                          if active_count > 0 else "监测中 · 等待启用功能")
         else:
-            self.view.readout_state.setText("监测已暂停 · STANDBY")
-        self.view._place_overlays()
+            state_text = "监测已暂停 · STANDBY"
+        self._set_state_text(state_text)
+
+        # 左下功能清单（仅变化时更新）
+        mods_html = self._build_mods_html(monitoring)
+        if mods_html != self._last_mods_html:
+            self._last_mods_html = mods_html
+            self.view.readout_mods.setText(mods_html)
+            self.view._place_overlays()
 
     def closeEvent(self, event) -> None:
         self.refresh_timer.stop()
