@@ -32,6 +32,7 @@ from PyQt5.QtWidgets import (
 )
 
 from gpu_blur_overlay import GpuBlurOverlayController
+from posture_console import PostureConsoleWindow
 from vision_test import (
     CameraBlackFrameError,
     CameraPermissionError,
@@ -206,6 +207,7 @@ class TrayMonitor:
         self._manual_effect_until: Optional[datetime] = None
         self.calibration_dialog: Optional[StartupCalibrationDialog] = None
         self.status_panel: Optional[StatusPanel] = None
+        self.console: Optional[PostureConsoleWindow] = None
 
         self.tray = QSystemTrayIcon(self._icon(), self.app)
         self.tray.setToolTip("EchoPosture")
@@ -262,6 +264,9 @@ class TrayMonitor:
         if self.status_panel is not None:
             self.status_panel.close()
             self.status_panel = None
+        if self.console is not None:
+            self.console.close()
+            self.console = None
         self.overlay.force_clear()
         self.overlay.close()
         self.engine.close()
@@ -464,6 +469,28 @@ class TrayMonitor:
         self._monitoring_started = True
         self.timer.start()
 
+    def is_monitoring(self) -> bool:
+        """监测主循环是否正在运行。"""
+        return self.timer.isActive()
+
+    def pause_monitoring(self) -> None:
+        """暂停监测并清理覆盖层，避免压暗/模糊残留。"""
+        if self._stopping:
+            return
+        self.timer.stop()
+        self._intervention_candidate_started_at = None
+        self._manual_effect_until = None
+        self.overlay.force_clear()
+
+    def resume_monitoring(self) -> None:
+        """恢复监测。若尚未首次启动则走启动流程。"""
+        if self._stopping:
+            return
+        if not self._monitoring_started:
+            self._start_monitoring()
+        else:
+            self.timer.start()
+
     def _handle_camera_failure(self, exc: Exception) -> None:
         if isinstance(exc, CameraPermissionError):
             self._show_camera_permission_warning(str(exc))
@@ -532,15 +559,27 @@ class TrayMonitor:
             self._toggle_status_panel()
 
     def _toggle_status_panel(self) -> None:
-        if self.status_panel is None:
-            self.status_panel = StatusPanel(self)
-        if self.status_panel.isVisible():
-            self.status_panel.hide()
-            return
-        self.status_panel.refresh()
-        self.status_panel.show()
-        self.status_panel.raise_()
-        self.status_panel.activateWindow()
+        # 控制台是非核心 UI：它的任何错误都不能拖垮监测主程序。
+        try:
+            if self.console is None:
+                self.console = PostureConsoleWindow(self)
+            if self.console.isVisible():
+                self.console.hide()
+                return
+            self.console.refresh()
+            self.console.show()
+            self.console.raise_()
+            self.console.activateWindow()
+        except Exception as exc:
+            import traceback
+            traceback.print_exc()
+            self.console = None
+            self.tray.showMessage(
+                "EchoPosture",
+                f"控制台窗口打开失败，监测仍在运行：{exc}",
+                QSystemTrayIcon.Warning,
+                4000,
+            )
 
     def _icon(self) -> QIcon:
         style_icon = self.app.style().standardIcon(QStyle.SP_ComputerIcon)

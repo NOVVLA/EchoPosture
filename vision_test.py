@@ -737,6 +737,7 @@ class VisionEngine:
         self.height = height
         self._cap: Optional[cv2.VideoCapture] = None
         self._black_frame_count = 0
+        self._target_fps = 15.0
 
         self._mp_face_mesh = mp.solutions.face_mesh
         self._mp_pose = mp.solutions.pose
@@ -769,8 +770,13 @@ class VisionEngine:
         self._cap = cap
 
     def set_capture_fps(self, fps: float) -> None:
+        if fps > 0:
+            self._target_fps = float(fps)
         if self._cap is not None and fps > 0:
             self._cap.set(cv2.CAP_PROP_FPS, fps)
+
+    def get_capture_fps(self) -> float:
+        return self._target_fps
 
     def read_frame_sample(self):
         if self._cap is None:
