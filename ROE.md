@@ -66,6 +66,8 @@
 ## 发布规则
 
 - DEV 版本必须继续使用 `DEV` / `dev-...` 标识，不得擅自改成正式版。
+- GitHub canonical 远端仓库是 `https://github.com/NOVVLA/ICC.git`；推送前应确认 `origin` 的 fetch/push URL 指向该地址。
+- 如果 GitHub 提示仓库 moved / relocated，必须先更新本地 `origin` 到迁移后的 canonical 地址，再继续 fetch、push 或 release 操作。
 - 创建或更新 release 后，必须回查 release 状态、附件名称、附件大小、digest、prerelease 状态和仓库私密状态。
 - GitHub 仓库必须保持私密；任何发布前后都要用 GitHub CLI 回查 `visibility=PRIVATE` 和 `isPrivate=true`。
 
