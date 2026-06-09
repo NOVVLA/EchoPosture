@@ -39,7 +39,7 @@
 ## 2026-06-09 - TEAM_ALPHA Package and Release
 
 - Source: user request to package the current project and create a GitHub release using TEAM_ALPHA labels instead of DEV labels.
-- Git: commit `pending`, branch `main`, tag `team-alpha-20260609-154821`.
+- Git: release source commit `db37ea6a88a7958de54f67f3d06c269c6acb6d23`, branch `main`, tag `team-alpha-20260609-154821`; post-release audit commit `pending`.
 - Scope: changed package/release naming rules and docs from `DEV` / `dev-...` to `TEAM_ALPHA` / `team-alpha-...`; changed launcher ASCII bridge from `%LOCALAPPDATA%\EchoPostureDev` to `%LOCALAPPDATA%\EchoPostureTeamAlpha`; changed self-test title to `EchoPosture TEAM_ALPHA self-test`; built and packaged a portable Windows x64 folder.
 - Risk:
   - Launcher bridge path affects MediaPipe resource loading when the package is under the current Chinese workspace path.
@@ -54,14 +54,25 @@
   - Result: passed; report showed run root `C:\Users\aaabb\AppData\Local\EchoPostureTeamAlpha\current`, GPU host exit code 0, Debug UI exit code 0, Vision exit code 0, Tray monitor exit code 0.
   - Command: `gh repo view NOVVLA/ICC --json nameWithOwner,visibility,isPrivate,url`
   - Result: passed; repository reported `visibility=PRIVATE` and `isPrivate=true`.
+  - Command: `gh release create team-alpha-20260609-154821 dist\EchoPosture-TEAM_ALPHA-20260609-154821-win-x64.zip --repo NOVVLA/ICC --target db37ea6a88a7958de54f67f3d06c269c6acb6d23 --title "EchoPosture TEAM_ALPHA 20260609-154821" --prerelease`
+  - Result: passed; release URL `https://github.com/NOVVLA/ICC/releases/tag/team-alpha-20260609-154821`.
+  - Command: `gh release view team-alpha-20260609-154821 --repo NOVVLA/ICC --json tagName,name,isPrerelease,url,targetCommitish,createdAt,publishedAt,assets`
+  - Result: passed; tag `team-alpha-20260609-154821`, target commit `db37ea6a88a7958de54f67f3d06c269c6acb6d23`, `isPrerelease=true`, asset state `uploaded`, size `305875036`, digest `sha256:7a0018e09a0c5a7a4f3b0ce350a27cb43c94cd01b0c19f42da2078c46f891fd3`.
+  - Command: `gh repo view NOVVLA/ICC --json nameWithOwner,visibility,isPrivate,url`
+  - Result: passed after release; repository still reported `visibility=PRIVATE` and `isPrivate=true`.
+  - Command: `git ls-remote --tags origin team-alpha-20260609-154821`
+  - Result: failed; network connection timed out after 300 seconds.
+  - Command: `git fetch origin tag team-alpha-20260609-154821`
+  - Result: passed; fetched the new tag into the local repository.
 - Artifacts:
   - Package: `dist\EchoPosture-TEAM_ALPHA-20260609-154821-win-x64`
   - Zip: `dist\EchoPosture-TEAM_ALPHA-20260609-154821-win-x64.zip`
   - Zip size: `305875036` bytes
   - SHA256: `7A0018E09A0C5A7A4F3B0CE350A27CB43C94CD01B0C19F42DA2078C46F891FD3`
-  - Intended release URL: `https://github.com/NOVVLA/ICC/releases/tag/team-alpha-20260609-154821`
-- Gaps: release creation and post-release asset digest check must be recorded after GitHub release creation.
-- Conclusion: local package is ready for TEAM_ALPHA release.
+  - Release URL: `https://github.com/NOVVLA/ICC/releases/tag/team-alpha-20260609-154821`
+  - GitHub asset digest: `sha256:7a0018e09a0c5a7a4f3b0ce350a27cb43c94cd01b0c19f42da2078c46f891fd3`
+- Gaps: the first `git ls-remote` tag check timed out, but `gh release view` and `git fetch origin tag team-alpha-20260609-154821` confirmed the release tag.
+- Conclusion: TEAM_ALPHA package was released and post-release checks passed.
 
 ## 2026-05-30 - Initial EchoPosture MVP
 
