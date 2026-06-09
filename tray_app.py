@@ -12,6 +12,7 @@ import signal
 import sys
 from dataclasses import replace
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import List, Optional
 
 from PyQt5.QtCore import Qt, QTimer
@@ -582,6 +583,11 @@ class TrayMonitor:
             )
 
     def _icon(self) -> QIcon:
+        logo_path = Path(__file__).resolve().with_name("logo.png")
+        logo_pixmap = QPixmap(str(logo_path))
+        if not logo_pixmap.isNull():
+            return QIcon(logo_pixmap)
+
         style_icon = self.app.style().standardIcon(QStyle.SP_ComputerIcon)
         if not style_icon.isNull():
             return style_icon
