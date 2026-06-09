@@ -1,0 +1,186 @@
+# Development Log
+
+本日志从 Git 历史和当前仓库文件还原，作为后续过程审计的起点。2026-06-09 以前的条目不是完整实时开发记录；它们只记录 Git 能证明的事实和已经识别出的证据缺口。后续提交必须按 [PROCESS_AUDIT.md](PROCESS_AUDIT.md) 补充验证、风险和产物证据。
+
+## 2026-06-09 - Audit Baseline
+
+- Source: maintenance audit request.
+- Git: `6ba14c73bce0a7bca2e11eafe4ac229a79a54d44`, branch `main`.
+- Scope: no code change in this baseline; reviewed Git history, tag, ignored directories, docs, logs, backups and package presence.
+- Evidence from Git:
+  - Current tracked files are source and docs only; `logs/`, `dist/`, `runtime/`, `_backups/` are ignored.
+  - Only tag is `dev-20260607-144042`, pointing to `7fa5b6970d20409a310c1837f2abd0c0fa202be2`.
+  - Later working-tree review showed separate TEAM_ALPHA-related edits in existing files; this baseline does not validate those edits unless a later log entry explicitly records their verification.
+- Gaps:
+  - Existing logs do not prove current DEV package verification.
+  - Release/package hash and GitHub release回查结果 are not recorded in tracked docs.
+  - Early backup `EchoPosture-source-backup-20260530-194638` lacks `BACKUP_MANIFEST.txt`.
+- Conclusion: Git can reconstruct the change sequence, but future process credibility requires tracked development logs.
+
+## 2026-06-09 - Process Audit Documentation
+
+- Source: user request to make future development logs credible and readable from Git.
+- Git: commit `pending`, branch `main`.
+- Scope: added [PROCESS_AUDIT.md](PROCESS_AUDIT.md), added this [DEVELOPMENT_LOG.md](DEVELOPMENT_LOG.md), and linked both from [README.md](README.md) and [ROE.md](ROE.md).
+- Risk:
+  - Documentation rules now affect future commit and release workflow.
+  - Existing working-tree changes in `CHANGELOG.md`, `README_EXE.md`, `launcher/EchoPostureLauncher.cs`, and TEAM_ALPHA edits in existing docs were present during this documentation pass and are not validated by this entry unless separately logged.
+- Verification:
+  - Command: `git log --reverse --date=iso --pretty=format:'%h %H %ad %an %s'`
+  - Result: passed; used to reconstruct historical commit sequence.
+  - Command: `git status --short`
+  - Result: passed; used to identify current tracked and untracked changes.
+  - Command: `git diff -- README.md ROE.md PROCESS_AUDIT.md DEVELOPMENT_LOG.md`
+  - Result: passed for tracked README/ROE diff; new untracked audit files were reviewed by direct content inspection.
+- Artifacts: no release artifact.
+- Gaps: no runtime or UI verification was needed because this entry only changes process documentation.
+- Conclusion: ready for review; commit SHA should be filled after commit.
+
+## 2026-06-09 - TEAM_ALPHA Package and Release
+
+- Source: user request to package the current project and create a GitHub release using TEAM_ALPHA labels instead of DEV labels.
+- Git: commit `pending`, branch `main`, tag `team-alpha-20260609-154821`.
+- Scope: changed package/release naming rules and docs from `DEV` / `dev-...` to `TEAM_ALPHA` / `team-alpha-...`; changed launcher ASCII bridge from `%LOCALAPPDATA%\EchoPostureDev` to `%LOCALAPPDATA%\EchoPostureTeamAlpha`; changed self-test title to `EchoPosture TEAM_ALPHA self-test`; built and packaged a portable Windows x64 folder.
+- Risk:
+  - Launcher bridge path affects MediaPipe resource loading when the package is under the current Chinese workspace path.
+  - Release package must not use the old DEV package or release tag.
+  - Package verification needs LocalAppData write access; sandboxed execution cannot create the ASCII bridge.
+- Verification:
+  - Command: `.\build_launcher.cmd`
+  - Result: passed; rebuilt `BlurOverlayHost.exe`, `EchoPosture.exe`, and `EchoPostureSelfTest.exe`.
+  - Command: `dist\EchoPosture-TEAM_ALPHA-20260609-154821-win-x64\EchoPostureSelfTest.exe`
+  - Result: failed under sandbox because `%LOCALAPPDATA%\EchoPostureTeamAlpha` could not be created; MediaPipe then ran from the Chinese path and missed bundled resources.
+  - Command: `dist\EchoPosture-TEAM_ALPHA-20260609-154821-win-x64\EchoPostureSelfTest.exe` with approved unsandboxed execution.
+  - Result: passed; report showed run root `C:\Users\aaabb\AppData\Local\EchoPostureTeamAlpha\current`, GPU host exit code 0, Debug UI exit code 0, Vision exit code 0, Tray monitor exit code 0.
+  - Command: `gh repo view NOVVLA/ICC --json nameWithOwner,visibility,isPrivate,url`
+  - Result: passed; repository reported `visibility=PRIVATE` and `isPrivate=true`.
+- Artifacts:
+  - Package: `dist\EchoPosture-TEAM_ALPHA-20260609-154821-win-x64`
+  - Zip: `dist\EchoPosture-TEAM_ALPHA-20260609-154821-win-x64.zip`
+  - Zip size: `305875036` bytes
+  - SHA256: `7A0018E09A0C5A7A4F3B0CE350A27CB43C94CD01B0C19F42DA2078C46F891FD3`
+  - Intended release URL: `https://github.com/NOVVLA/ICC/releases/tag/team-alpha-20260609-154821`
+- Gaps: release creation and post-release asset digest check must be recorded after GitHub release creation.
+- Conclusion: local package is ready for TEAM_ALPHA release.
+
+## 2026-05-30 - Initial EchoPosture MVP
+
+- Source: reconstructed from Git.
+- Git: `1c4a619a58b2da9701e6aaea7038cf43f2eaeb02`.
+- Scope: added the initial README, debug UI, overlay test, vision test, requirements and run scripts.
+- Files: `.gitignore`, `README.md`, `debug_ui.py`, `overlay_test.py`, `requirements.txt`, `run_debug_ui.cmd`, `run_overlay_test.cmd`, `run_vision_test.cmd`, `vision_test.py`.
+- Git evidence: 9 files changed, 1180 insertions.
+- Missing audit content:
+  - No recorded user requirement, acceptance criteria or design rationale.
+  - No tracked verification command output.
+  - No dependency snapshot beyond `requirements.txt`.
+  - No known camera/MediaPipe/overlay environment notes.
+- Conclusion: source introduction is clear; runtime verification is not auditable from Git alone.
+
+## 2026-06-02 - Tray Runtime, Launcher and GPU Overlay
+
+- Source: reconstructed from Git.
+- Git: `692f339e43eeaf5199685787962772ffa97dfdbf`.
+- Scope: introduced production-style tray runtime, EXE launcher docs and sources, GPU blur controller, native D3D11/DXGI host, build scripts and expanded high-precision posture analysis.
+- Files: `.gitignore`, `CHANGELOG.md`, `README.md`, `README_EXE.md`, `build_blur_overlay_host.cmd`, `build_launcher.cmd`, `debug_ui.py`, `gpu_blur_overlay.py`, `launcher/EchoPostureLauncher.cs`, `native/BlurOverlayHost.cpp`, `tray_app.py`, `vision_test.py`.
+- Git evidence: 12 files changed, 3840 insertions, 74 deletions.
+- Missing audit content:
+  - No split log for tray, launcher, GPU host, posture scoring and docs.
+  - No tracked build output for `EchoPosture.exe`, `EchoPostureSelfTest.exe` or `BlurOverlayHost.exe`.
+  - No tracked self-test summary proving camera, UI, vision and tray checks passed.
+  - No risk record for overlay cleanup, camera release, DXGI failure, compositor fallback or UI blocking.
+- Conclusion: implementation scope is well evidenced by Git; verification and risk closure are not.
+
+## 2026-06-07 - DEV UI Prototype and Blur Fallback Controls
+
+- Source: reconstructed from Git.
+- Git: `7fa5b6970d20409a310c1837f2abd0c0fa202be2`.
+- Tag: `dev-20260607-144042`.
+- Scope: added frozen offline UI reference, expanded blur fallback behavior and controls, updated DEV package metadata and docs.
+- Files: `CHANGELOG.md`, `README.md`, `README_EXE.md`, `build_blur_overlay_host.cmd`, `debug_ui.py`, `gpu_blur_overlay.py`, `launcher/EchoPostureLauncher.cs`, `native/BlurOverlayHost.cpp`, `tray_app.py`, `ui/index.html`, `vision_test.py`.
+- Git evidence: 11 files changed, 1585 insertions, 49 deletions.
+- Local artifact evidence: `dist/EchoPosture-DEV-20260607-144042-win-x64` exists and includes `DEV_BUILD.txt`.
+- Missing audit content:
+  - No tracked SHA256 for the DEV package or key EXE files.
+  - No tracked build transcript or release回查结果.
+  - Package `logs` directory has no current self-test output.
+  - UI prototype has no tracked screenshot or visual comparison note.
+  - Existing tag proves source point, not package integrity.
+- Conclusion: source tag and package directory exist; package verification remains underdocumented.
+
+## 2026-06-07 - Restore Frozen UI Reference
+
+- Source: reconstructed from Git.
+- Git: `9ce2a99c0e85dde7222b4594551d2b483c923569`.
+- Scope: restored `ui/index.html` as a frozen visual reference and updated docs.
+- Files: `CHANGELOG.md`, `README.md`, `README_EXE.md`, `ui/index.html`.
+- Git evidence: 4 files changed, 9 insertions, 30 deletions.
+- Missing audit content:
+  - No record explaining what was changed before restore and why restore was required.
+  - No visual before/after evidence.
+  - No explicit frozen-file exception note tied to the commit.
+- Conclusion: restore action is visible in Git; rationale and validation need future documentation discipline.
+
+## 2026-06-07 - Project Editing Rules
+
+- Source: reconstructed from Git.
+- Git: `94ca210e149a01dd59dc2c3a53e5e9f1d221cf47`.
+- Scope: added `ROE.md` and linked project rules from README.
+- Files: `README.md`, `ROE.md`.
+- Git evidence: 2 files changed, 73 insertions.
+- Missing audit content:
+  - Rule effective date is visible, but prior commits were not created under these rules.
+  - No explicit migration note for older process gaps until this development log.
+- Conclusion: rules became tracked here; earlier history remains partially reconstructed.
+
+## 2026-06-08 - OCULI/VERTEBRA Console Integration
+
+- Source: reconstructed from Git.
+- Git: `9c448b77ffdfdc4df2ab9c107b580af341e962ef`.
+- Scope: added `posture_console.py`, connected console to tray double-click and added supporting vision/tray changes.
+- Files: `posture_console.py`, `tray_app.py`, `vision_test.py`.
+- Git evidence: 3 files changed, 965 insertions, 9 deletions.
+- Missing audit content:
+  - No UI screenshot or viewport verification.
+  - No manual interaction checklist for tray double-click, console open/close, state readout or failure behavior.
+  - No performance note for the new console path.
+- Conclusion: integration is clear in Git; UI behavior needs tracked verification.
+
+## 2026-06-08 - Console Polish
+
+- Source: reconstructed from Git.
+- Git: `edc61914396e9be97b144c020f7a73d954be3f66`.
+- Scope: polished console performance, labeled switches and fused frameless UI.
+- Files: `posture_console.py`.
+- Git evidence: 1 file changed, 335 insertions, 107 deletions.
+- Missing audit content:
+  - No visual regression note.
+  - No performance measurement or interaction checklist.
+  - No accessibility or scaling note.
+- Conclusion: code change is localized; user-facing verification is missing.
+
+## 2026-06-09 - Process Rule Tightening
+
+- Source: reconstructed from Git.
+- Git:
+  - `ff4e1cb0dc40698f73afc5e72335e4dd288db95b` - document merge branch policy.
+  - `437e0aaee0ed1d3eef9a2d91f8d1a684191390da` - document canonical repository remote.
+  - `6ba14c73bce0a7bca2e11eafe4ac229a79a54d44` - tighten commit push requirement.
+- Scope: clarified branch, remote and commit/push rules in `ROE.md`.
+- Missing audit content:
+  - Rules were updated, but no separate process audit file existed before this change.
+  - No release verification template existed before this change.
+- Conclusion: these commits improve process rules but need this log and [PROCESS_AUDIT.md](PROCESS_AUDIT.md) to make future records auditable.
+
+## 2026-06-09 - Tray Icon Logo Asset
+
+- Source: reconstructed from Git.
+- Git: `a4a8eb8e2f0e311143abf5141c56782f929b296f`.
+- Scope: added `logo.png` and updated tray icon usage.
+- Files: `logo.png`, `tray_app.py`.
+- Git evidence: 2 files changed, 6 insertions.
+- Missing audit content:
+  - No image provenance note.
+  - No tray icon visual check in notification area.
+  - No fallback behavior note if the asset cannot load.
+- Conclusion: change is small and visible; asset provenance and UI verification should be tracked going forward.

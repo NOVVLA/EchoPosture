@@ -1,10 +1,10 @@
 # EchoPosture
 
-Windows 桌面端姿态监测原型。主入口会以系统托盘方式静默运行，用摄像头识别用户的脸部、肩膀和躯干关系，并在明确需要调整姿势时逐步降低屏幕可见亮度和屏幕清晰度。当前 DEV 版优先使用原生 GPU 模糊宿主；当桌面捕获被系统拒绝时，会切到 Windows compositor 实时模糊 fallback。
+Windows 桌面端姿态监测原型。主入口会以系统托盘方式静默运行，用摄像头识别用户的脸部、肩膀和躯干关系，并在明确需要调整姿势时逐步降低屏幕可见亮度和屏幕清晰度。当前 TEAM_ALPHA 版优先使用原生 GPU 模糊宿主；当桌面捕获被系统拒绝时，会切到 Windows compositor 实时模糊 fallback。
 
 ## 项目规则
 
-编辑、提交、回滚、分支和发布规则见 [ROE.md](ROE.md)。后续维护者必须先遵守该文件，再修改仓库。
+编辑、提交、回滚、分支和发布规则见 [ROE.md](ROE.md)。过程审计、开发日志、验证证据和发布记录规则见 [PROCESS_AUDIT.md](PROCESS_AUDIT.md)，当前从 Git 还原的开发日志见 [DEVELOPMENT_LOG.md](DEVELOPMENT_LOG.md)。后续维护者必须先遵守这些文件，再修改仓库。
 
 ## 启动方式
 
@@ -173,11 +173,11 @@ Windows 通知区域的排序和是否进入隐藏抽屉由系统和用户设置
 
 `Documents\ICC` 是一个纯英文路径入口，指向当前项目文件。启动脚本会优先从这个入口运行，避免中文路径下 MediaPipe 资源加载问题。
 
-## DEV 发布包
+## TEAM_ALPHA 发布包
 
-当前 DEV 发布包位于：
+当前 TEAM_ALPHA 发布包位于：
 
-- `dist\EchoPosture-DEV-20260607-144042-win-x64`
+- `dist\EchoPosture-TEAM_ALPHA-20260609-154821-win-x64`
 
 用户入口：
 
@@ -192,4 +192,4 @@ Windows 通知区域的排序和是否进入隐藏抽屉由系统和用户设置
 - 高精度模式不是医学诊断，只是人体工学风险提示。
 - 单目摄像头不能精确测量真实颈椎角度。
 - 屏幕或摄像头位置变化不再作为单独状态检测。
-- 数据记录仍待完善。
+- 数据记录仍待完善；任何后续可观察改动、构建、发布、回滚或高风险验证都必须把过程证据写入 [DEVELOPMENT_LOG.md](DEVELOPMENT_LOG.md) 或其链接的 Git 可追踪文档，不能只依赖被忽略的 `logs/`、`dist/`、`runtime/` 或 `_backups/` 目录。

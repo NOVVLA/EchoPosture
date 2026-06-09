@@ -81,7 +81,7 @@ namespace EchoPostureLauncher
 
             string bridgeBase = Path.Combine(
                 Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                "EchoPostureDev");
+                "EchoPostureTeamAlpha");
             string bridgeRoot = Path.Combine(bridgeBase, "current");
 
             try
@@ -198,7 +198,7 @@ namespace EchoPostureLauncher
             string report = Path.Combine(logs, "self-test-latest.txt");
 
             var builder = new StringBuilder();
-            builder.AppendLine("EchoPosture Canary self-test");
+            builder.AppendLine("EchoPosture TEAM_ALPHA self-test");
             builder.AppendLine("Package root: " + packageRoot);
             builder.AppendLine("Run root: " + runRoot);
             builder.AppendLine("Time: " + DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"));

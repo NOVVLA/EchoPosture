@@ -1,6 +1,6 @@
 # Rules of Engagement
 
-本文件规定 EchoPosture 项目的编辑、提交、回滚和分支规则。后来维护者必须先读本文件，再改仓库。
+本文件规定 EchoPosture 项目的编辑、提交、回滚和分支规则。过程审计和开发日志规则见 [PROCESS_AUDIT.md](PROCESS_AUDIT.md)，当前开发日志见 [DEVELOPMENT_LOG.md](DEVELOPMENT_LOG.md)。后来维护者必须先读这些文件，再改仓库。
 
 ## 基本原则
 
@@ -45,8 +45,9 @@
 1. 运行 `git status --short`，确认只包含本任务相关文件。
 2. 查看 `git diff` 或 `git diff --cached`，确认没有误改冻结文件、发布包、备份、运行时或生成物。
 3. 按改动范围运行最小必要验证；构建、发布、UI、文档、Python、原生代码各自选择对应验证。
-4. 提交信息必须说明真实意图，不能用含糊的 `update`、`fix`、`changes`。
-5. 提交前确认当前分支是预期分支；创建分支时必须符合“分支与合并规则”。
+4. 按 [PROCESS_AUDIT.md](PROCESS_AUDIT.md) 判断是否必须更新 [DEVELOPMENT_LOG.md](DEVELOPMENT_LOG.md) 或其他 Git 可追踪审计文档；需要记录时，必须把实际验证、跳过项、风险和结论写入同一提交。
+5. 提交信息必须说明真实意图，不能用含糊的 `update`、`fix`、`changes`。
+6. 提交前确认当前分支是预期分支；创建分支时必须符合“分支与合并规则”。
 
 每次提交后必须完成：
 
@@ -72,11 +73,12 @@
 
 ## 发布规则
 
-- DEV 版本必须继续使用 `DEV` / `dev-...` 标识，不得擅自改成正式版。
+- TEAM_ALPHA 版本必须使用 `TEAM_ALPHA` / `team-alpha-...` 标识；打包和 GitHub release 不再使用 `DEV` / `dev-...` 标识。
 - GitHub canonical 远端仓库是 `https://github.com/NOVVLA/ICC.git`；推送前应确认 `origin` 的 fetch/push URL 指向该地址。
 - 如果 GitHub 提示仓库 moved / relocated，必须先更新本地 `origin` 到迁移后的 canonical 地址，再继续 fetch、push 或 release 操作。
 - 创建或更新 release 后，必须回查 release 状态、附件名称、附件大小、digest、prerelease 状态和仓库私密状态。
 - GitHub 仓库必须保持私密；任何发布前后都要用 GitHub CLI 回查 `visibility=PRIVATE` 和 `isPrivate=true`。
+- 每次创建、更新或替换本地 TEAM_ALPHA 包、release 附件或 tag 时，必须按 [PROCESS_AUDIT.md](PROCESS_AUDIT.md) 记录源码 SHA、tag、构建命令、产物路径、关键文件 hash、验证结果和未验证项。
 
 ## 备份规则
 

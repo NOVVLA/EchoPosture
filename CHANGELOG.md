@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-06-09
+
+### Changed
+
+- Switched package and GitHub release labeling from `DEV` / `dev-...` to `TEAM_ALPHA` / `team-alpha-...`.
+- Updated the launcher bridge path and self-test label to use TEAM_ALPHA naming.
+
 ## 2026-06-07
 
 ### Added
