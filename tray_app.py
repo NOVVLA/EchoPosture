@@ -18,11 +18,9 @@ from typing import List, Optional
 from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtGui import QColor, QFont, QIcon, QPainter, QPixmap
 from PyQt5.QtWidgets import (
-    QAction,
     QApplication,
     QDialog,
     QLabel,
-    QMenu,
     QMessageBox,
     QPushButton,
     QSlider,
@@ -33,7 +31,9 @@ from PyQt5.QtWidgets import (
 )
 
 from gpu_blur_overlay import GpuBlurOverlayController
+from onboarding_toast import OnboardingToast
 from posture_console import PostureConsoleWindow
+from tray_flyout import TrayFlyout
 from vision_test import (
     CameraBlackFrameError,
     CameraPermissionError,
@@ -207,23 +207,14 @@ class TrayMonitor:
         self._intervention_candidate_started_at: Optional[datetime] = None
         self._manual_effect_until: Optional[datetime] = None
         self.calibration_dialog: Optional[StartupCalibrationDialog] = None
+        self.onboarding_toast: Optional[OnboardingToast] = None
         self.status_panel: Optional[StatusPanel] = None
         self.console: Optional[PostureConsoleWindow] = None
 
         self.tray = QSystemTrayIcon(self._icon(), self.app)
         self.tray.setToolTip("EchoPosture")
-        self.menu = QMenu()
-        self.recalibrate_action = QAction("立即重新校准", self.menu)
-        self.recalibrate_action.triggered.connect(self.recalibrate_now)
-        self.menu.addAction(self.recalibrate_action)
-        self.max_effect_action = QAction("立即测试最深效果", self.menu)
-        self.max_effect_action.triggered.connect(self.trigger_max_visual_effect)
-        self.menu.addAction(self.max_effect_action)
-        self.menu.addSeparator()
-        self.stop_action = QAction("停止", self.menu)
-        self.stop_action.triggered.connect(self.stop)
-        self.menu.addAction(self.stop_action)
-        self.tray.setContextMenu(self.menu)
+        # 右键不再用 QMenu，改为同主题的玻璃浮窗（TrayFlyout，懒加载）
+        self.flyout: Optional[TrayFlyout] = None
         self.tray.activated.connect(self._tray_activated)
 
         self.timer = QTimer(self.app)
@@ -248,7 +239,7 @@ class TrayMonitor:
         self.tray.show()
         self._show_pending_screen_capture_warning()
         if show_calibration:
-            self._start_calibration_prompt()
+            self._start_onboarding_prompt()
         else:
             self.run_startup_self_test()
 
@@ -259,6 +250,12 @@ class TrayMonitor:
         self.timer.stop()
         self.calibration_timer.stop()
         self.countdown_timer.stop()
+        if self.onboarding_toast is not None:
+            self.onboarding_toast.close()
+            self.onboarding_toast = None
+        if self.flyout is not None:
+            self.flyout.close()
+            self.flyout = None
         if self.calibration_dialog is not None:
             self.calibration_dialog.close()
             self.calibration_dialog = None
@@ -362,6 +359,18 @@ class TrayMonitor:
             return True
         self._manual_effect_until = None
         return False
+
+    def _start_onboarding_prompt(self) -> None:
+        """右下角开场弹窗：用户拨开滑条开关后，弹窗谢幕，再进入校准倒计时。"""
+        self.onboarding_toast = OnboardingToast()
+        self.onboarding_toast.finished.connect(self._on_onboarding_finished)
+        self.onboarding_toast.show_bottom_right()
+
+    def _on_onboarding_finished(self) -> None:
+        self.onboarding_toast = None
+        if self._stopping:
+            return
+        self._start_calibration_prompt()
 
     def _start_calibration_prompt(self) -> None:
         self.calibration_dialog = StartupCalibrationDialog(seconds=5)
@@ -558,15 +567,37 @@ class TrayMonitor:
     def _tray_activated(self, reason) -> None:
         if reason == QSystemTrayIcon.DoubleClick:
             self._toggle_status_panel()
+        elif reason == QSystemTrayIcon.Context:
+            self._show_flyout()
+
+    def _show_flyout(self) -> None:
+        # 浮窗是非核心 UI：它的任何错误都不能拖垮监测主程序。
+        try:
+            if self.flyout is None:
+                self.flyout = TrayFlyout(self)
+            self.flyout.popup_bottom_right()
+        except Exception as exc:
+            import traceback
+            traceback.print_exc()
+            self.flyout = None
+            self.tray.showMessage(
+                "EchoPosture",
+                f"托盘浮窗打开失败，监测仍在运行：{exc}",
+                QSystemTrayIcon.Warning,
+                4000,
+            )
 
     def _toggle_status_panel(self) -> None:
+        if self.console is not None and self.console.isVisible():
+            self.console.hide()
+            return
+        self.open_console()
+
+    def open_console(self) -> None:
         # 控制台是非核心 UI：它的任何错误都不能拖垮监测主程序。
         try:
             if self.console is None:
                 self.console = PostureConsoleWindow(self)
-            if self.console.isVisible():
-                self.console.hide()
-                return
             self.console.refresh()
             self.console.show()
             self.console.raise_()
@@ -640,6 +671,10 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
+    # 高 DPI 感知：必须在 QApplication 构造前设置，否则 Windows 缩放下窗口被
+    # 位图拉伸，文字发虚、动画也更卡。开启后按真实像素渲染，文字锐利、动画顺滑。
+    QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
+    QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)
 

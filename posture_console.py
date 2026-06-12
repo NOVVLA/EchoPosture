@@ -20,6 +20,8 @@ from typing import Callable, List, Optional
 from PyQt5.QtCore import (
     QByteArray,
     QEasingCurve,
+    QParallelAnimationGroup,
+    QPoint,
     QPointF,
     QPropertyAnimation,
     QRectF,
@@ -42,6 +44,7 @@ from PyQt5.QtGui import (
 )
 from PyQt5.QtSvg import QGraphicsSvgItem, QSvgRenderer
 from PyQt5.QtWidgets import (
+    QApplication,
     QGraphicsItem,
     QGraphicsObject,
     QGraphicsScene,
@@ -68,6 +71,13 @@ INK = QColor("#e8ebef")
 # 场景坐标系 = ui/index.html 的 viewBox
 SCENE_W = 1180.0
 SCENE_H = 1380.0
+UI_SCALE = 1.17
+WINDOW_W = round(880 * UI_SCALE)
+WINDOW_H = round(600 * UI_SCALE)
+
+
+def _scaled(value: float) -> int:
+    return round(value * UI_SCALE)
 
 # 椎骨透镜主体 / 顶部高光路径（取自 index.html 的 VERT_PATH / GLOSS_PATH）
 _VERT_OUTLINE = [
@@ -190,20 +200,19 @@ def _build_registry(ctrl: "_ControlState") -> List[FeatureSpec]:
 
 
 # ============================================================
-# 眼睛总开关
+# 眼睛（纯装饰，始终闭眼，不可点击）
+# 与 ui/onboarding.html 的主 UI 状态一致：监测启停由右下角弹窗/托盘
+# 浮窗的滑条开关负责，这里只保留温和的闭眼形象与脉冲提示。
 # ============================================================
 class EyeItem(QGraphicsObject):
-    clicked = pyqtSignal()
-
     def __init__(self) -> None:
         super().__init__()
-        self._eye_open = 0.0
+        self._eye_open = 0.0    # 常闭：保留属性但不再有任何路径把它抬起
         self._pulse = 0.0       # 红色提示脉冲 0..1（手绘，不用 graphics effect）
-        self._hover = False
-        self.setAcceptHoverEvents(True)
         self.setOpacity(0.0)  # 入场前隐藏
         self._pulse_anim: Optional[QPropertyAnimation] = None
-        self.setToolTip("监测总开关 · 点击启停")
+        # 不接受鼠标与悬停：装饰元素，点击穿透
+        self.setAcceptedMouseButtons(Qt.NoButton)
 
     # ---- 动画属性：睁眼程度 0(闭)..1(睁) ----
     def _get_eye_open(self) -> float:
@@ -232,14 +241,6 @@ class EyeItem(QGraphicsObject):
         path.addEllipse(QRectF(-50, -34, 100, 68))
         return path
 
-    def set_open(self, open_: bool) -> None:
-        anim = QPropertyAnimation(self, b"eyeOpen", self)
-        anim.setDuration(620)
-        anim.setStartValue(self._eye_open)
-        anim.setEndValue(1.0 if open_ else 0.0)
-        anim.setEasingCurve(QEasingCurve.OutBack if open_ else QEasingCurve.InOutCubic)
-        anim.start(QPropertyAnimation.DeleteWhenStopped)
-
     def pulse(self) -> None:
         """监测未开启时点击椎骨的柔性提示：眼睛红色脉冲一下（手绘光环）。"""
         anim = QPropertyAnimation(self, b"pulseGlow", self)
@@ -250,24 +251,6 @@ class EyeItem(QGraphicsObject):
         anim.setEasingCurve(QEasingCurve.OutCubic)
         anim.start(QPropertyAnimation.DeleteWhenStopped)
         self._pulse_anim = anim
-
-    def hoverEnterEvent(self, event) -> None:
-        self._hover = True
-        self.update()
-        super().hoverEnterEvent(event)
-
-    def hoverLeaveEvent(self, event) -> None:
-        self._hover = False
-        self.update()
-        super().hoverLeaveEvent(event)
-
-    def mousePressEvent(self, event) -> None:
-        event.accept()
-
-    def mouseReleaseEvent(self, event) -> None:
-        if self.boundingRect().contains(event.pos()):
-            self.clicked.emit()
-        event.accept()
 
     def paint(self, painter: QPainter, option, widget=None) -> None:
         painter.setRenderHint(QPainter.Antialiasing, True)
@@ -285,18 +268,7 @@ class EyeItem(QGraphicsObject):
             painter.setBrush(QBrush(pg))
             painter.drawEllipse(QPointF(0, 0), pr, pr)
 
-        # hover 白色微光环（手绘，替代原 drop-shadow）
-        if self._hover:
-            hr = 58
-            hg = QRadialGradient(QPointF(0, 0), hr)
-            hg.setColorAt(0.6, QColor(255, 255, 255, 0))
-            hg.setColorAt(0.86, QColor(255, 255, 255, 60))
-            hg.setColorAt(1.0, QColor(255, 255, 255, 0))
-            painter.setPen(Qt.NoPen)
-            painter.setBrush(QBrush(hg))
-            painter.drawEllipse(QPointF(0, 0), hr, hr)
-
-        # 柔光 halo（睁眼淡入、放大）
+        # 柔光 halo（睁眼淡入、放大；常闭状态下不会触发）
         if t > 0.001:
             scale = 0.6 + 0.4 * t
             r = 54 * scale
@@ -579,7 +551,7 @@ class VertebraItem(QGraphicsObject):
         cn_color = QColor(text_color)
         cn_color.setAlphaF(base_alpha)
         cn = self.spec.cn + ("（即将开放）" if placeholder else "")
-        cn_font = QFont("Microsoft YaHei", 9)
+        cn_font = QFont("Microsoft YaHei", 10)
         cn_font.setWeight(QFont.Normal)
         painter.setFont(cn_font)
         painter.setPen(cn_color)
@@ -589,7 +561,7 @@ class VertebraItem(QGraphicsObject):
         # 英文副名（更小更暗）
         en_color = QColor(text_color)
         en_color.setAlphaF(base_alpha * 0.72)
-        en_font = QFont("Helvetica Neue", 6)
+        en_font = QFont("Helvetica Neue", 7)
         en_font.setLetterSpacing(QFont.AbsoluteSpacing, 2.0)
         en_font.setWeight(QFont.Light)
         painter.setFont(en_font)
@@ -613,10 +585,15 @@ class ArtView(QGraphicsView):
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.setRenderHint(QPainter.Antialiasing, True)
+        self.setRenderHint(QPainter.TextAntialiasing, True)
+        self.setRenderHint(QPainter.SmoothPixmapTransform, True)
         self.setFrameShape(QGraphicsView.NoFrame)
         self.setStyleSheet("background:#0c0d0f;")
         # 性能：只重绘变化 item 的包围盒（脏区最小化）
         self.setViewportUpdateMode(QGraphicsView.BoundingRectViewportUpdate)
+        # 动画期间跳过冗余的 painter 状态保存/抗锯齿边距调整，降低每帧开销
+        self.setOptimizationFlag(QGraphicsView.DontSavePainterState, True)
+        self.setOptimizationFlag(QGraphicsView.DontAdjustForAntialiasing, True)
 
         self._bg_pixmap: Optional[QPixmap] = None
         self.drag_bar: Optional["DragBar"] = None
@@ -628,14 +605,14 @@ class ArtView(QGraphicsView):
         self.readout_mods = self._mk_label("", 8, SILVER_LO, 1.0)
         self.readout_mods.setTextFormat(Qt.RichText)
         self.readout_mods.setWordWrap(False)
-        self.hint = self._mk_label("点击眼睛启停监测 · 点击椎骨切换功能", 8, SILVER_LO, 2.6)
+        self.hint = self._mk_label("监测开关在托盘浮窗 · 点击椎骨切换功能", 8, SILVER_LO, 2.6)
         self.hint.setAlignment(Qt.AlignRight)
 
     def _mk_label(self, text: str, pt: int, color: QColor, spacing: float) -> QLabel:
         # 浮层挂在 viewport 上，确保始终显示在场景渲染之上
         lab = QLabel(text, self.viewport())
-        font = QFont("Helvetica Neue", pt)
-        font.setLetterSpacing(QFont.AbsoluteSpacing, spacing)
+        font = QFont("Helvetica Neue", _scaled(pt))
+        font.setLetterSpacing(QFont.AbsoluteSpacing, spacing * UI_SCALE)
         font.setWeight(QFont.Light)
         lab.setFont(font)
         lab.setStyleSheet(f"color:{color.name()}; background:transparent;")
@@ -667,16 +644,16 @@ class ArtView(QGraphicsView):
 
         # 顶部拖动条（全宽，透明）
         if self.drag_bar is not None:
-            self.drag_bar.setGeometry(0, 0, w, 32)
+            self.drag_bar.setGeometry(0, 0, w, _scaled(32))
 
         # 右侧控制栏浮层（垂直居中，贴右）
         side_left = w
         if self.side_panel is not None:
             sw = self.side_panel.width()
             sh = self.side_panel.sizeHint().height()
-            margin = 18
+            margin = _scaled(18)
             x = w - sw - margin
-            y = max(44, (h - sh) // 2)
+            y = max(_scaled(44), (h - sh) // 2)
             self.side_panel.setGeometry(x, y, sw, sh)
             side_left = x
 
@@ -684,14 +661,14 @@ class ArtView(QGraphicsView):
         self.readout_title.adjustSize()
         self.readout_state.adjustSize()
         self.readout_mods.adjustSize()
-        self.readout_title.move(20, h - 20 - 18 - 8 - self.readout_mods.height()
+        self.readout_title.move(_scaled(20), h - _scaled(20) - _scaled(18) - _scaled(8) - self.readout_mods.height()
                                 - self.readout_state.height() - self.readout_title.height())
-        self.readout_state.move(20, self.readout_title.y() + self.readout_title.height() + 6)
-        self.readout_mods.move(20, self.readout_state.y() + self.readout_state.height() + 8)
+        self.readout_state.move(_scaled(20), self.readout_title.y() + self.readout_title.height() + _scaled(6))
+        self.readout_mods.move(_scaled(20), self.readout_state.y() + self.readout_state.height() + _scaled(8))
 
         # 右下提示（避让右侧控制栏）
         self.hint.adjustSize()
-        self.hint.move(side_left - self.hint.width() - 20, h - self.hint.height() - 14)
+        self.hint.move(side_left - self.hint.width() - _scaled(20), h - self.hint.height() - _scaled(14))
 
     def _render_background(self) -> None:
         """把“深邃亮光银”径向渐变 + 暗角预渲染成一张 pixmap，仅尺寸变化时重建。"""
@@ -739,25 +716,25 @@ class DragBar(QWidget):
         self._drag_offset = None
 
         self.title = QLabel("ECHOPOSTURE", self)
-        f = QFont("Helvetica Neue", 8)
-        f.setLetterSpacing(QFont.AbsoluteSpacing, 4.0)
+        f = QFont("Helvetica Neue", _scaled(8))
+        f.setLetterSpacing(QFont.AbsoluteSpacing, 4.0 * UI_SCALE)
         f.setWeight(QFont.Light)
         self.title.setFont(f)
         self.title.setStyleSheet("color:#7d838c; background:transparent;")
 
         self.close_btn = QPushButton("✕", self)
         self.close_btn.setCursor(Qt.PointingHandCursor)
-        self.close_btn.setFixedSize(26, 24)
+        self.close_btn.setFixedSize(_scaled(26), _scaled(24))
         self.close_btn.setStyleSheet(
-            "QPushButton{color:#7d838c; background:transparent; border:none; font-size:14px;}"
+            f"QPushButton{{color:#7d838c; background:transparent; border:none; font-size:{_scaled(14)}px;}}"
             "QPushButton:hover{color:#ff3145;}"
         )
         self.close_btn.clicked.connect(lambda: self.window().hide())
 
     def resizeEvent(self, event) -> None:
         self.title.adjustSize()
-        self.title.move(22, (self.height() - self.title.height()) // 2)
-        self.close_btn.move(self.width() - self.close_btn.width() - 12,
+        self.title.move(_scaled(22), (self.height() - self.title.height()) // 2)
+        self.close_btn.move(self.width() - self.close_btn.width() - _scaled(12),
                             (self.height() - self.close_btn.height()) // 2)
 
     def mousePressEvent(self, event) -> None:
@@ -785,7 +762,7 @@ class SidePanel(QWidget):
         # 磨砂玻璃浮层，叠在主体右侧的渐变背景之上，与艺术区同一主题
         self.setObjectName("sideCard")
         self.setAttribute(Qt.WA_StyledBackground, True)
-        self.setFixedWidth(204)
+        self.setFixedWidth(_scaled(204))
         self.setStyleSheet(
             """
             #sideCard {
@@ -811,43 +788,47 @@ class SidePanel(QWidget):
         )
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(18, 16, 18, 16)
-        layout.setSpacing(8)
+        layout.setContentsMargins(_scaled(18), _scaled(16), _scaled(18), _scaled(16))
+        layout.setSpacing(_scaled(8))
         self._content_layout = layout
 
         self.title_label = QLabel("CONTROL · 调节")
         self.title_label.setObjectName("sideTitle")
-        title_font = QFont("Helvetica Neue", 8)
-        title_font.setLetterSpacing(QFont.AbsoluteSpacing, 3.0)
+        title_font = QFont("Helvetica Neue", _scaled(8))
+        title_font.setLetterSpacing(QFont.AbsoluteSpacing, 3.0 * UI_SCALE)
         title_font.setWeight(QFont.Light)
         self.title_label.setFont(title_font)
         layout.addWidget(self.title_label)
-        layout.addSpacing(4)
+        layout.addSpacing(_scaled(4))
 
         self.status_label = QLabel()
         self.dim_label = QLabel()
         self.blur_label = QLabel()
         for lab in (self.status_label, self.dim_label, self.blur_label):
-            lab.setFont(QFont("Microsoft YaHei", 10))
+            lab.setFont(QFont("Microsoft YaHei", _scaled(10)))
             layout.addWidget(lab)
 
-        layout.addSpacing(6)
+        layout.addSpacing(_scaled(6))
         self.max_dim_label = QLabel()
-        self.max_dim_label.setFont(QFont("Microsoft YaHei", 9))
+        self.max_dim_label.setFont(QFont("Microsoft YaHei", _scaled(9)))
         layout.addWidget(self.max_dim_label)
         self.max_dim_slider = QSlider(Qt.Horizontal)
         self.max_dim_slider.setRange(0, 85)
+        self.max_dim_slider.setMinimumHeight(_scaled(22))
         layout.addWidget(self.max_dim_slider)
 
         self.blur_scale_label = QLabel()
-        self.blur_scale_label.setFont(QFont("Microsoft YaHei", 9))
+        self.blur_scale_label.setFont(QFont("Microsoft YaHei", _scaled(9)))
         layout.addWidget(self.blur_scale_label)
         self.blur_scale_slider = QSlider(Qt.Horizontal)
         self.blur_scale_slider.setRange(0, 100)
+        self.blur_scale_slider.setMinimumHeight(_scaled(22))
         layout.addWidget(self.blur_scale_slider)
 
-        layout.addSpacing(8)
+        layout.addSpacing(_scaled(8))
         self.max_effect_button = QPushButton("立即测试最深效果")
+        self.max_effect_button.setFont(QFont("Microsoft YaHei", _scaled(9)))
+        self.max_effect_button.setMinimumHeight(_scaled(32))
         layout.addWidget(self.max_effect_button)
 
         layout.addStretch(1)
@@ -875,7 +856,11 @@ class PostureConsoleWindow(QWidget):
         self.setWindowFlags(
             Qt.Tool | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint
         )
-        self.resize(880, 600)
+        # 占屏幕的黄金分割（按可用高度的 0.618 取高，保持 880:600 比例）并居中
+        self._entrance_group: Optional[QParallelAnimationGroup] = None
+        w, h = self._golden_size()
+        self.resize(w, h)
+        self._center_on_screen()
 
         root = QHBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -901,6 +886,58 @@ class PostureConsoleWindow(QWidget):
         self._run_entrance()
         self.refresh()
 
+    # ---- 窗口几何：黄金分割 + 居中 ----
+    def _golden_size(self) -> tuple:
+        screen = QApplication.primaryScreen()
+        if screen is None:
+            return WINDOW_W, WINDOW_H
+        avail = screen.availableGeometry()
+        h = round(avail.height() * 0.618)
+        w = round(h * WINDOW_W / WINDOW_H)
+        if w > avail.width() * 0.618:
+            w = round(avail.width() * 0.618)
+            h = round(w * WINDOW_H / WINDOW_W)
+        return w, h
+
+    def _center_on_screen(self) -> None:
+        screen = QApplication.primaryScreen()
+        if screen is None:
+            return
+        avail = screen.availableGeometry()
+        self.move(
+            avail.x() + (avail.width() - self.width()) // 2,
+            avail.y() + (avail.height() - self.height()) // 2,
+        )
+
+    # ---- 轻量入场动画：每次打开时淡入 + 上浮 14px ----
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        self._play_window_entrance()
+
+    def _play_window_entrance(self) -> None:
+        if (self._entrance_group is not None
+                and self._entrance_group.state() == QParallelAnimationGroup.Running):
+            return
+        end_pos = self.pos()
+        self.setWindowOpacity(0.0)
+        self.move(end_pos + QPoint(0, 14))
+
+        group = QParallelAnimationGroup(self)
+        fade = QPropertyAnimation(self, b"windowOpacity")
+        fade.setDuration(420)
+        fade.setStartValue(0.0)
+        fade.setEndValue(1.0)
+        fade.setEasingCurve(QEasingCurve.OutCubic)
+        rise = QPropertyAnimation(self, b"pos")
+        rise.setDuration(420)
+        rise.setStartValue(end_pos + QPoint(0, 14))
+        rise.setEndValue(end_pos)
+        rise.setEasingCurve(QEasingCurve.OutCubic)
+        group.addAnimation(fade)
+        group.addAnimation(rise)
+        group.start()
+        self._entrance_group = group
+
     # ---- 构建场景 ----
     def _build_scene(self) -> None:
         renderer = QSvgRenderer(QByteArray(_BLUEPRINT_SVG.encode("utf-8")), self)
@@ -920,8 +957,10 @@ class PostureConsoleWindow(QWidget):
 
         self.eye = EyeItem()
         self.eye.setPos(726, 332)
-        self.eye.clicked.connect(self._on_eye_toggle)
         self.scene.addItem(self.eye)
+        # 眼下融入的微型项目名（取自 onboarding.html 的 #eyeword）
+        self._add_label_text("ECHOPOSTURE", 726, 400, 7, SILVER_LO, 4.4,
+                             Qt.AlignHCenter)
 
         self.vertebrae: List[VertebraItem] = []
         for spec in self.registry:
@@ -943,6 +982,8 @@ class PostureConsoleWindow(QWidget):
         br = item.boundingRect()
         if align == Qt.AlignRight:
             item.setPos(x - br.width(), y - br.height() / 2)
+        elif align == Qt.AlignHCenter:
+            item.setPos(x - br.width() / 2, y - br.height() / 2)
         else:
             item.setPos(x, y - br.height() / 2)
         self.scene.addItem(item)
@@ -994,14 +1035,6 @@ class PostureConsoleWindow(QWidget):
         # 椎骨错峰入场（淡入；可见性由 refresh 的 enabled 控制）
         for i, item in enumerate(self.vertebrae):
             fade(item, 800 + i * 120, 900, 1.0)
-
-    # ---- 眼睛 = 监测总开关 ----
-    def _on_eye_toggle(self) -> None:
-        if self.monitor.is_monitoring():
-            self.monitor.pause_monitoring()
-        else:
-            self.monitor.resume_monitoring()
-        self.refresh()
 
     # ---- 椎骨点击统一入口 ----
     def _on_vertebra_clicked(self, feature_id: str) -> None:
@@ -1089,10 +1122,7 @@ class PostureConsoleWindow(QWidget):
     def refresh(self) -> None:
         monitoring = self.monitor.is_monitoring()
 
-        # 眼睛睁闭跟随监测状态（set_open 内部按差值守卫）
-        target_open = 1.0 if monitoring else 0.0
-        if abs(self.eye.eyeOpen - target_open) > 0.01:
-            self.eye.set_open(monitoring)
+        # 眼睛是纯装饰（常闭），监测启停由托盘浮窗的滑条开关负责
 
         # 椎骨：可点性 + 点亮态（set_enabled_visual / set_active 内部均有脏守卫）
         active_count = 0

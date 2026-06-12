@@ -195,3 +195,23 @@
   - No tray icon visual check in notification area.
   - No fallback behavior note if the asset cannot load.
 - Conclusion: change is small and visible; asset provenance and UI verification should be tracked going forward.
+
+## 2026-06-13 - Onboarding Toast, Tray Flyout, Decorative Eye, Console Geometry
+
+- Source: user request（统一 UI 至 ui/onboarding.html 演示：开场弹窗开关、托盘浮窗替代右键菜单、眼睛改纯装饰、控制台黄金分割居中+入场动画）。
+- Git: commit `pending`, branch `main`.
+- Scope:
+  - 新增 `ui/onboarding.html`（开场流程演示参考，用户提供）。
+  - 新增 `onboarding_toast.py`：右下角开场弹窗 + 苹果式眼睛滑条开关（单条时间轴驱动；玻璃卡片+logo 衬底预渲染为 pixmap；入场/谢幕只动 windowOpacity/位置）。共享 `render_glass_card()`；`EyeSlideSwitch` 支持 one_shot 与双向两种模式。
+  - 新增 `tray_flyout.py`：托盘右键玻璃浮窗（监测开关 + 重新校准/最深效果/红色退出按钮 + 左上齿轮开控制台），Qt.Popup 点外自动收起。
+  - `tray_app.py`：启动流程改为 开场弹窗→校准倒计时；移除 QMenu 托盘菜单，右键→浮窗；新增 open_console()；stop() 收口弹窗/浮窗。另含此前在途的高 DPI 属性改动（AA_EnableHighDpiScaling/AA_UseHighDpiPixmaps）。
+  - `posture_console.py`：眼睛改纯装饰（常闭、点击穿透、删除 set_open/clicked），监测启停职责移交托盘浮窗；新增眼下 ECHOPOSTURE 字样；窗口尺寸=可用高度×0.618（保持 880:600）自动居中；每次显示播放 420ms 淡入+上浮入场动画；另含此前在途的 UI_SCALE=1.17 缩放改动。
+- Risk: 启动流程新增用户确认环节（不拨开关则不进入校准）；托盘右键不再有原生菜单（退出入口移至浮窗红色按钮）；README 中"托盘菜单"描述已过时（待后续文档更新）；UI_SCALE/高 DPI 在途改动与本任务同提交（用户已确认提交当前文件状态）。
+- Verification:
+  - Command: `runtime\python311\python.exe -m py_compile onboarding_toast.py tray_flyout.py tray_app.py posture_console.py`
+  - Result: passed (exit 0)。
+  - Command: 静态接线断言脚本（导入四模块；断言 EyeSlideSwitch one_shot/set_on/toggled、TrayFlyout 按钮与 popup_bottom_right、EyeItem 无 clicked/set_open、tray_app 无 QMenu()/QAction(/setContextMenu、Context→flyout 接线）
+  - Result: passed（临时脚本已按 ROE 清理，不入库）。
+- Gaps: 本机 shell 环境 Qt GUI 层无法初始化（QGuiApplication 构造挂起，QCoreApplication 正常），开场弹窗动画、浮窗交互、控制台入场动画均未实机目检，待用户验证；README 托盘菜单章节未更新。
+- Artifacts: 备份 `_backups/pre-vision-worker-20260613-000411/`（含 BACKUP_MANIFEST.txt，HEAD ef3ebc1）。
+- Conclusion: local only; 待用户实机验证 UI 行为。
