@@ -909,10 +909,22 @@ class PostureConsoleWindow(QWidget):
             avail.y() + (avail.height() - self.height()) // 2,
         )
 
-    # ---- 轻量入场动画：每次打开时淡入 + 上浮 14px ----
+    # ---- 显示/隐藏：隐藏即休眠（停刷新与呼吸动画，省 CPU），显示时恢复 ----
     def showEvent(self, event) -> None:
         super().showEvent(event)
+        if not self.refresh_timer.isActive():
+            self.refresh_timer.start(250)
+        self.refresh()
+        for item in self.vertebrae:
+            if item.on > 0.5 and item.spec.enabled:
+                item._update_glow(True)
         self._play_window_entrance()
+
+    def hideEvent(self, event) -> None:
+        super().hideEvent(event)
+        self.refresh_timer.stop()
+        for item in self.vertebrae:
+            item._update_glow(False)
 
     def _play_window_entrance(self) -> None:
         if (self._entrance_group is not None

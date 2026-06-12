@@ -45,6 +45,10 @@ class GpuBlurOverlayController(QObject):
         self._screen_capture_warning_reason: Optional[str] = None
         self._max_dim_alpha = 0.32
         self._blur_scale = 1.0
+        # IPC 去重：set_warning_active 现在被主循环周期性调用，只有目标
+        # 状态/配置真正变化时才写管道，避免无意义的高频 IPC。
+        self._last_sent_target: Optional[bool] = None
+        self._config_dirty = True
         self._fallback.set_visual_config(self._max_dim_alpha, self._blur_scale)
 
         if enabled:
@@ -86,21 +90,28 @@ class GpuBlurOverlayController(QObject):
         self._target_active = active
         if self._process_is_running() and not self._use_fallback:
             self._send_visual_config()
-            self._send({"type": "set_target", "active": active})
+            self._send_target(active)
             if self._gpu_ready:
                 self._fallback.set_warning_active(False)
             return
 
         if self._process_is_running() and self._host_mode == "starting":
-            self._send({"type": "set_target", "active": active})
+            self._send_target(active)
             self._fallback.set_warning_active(False)
             return
 
         self._fallback.set_warning_active(active)
 
+    def _send_target(self, active: bool) -> None:
+        if self._last_sent_target == active:
+            return
+        self._last_sent_target = active
+        self._send({"type": "set_target", "active": active})
+
     def set_visual_config(self, max_dim_alpha: float, blur_scale: float) -> None:
         self._max_dim_alpha = min(0.85, max(0.0, float(max_dim_alpha)))
         self._blur_scale = min(1.0, max(0.0, float(blur_scale)))
+        self._config_dirty = True
         self._fallback.set_visual_config(self._max_dim_alpha, self._blur_scale)
         self._send_visual_config()
 
@@ -114,11 +125,13 @@ class GpuBlurOverlayController(QObject):
 
     def force_clear(self) -> None:
         self._target_active = False
+        self._last_sent_target = False  # clear 即目标关闭；下次开启必须重发
         self._send({"type": "clear"})
         self._fallback.force_clear()
 
     def trigger_max_effect(self) -> None:
         self._target_active = True
+        self._last_sent_target = True   # boost 即目标开启；下次关闭必须重发
         self._fallback.trigger_max_effect()
         if self._process_is_running() and not self._use_fallback:
             self._send_visual_config()
@@ -249,8 +262,11 @@ class GpuBlurOverlayController(QObject):
             if self._gpu_ready:
                 self._use_fallback = False
                 self._fallback.set_warning_active(False)
+                # 主机恢复/首次就绪：强制重发配置与目标状态
+                self._config_dirty = True
+                self._last_sent_target = None
                 self._send_visual_config()
-                self._send({"type": "set_target", "active": self._target_active})
+                self._send_target(self._target_active)
             elif self._host_mode in {"dim_fallback", "disabled"}:
                 self._use_fallback = True
                 if self._host_reason:
@@ -282,6 +298,9 @@ class GpuBlurOverlayController(QObject):
     def _send_visual_config(self) -> None:
         if not self._process_is_running() or self._use_fallback:
             return
+        if not self._config_dirty:
+            return
+        self._config_dirty = False
         self._send(
             {
                 "type": "set_config",
