@@ -10,10 +10,9 @@ from __future__ import annotations
 import argparse
 import signal
 import sys
-from dataclasses import replace
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import List, Optional
+from typing import Optional
 
 from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtGui import QColor, QFont, QIcon, QPainter, QPixmap
@@ -40,8 +39,27 @@ from vision_test import (
     HighPrecisionPostureAnalyzer,
     PostureDecision,
     VisionEngine,
-    VisionSample,
 )
+from vision_worker import (
+    CalibrationResult,
+    VisionWorker,
+    average_calibration_sample,
+    sample_is_usable,
+)
+
+
+class _EngineProxy:
+    """posture_console 通过 monitor.engine.set/get_capture_fps 调节采集帧率；
+    真正的 VisionEngine 活在工作线程内，这里只做转发，调用方零改动。"""
+
+    def __init__(self, worker: VisionWorker) -> None:
+        self._worker = worker
+
+    def set_capture_fps(self, fps: float) -> None:
+        self._worker.set_capture_fps(fps)
+
+    def get_capture_fps(self) -> float:
+        return self._worker.get_capture_fps()
 
 
 class StartupCalibrationDialog(QDialog):
@@ -189,18 +207,30 @@ class TrayMonitor:
         gpu_blur_enabled: bool = True,
     ) -> None:
         self.app = app
+        self.camera_id = camera_id
+        self.capture_width = width
+        self.capture_height = height
         self.calibrated_distance_cm = calibrated_distance_cm
-        self.engine = VisionEngine(camera_id=camera_id, width=width, height=height)
         self.analyzer = HighPrecisionPostureAnalyzer(
             auto_calibrate=False,
             calibrated_distance_cm=calibrated_distance_cm,
         )
+        # 摄像头 + MediaPipe + 评分全部活在 VisionWorker 工作线程；
+        # 主线程只低频取信箱快照，UI 不再被推理阻塞。
+        self.worker = VisionWorker(
+            engine_factory=lambda: VisionEngine(
+                camera_id=camera_id, width=width, height=height
+            ),
+            analyzer=self.analyzer,
+            target_fps=fps,
+        )
+        self.engine = _EngineProxy(self.worker)
         self._shown_warning_keys: set[str] = set()
         self.overlay = GpuBlurOverlayController(enabled=gpu_blur_enabled)
         self.overlay.screen_capture_warning.connect(self._show_screen_capture_warning)
         self.last_decision: Optional[PostureDecision] = None
-        self.last_calibration_sample: Optional[VisionSample] = None
-        self.calibration_samples: List[VisionSample] = []
+        # 进行中的校准请求：(用途 "startup"/"recal", 此前是否在监测)
+        self._awaiting_calibration: Optional[tuple] = None
         self._stopping = False
         self._calibrated = False
         self._monitoring_started = False
@@ -217,38 +247,39 @@ class TrayMonitor:
         self.flyout: Optional[TrayFlyout] = None
         self.tray.activated.connect(self._tray_activated)
 
+        # 10Hz 轻量轮询：消费工作线程信箱（决策快照/错误/校准回执）并驱动
+        # overlay。推理已不在主线程，单次 tick <1ms。
         self.timer = QTimer(self.app)
         self.timer.timeout.connect(self._tick)
-        self.timer.setInterval(max(1, int(1000 / max(fps, 1.0))))
-
-        self.calibration_timer = QTimer(self.app)
-        self.calibration_timer.timeout.connect(self._capture_calibration_sample)
-        self.calibration_timer.setInterval(180)
+        self.timer.setInterval(100)
 
         self.countdown_timer = QTimer(self.app)
         self.countdown_timer.timeout.connect(self._countdown_step)
         self.countdown_timer.setInterval(1000)
 
     def start(self, show_calibration: bool = True) -> None:
+        if not show_calibration:
+            # --self-test：完全同步的本地路径，不启动工作线程
+            self.tray.show()
+            self._show_pending_screen_capture_warning()
+            self.run_startup_self_test()
+            return
+
         try:
-            self.engine.start()
+            self.worker.start(timeout=15.0)
         except CameraPermissionError as exc:
             self._show_camera_permission_warning(str(exc))
             raise
-        self.engine.set_capture_fps(72.0)
         self.tray.show()
         self._show_pending_screen_capture_warning()
-        if show_calibration:
-            self._start_onboarding_prompt()
-        else:
-            self.run_startup_self_test()
+        self.timer.start()
+        self._start_onboarding_prompt()
 
     def stop(self) -> None:
         if self._stopping:
             return
         self._stopping = True
         self.timer.stop()
-        self.calibration_timer.stop()
         self.countdown_timer.stop()
         if self.onboarding_toast is not None:
             self.onboarding_toast.close()
@@ -267,42 +298,132 @@ class TrayMonitor:
             self.console = None
         self.overlay.force_clear()
         self.overlay.close()
-        self.engine.close()
+        self.worker.stop(join_timeout=2.0)
         self.tray.hide()
         self.app.quit()
 
     def run_startup_self_test(self) -> bool:
-        if not self._calibrate_from_camera():
-            return False
-        self._start_monitoring()
-        self._tick()
-        return self._calibrated
+        """--self-test 专用：主线程同步完成 校准→单次评估。
+
+        MediaPipe/摄像头的构造、使用、释放都在本线程内完成，不经工作线程。
+        """
+        engine = VisionEngine(
+            camera_id=self.camera_id,
+            width=self.capture_width,
+            height=self.capture_height,
+        )
+        try:
+            try:
+                engine.start()
+            except CameraPermissionError as exc:
+                self._show_camera_permission_warning(str(exc))
+                raise
+            samples = []
+            for _ in range(8):
+                try:
+                    sample = engine.read_sample()
+                except Exception:
+                    continue
+                if sample_is_usable(sample):
+                    samples.append(sample)
+                    break
+            averaged = average_calibration_sample(samples)
+            self._calibrated = averaged is not None and self.analyzer.set_baseline_from_sample(
+                averaged, self.calibrated_distance_cm
+            )
+            if self._calibrated:
+                try:
+                    self.last_decision = self.analyzer.evaluate(engine.read_sample())
+                except Exception:
+                    pass
+            return self._calibrated
+        finally:
+            engine.close()
 
     def recalibrate_now(self) -> None:
+        if self._stopping or self._awaiting_calibration is not None:
+            return
+        # 后台重采 18 帧并定基线；UI 全程不阻塞，结果经 _tick 的回执分支处理
+        was_monitoring = self.worker.is_monitoring_active()
+        self.worker.begin_calibration_sampling()
+        self._awaiting_calibration = ("recal", was_monitoring)
+        self.worker.finalize_calibration(self.calibrated_distance_cm, sample_count=18)
+
+    def _tick(self) -> None:
         if self._stopping:
             return
 
-        was_monitoring = self.timer.isActive()
-        self.timer.stop()
-        self.calibration_timer.stop()
-        self.countdown_timer.stop()
-        if self.calibration_dialog is not None:
-            self.calibration_dialog.close()
-            self.calibration_dialog = None
+        error = self.worker.take_error()
+        if error is not None:
+            self._on_worker_error(error)
+            return
 
-        self.calibration_samples.clear()
-        self.last_calibration_sample = None
-        for _ in range(18):
-            self._capture_calibration_sample()
+        result = self.worker.take_calibration_result()
+        if result is not None:
+            self._on_calibration_result(result)
             if self._stopping:
                 return
 
-        if self._calibrate_from_camera():
+        if self.worker.is_monitoring_active():
+            snapshot = self.worker.latest()
+            if snapshot.decision is not None:
+                self.last_decision = snapshot.decision
+            decision = self.last_decision
+            active = self._manual_effect_active() or (
+                decision is not None and self._should_intervene(decision)
+            )
+        else:
+            active = self._manual_effect_active()
+        self.overlay.set_warning_active(active)
+
+    def _on_worker_error(self, exc: Exception) -> None:
+        if isinstance(exc, (CameraPermissionError, CameraBlackFrameError)):
+            self._handle_camera_failure(exc)
+            return
+        self.tray.showMessage(
+            "EchoPosture",
+            f"监测已停止：{exc}",
+            QSystemTrayIcon.Warning,
+            5000,
+        )
+        self.stop()
+
+    def _on_calibration_result(self, result: CalibrationResult) -> None:
+        context = self._awaiting_calibration
+        self._awaiting_calibration = None
+        if context is None or self._stopping:
+            return
+        purpose, was_monitoring = context
+
+        if purpose == "startup":
+            self._calibrated = result.ok
+            if result.ok:
+                self.tray.showMessage(
+                    "EchoPosture",
+                    "校准完成，姿态监测已开始。",
+                    QSystemTrayIcon.Information,
+                    2200,
+                )
+                self._start_monitoring()
+                return
+            self.tray.showMessage(
+                "EchoPosture",
+                "校准失败：没有识别到可用姿态。请重新启动并坐直。",
+                QSystemTrayIcon.Warning,
+                5000,
+            )
+            self.stop()
+            return
+
+        # 重新校准
+        if result.ok:
+            self._calibrated = True
             self._intervention_candidate_started_at = None
             self._manual_effect_until = None
             self.overlay.force_clear()
             if self._monitoring_started or was_monitoring:
-                self.timer.start()
+                self._monitoring_started = True
+                self.worker.resume()
             else:
                 self._start_monitoring()
             self.tray.showMessage(
@@ -314,33 +435,13 @@ class TrayMonitor:
             return
 
         if was_monitoring:
-            self.timer.start()
+            self.worker.resume()
         self.tray.showMessage(
             "EchoPosture",
             "重新校准失败：没有识别到可用姿态。",
             QSystemTrayIcon.Warning,
             4000,
         )
-
-    def _tick(self) -> None:
-        try:
-            sample = self.engine.read_sample()
-            decision = self.analyzer.evaluate(sample)
-        except (CameraPermissionError, CameraBlackFrameError) as exc:
-            self._handle_camera_failure(exc)
-            return
-        except Exception as exc:
-            self.tray.showMessage(
-                "EchoPosture",
-                f"监测已停止：{exc}",
-                QSystemTrayIcon.Warning,
-                5000,
-            )
-            self.stop()
-            return
-
-        self.last_decision = decision
-        self.overlay.set_warning_active(self._manual_effect_active() or self._should_intervene(decision))
 
     def trigger_max_visual_effect(self) -> None:
         self._manual_effect_until = datetime.now() + timedelta(seconds=8)
@@ -376,7 +477,8 @@ class TrayMonitor:
         self.calibration_dialog = StartupCalibrationDialog(seconds=5)
         self.calibration_dialog.show()
         self.calibration_dialog.raise_()
-        self.calibration_timer.start()
+        # 倒计时期间工作线程在后台按 180ms 间隔累积校准样本
+        self.worker.begin_calibration_sampling()
         self.countdown_timer.start()
 
     def _countdown_step(self) -> None:
@@ -387,107 +489,30 @@ class TrayMonitor:
             return
 
         self.countdown_timer.stop()
-        self.calibration_timer.stop()
         self.calibration_dialog.close()
         self.calibration_dialog = None
 
-        if self._calibrate_from_camera():
-            self.tray.showMessage(
-                "EchoPosture",
-                "校准完成，姿态监测已开始。",
-                QSystemTrayIcon.Information,
-                2200,
-            )
-            self._start_monitoring()
-            return
-
-        if self._stopping:
-            return
-
-        self.tray.showMessage(
-            "EchoPosture",
-            "校准失败：没有识别到可用姿态。请重新启动并坐直。",
-            QSystemTrayIcon.Warning,
-            5000,
-        )
-        self.stop()
-
-    def _capture_calibration_sample(self) -> None:
-        try:
-            sample = self.engine.read_sample()
-        except (CameraPermissionError, CameraBlackFrameError) as exc:
-            self._handle_camera_failure(exc)
-            return
-        except Exception:
-            return
-        if (
-            sample.interpupillary_px is not None
-            or sample.signed_shoulder_diff_px is not None
-            or sample.trunk_lean_deg is not None
-        ):
-            self.last_calibration_sample = sample
-            self.calibration_samples.append(sample)
-            if len(self.calibration_samples) > 60:
-                self.calibration_samples = self.calibration_samples[-60:]
-
-    def _calibrate_from_camera(self) -> bool:
-        if not self.calibration_samples:
-            for _ in range(8):
-                self._capture_calibration_sample()
-                if self.calibration_samples:
-                    break
-        sample = self._average_calibration_sample()
-        if sample is None:
-            return False
-
-        self._calibrated = self.analyzer.set_baseline_from_sample(
-            sample,
-            self.calibrated_distance_cm,
-        )
-        return self._calibrated
-
-    def _average_calibration_sample(self) -> Optional[VisionSample]:
-        samples = self.calibration_samples
-        if not samples:
-            return self.last_calibration_sample
-
-        def avg(name: str) -> Optional[float]:
-            values = [getattr(sample, name) for sample in samples]
-            usable = [value for value in values if value is not None]
-            if not usable:
-                return None
-            return sum(usable) / len(usable)
-
-        base = samples[-1]
-        return replace(
-            base,
-            timestamp=datetime.now(),
-            interpupillary_px=avg("interpupillary_px"),
-            shoulder_diff_px=avg("shoulder_diff_px"),
-            signed_shoulder_diff_px=avg("signed_shoulder_diff_px"),
-            shoulder_width_px=avg("shoulder_width_px"),
-            trunk_lean_deg=avg("trunk_lean_deg"),
-            head_turn_ratio=avg("head_turn_ratio"),
-            torso_height_px=avg("torso_height_px"),
-            face_detected=any(sample.face_detected for sample in samples),
-            pose_detected=any(sample.pose_detected for sample in samples),
-        )
+        # 让工作线程平均样本并定基线；结果经 _tick 的回执分支处理
+        self._awaiting_calibration = ("startup", False)
+        self.worker.finalize_calibration(self.calibrated_distance_cm, sample_count=1)
 
     def _start_monitoring(self) -> None:
         if self._monitoring_started:
             return
         self._monitoring_started = True
-        self.timer.start()
+        self.worker.resume()
+        if not self.timer.isActive():
+            self.timer.start()
 
     def is_monitoring(self) -> bool:
-        """监测主循环是否正在运行。"""
-        return self.timer.isActive()
+        """监测主循环（工作线程）是否正在运行。"""
+        return self.worker.is_monitoring_active()
 
     def pause_monitoring(self) -> None:
         """暂停监测并清理覆盖层，避免压暗/模糊残留。"""
         if self._stopping:
             return
-        self.timer.stop()
+        self.worker.pause()
         self._intervention_candidate_started_at = None
         self._manual_effect_until = None
         self.overlay.force_clear()
@@ -499,7 +524,7 @@ class TrayMonitor:
         if not self._monitoring_started:
             self._start_monitoring()
         else:
-            self.timer.start()
+            self.worker.resume()
 
     def _handle_camera_failure(self, exc: Exception) -> None:
         if isinstance(exc, CameraPermissionError):

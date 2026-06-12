@@ -215,3 +215,33 @@
 - Gaps: 本机 shell 环境 Qt GUI 层无法初始化（QGuiApplication 构造挂起，QCoreApplication 正常），开场弹窗动画、浮窗交互、控制台入场动画均未实机目检，待用户验证；README 托盘菜单章节未更新。
 - Artifacts: 备份 `_backups/pre-vision-worker-20260613-000411/`（含 BACKUP_MANIFEST.txt，HEAD ef3ebc1）。
 - Conclusion: local only; 待用户实机验证 UI 行为。
+
+## 2026-06-13 - Move Vision Pipeline Off the GUI Thread
+
+- Source: user request（UI 明显卡顿）。根因：TrayMonitor 以 72Hz QTimer 在 GUI 主线程同步执行 摄像头读帧 + MediaPipe FaceMesh/Pose 推理 + 评分（单次 50-150ms >> 14ms 周期），事件循环饱和导致全部动画掉帧；重新校准同步连采 18 帧另卡死主线程约 3 秒。
+- Git: commit `pending`, branch `main`.
+- Scope:
+  - 新增 `vision_worker.py`：VisionWorker daemon 线程持有 VisionEngine+analyzer（构造/调用/close 全在工作线程），最新值信箱 + 一次性错误/校准回执；`average_calibration_sample`/`sample_is_usable` 从 tray_app 迁出为纯函数。
+  - `tray_app.py`：监测主循环改为 10Hz 轻量 `_tick`（只取信箱、驱动 overlay、消费回执，<1ms/帧）；启动校准与 recalibrate_now 全部后台化（采样/平均/定基线在工作线程，结果回执后按原分支提示与恢复）；`--self-test` 保留完全同步本地路径不经 worker；`stop()` 收口 `worker.stop(join_timeout=2)`；`_EngineProxy` 保持 `monitor.engine.set/get_capture_fps` 接口，posture_console 零改动。TrayMonitor 公开接口无变化。
+- Risk: 校准状态机（startup/recal × 成功/失败/进行中暂停退出）是最大回归面；worker join 超时（驱动卡死）时摄像头灯可能延迟熄灭；校准提示从同步变为约 1-3 秒后回执。
+- Verification:
+  - Command: `runtime\python311\python.exe -m py_compile vision_worker.py tray_app.py posture_console.py gpu_blur_overlay.py onboarding_toast.py tray_flyout.py`
+  - Result: passed (exit 0)。
+  - Command: `runtime\python311\python.exe test_vision_worker.py`（FakeEngine + 真 analyzer 逻辑层测试：线程归属、信箱覆盖、校准平均与旧语义一致、失败回执、错误一次性传播、出错自暂停、start 失败同步抛出、fps 往返、stop join、close 在工作线程）
+  - Result: passed，输出 `ALL TESTS PASSED`，exit 0。测试入库为 `test_vision_worker.py`。
+  - Command: tray_app/gpu_blur_overlay/posture_console 接线静态断言（无 calibration_timer、tick=100ms、worker.stop、self-test 同步路径、公开接口齐全）
+  - Result: passed（临时脚本已清理）。
+- Gaps: 本机无法初始化 Qt GUI 层，未实机验证：动画流畅度（核心验收）、启动校准/重校准 toast、摄像头拔出错误路径、退出后摄像头灯熄灭、`--self-test` 实跑。待用户按清单验证。
+- Artifacts: 回退点 commit 861ad1a + `_backups/pre-vision-worker-20260613-000411/`。
+- Conclusion: local only; 待用户实机验证。
+
+## 2026-06-13 - Console Hide Hibernation and Overlay IPC Dedup
+
+- Source: 同上卡顿任务的次要优化项。
+- Git: commit `pending`, branch `main`.
+- Scope:
+  - `posture_console.py`：hideEvent 停 250ms refresh_timer 并停所有椎骨呼吸辉光动画（控制台"关闭"按钮实为 hide，此前隐藏后仍持续重绘）；showEvent 恢复。
+  - `gpu_blur_overlay.py`：set_target/set_config IPC 去重（仅状态/配置变化时写管道）；gpu_ready 恢复时强制重发；force_clear/boost 同步缓存。
+- Risk: 去重缓存与宿主实际状态不一致会导致命令漏发——已在 gpu 恢复、clear、boost 路径强制重置缓存。
+- Verification: 同上一条目的 py_compile 与接线断言（hideEvent/_last_sent_target/_config_dirty 存在）；GPU 宿主实际行为待用户实机验证（压暗/模糊触发与解除、最深效果测试）。
+- Conclusion: local only; 待用户实机验证。
