@@ -5,7 +5,7 @@
 ## 2026-06-13 - GA-1.0.0 Package and Release
 
 - Source: user request to use the latest `main`, set the version to `GA-1.0.0`, build a release package, push to remote, and create a GitHub release.
-- Git: release source commit `pending`, branch `main`, tag `ga-1.0.0`; post-release audit commit `pending`.
+- Git: release source commit `197fbb092a7b7fbd61626c5c5df709aed01d103c`, branch `main`, tag `ga-1.0.0`; post-release audit commit `pending`.
 - Scope: changed package/release labeling to `GA-1.0.0`; changed launcher ASCII bridge from `%LOCALAPPDATA%\EchoPostureTeamAlpha` to `%LOCALAPPDATA%\EchoPostureGA100`; changed self-test title to `EchoPosture GA-1.0.0 self-test`; updated release docs and audit rules; built and packaged a portable Windows x64 folder.
 - Risk:
   - Launcher bridge path affects MediaPipe resource loading when the package is under the current Chinese workspace path.
@@ -24,13 +24,23 @@
   - Result: passed; report showed run root `C:\Users\aaabb\AppData\Local\EchoPostureGA100\current`, GPU host exit code 0, Debug UI exit code 0, Vision exit code 0, Tray monitor exit code 0.
   - Command: `gh repo view NOVVLA/ICC --json nameWithOwner,visibility,isPrivate,url`
   - Result: passed; repository reported `visibility=PUBLIC` and `isPrivate=false`.
+  - Command: `gh release create ga-1.0.0 dist\EchoPosture-GA-1.0.0-win-x64.zip --repo NOVVLA/ICC --target 197fbb092a7b7fbd61626c5c5df709aed01d103c --title "EchoPosture GA-1.0.0"`
+  - Result: passed; release URL `https://github.com/NOVVLA/ICC/releases/tag/ga-1.0.0`.
+  - Command: `gh release view ga-1.0.0 --repo NOVVLA/ICC --json tagName,name,isPrerelease,isDraft,url,targetCommitish,createdAt,publishedAt,assets`
+  - Result: passed; tag `ga-1.0.0`, target commit `197fbb092a7b7fbd61626c5c5df709aed01d103c`, `isDraft=false`, `isPrerelease=false`, asset state `uploaded`, size `305721523`, digest `sha256:345b9f9e06ca058af77197ee741b9c87e60d59fce27b7357728f9c8576cff5f4`.
+  - Command: `git ls-remote --tags origin ga-1.0.0`
+  - Result: passed; remote tag exists at `639d1dde2f18faf98b8b000ec406941af791ccef`.
+  - Command: `gh repo view NOVVLA/ICC --json nameWithOwner,visibility,isPrivate,url`
+  - Result: passed after release; repository still reported `visibility=PUBLIC` and `isPrivate=false`.
 - Artifacts:
   - Package: `dist\EchoPosture-GA-1.0.0-win-x64`
   - Zip: `dist\EchoPosture-GA-1.0.0-win-x64.zip`
-  - Zip size/SHA256: pending final zip after release source commit is created.
-  - Release URL: pending.
+  - Zip size: `305721523` bytes
+  - SHA256: `345B9F9E06CA058AF77197EE741B9C87E60D59FCE27B7357728F9C8576CFF5F4`
+  - Release URL: `https://github.com/NOVVLA/ICC/releases/tag/ga-1.0.0`
+  - GitHub asset digest: `sha256:345b9f9e06ca058af77197ee741b9c87e60d59fce27b7357728f9c8576cff5f4`
 - Gaps: GUI animation smoothness, tray flyout interaction, and long-running camera/overlay behavior still require user-side real desktop validation beyond self-test.
-- Conclusion: pending GitHub release creation and post-release audit update.
+- Conclusion: GA-1.0.0 package was released and post-release checks passed.
 
 ## 2026-06-09 - Audit Baseline
 
