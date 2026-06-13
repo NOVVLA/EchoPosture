@@ -2,6 +2,36 @@
 
 本日志从 Git 历史和当前仓库文件还原，作为后续过程审计的起点。2026-06-09 以前的条目不是完整实时开发记录；它们只记录 Git 能证明的事实和已经识别出的证据缺口。后续提交必须按 [PROCESS_AUDIT.md](PROCESS_AUDIT.md) 补充验证、风险和产物证据。
 
+## 2026-06-13 - GA-1.0.0 Package and Release
+
+- Source: user request to use the latest `main`, set the version to `GA-1.0.0`, build a release package, push to remote, and create a GitHub release.
+- Git: release source commit `pending`, branch `main`, tag `ga-1.0.0`; post-release audit commit `pending`.
+- Scope: changed package/release labeling to `GA-1.0.0`; changed launcher ASCII bridge from `%LOCALAPPDATA%\EchoPostureTeamAlpha` to `%LOCALAPPDATA%\EchoPostureGA100`; changed self-test title to `EchoPosture GA-1.0.0 self-test`; updated release docs and audit rules; built and packaged a portable Windows x64 folder.
+- Risk:
+  - Launcher bridge path affects MediaPipe resource loading when the package is under the current Chinese workspace path.
+  - Release package must not reuse the old TEAM_ALPHA package, path, bridge label, or release tag.
+  - Package verification needs LocalAppData write access; sandboxed execution cannot create the ASCII bridge.
+- Verification:
+  - Command: `git fetch origin`
+  - Result: passed; local `main` matched `origin/main` before release work.
+  - Command: `runtime\python311\python.exe -m py_compile tray_app.py vision_worker.py gpu_blur_overlay.py onboarding_toast.py tray_flyout.py posture_console.py debug_ui.py vision_test.py`
+  - Result: passed (exit 0).
+  - Command: `.\build_launcher.cmd`
+  - Result: passed; rebuilt `BlurOverlayHost.exe`, `EchoPosture.exe`, and `EchoPostureSelfTest.exe`.
+  - Command: `dist\EchoPosture-GA-1.0.0-win-x64\EchoPostureSelfTest.exe`
+  - Result: failed under sandbox because `%LOCALAPPDATA%\EchoPostureGA100` could not be created; MediaPipe then ran from the Chinese path and missed bundled resources.
+  - Command: `dist\EchoPosture-GA-1.0.0-win-x64\EchoPostureSelfTest.exe` with approved unsandboxed execution.
+  - Result: passed; report showed run root `C:\Users\aaabb\AppData\Local\EchoPostureGA100\current`, GPU host exit code 0, Debug UI exit code 0, Vision exit code 0, Tray monitor exit code 0.
+  - Command: `gh repo view NOVVLA/ICC --json nameWithOwner,visibility,isPrivate,url`
+  - Result: passed; repository reported `visibility=PUBLIC` and `isPrivate=false`.
+- Artifacts:
+  - Package: `dist\EchoPosture-GA-1.0.0-win-x64`
+  - Zip: `dist\EchoPosture-GA-1.0.0-win-x64.zip`
+  - Zip size/SHA256: pending final zip after release source commit is created.
+  - Release URL: pending.
+- Gaps: GUI animation smoothness, tray flyout interaction, and long-running camera/overlay behavior still require user-side real desktop validation beyond self-test.
+- Conclusion: pending GitHub release creation and post-release audit update.
+
 ## 2026-06-09 - Audit Baseline
 
 - Source: maintenance audit request.

@@ -1,6 +1,6 @@
 # EchoPosture
 
-Windows 桌面端姿态监测原型。主入口会以系统托盘方式静默运行，用摄像头识别用户的脸部、肩膀和躯干关系，并在明确需要调整姿势时逐步降低屏幕可见亮度和屏幕清晰度。当前 TEAM_ALPHA 版优先使用原生 GPU 模糊宿主；当桌面捕获被系统拒绝时，会切到 Windows compositor 实时模糊 fallback。
+Windows 桌面端姿态监测原型。主入口会以系统托盘方式静默运行，用摄像头识别用户的脸部、肩膀和躯干关系，并在明确需要调整姿势时逐步降低屏幕可见亮度和屏幕清晰度。当前 GA-1.0.0 版优先使用原生 GPU 模糊宿主；当桌面捕获被系统拒绝时，会切到 Windows compositor 实时模糊 fallback。
 
 ## 项目规则
 
@@ -173,11 +173,11 @@ Windows 通知区域的排序和是否进入隐藏抽屉由系统和用户设置
 
 `Documents\ICC` 是一个纯英文路径入口，指向当前项目文件。启动脚本会优先从这个入口运行，避免中文路径下 MediaPipe 资源加载问题。
 
-## TEAM_ALPHA 发布包
+## GA-1.0.0 发布包
 
-当前 TEAM_ALPHA 发布包位于：
+当前 GA-1.0.0 发布包位于：
 
-- `dist\EchoPosture-TEAM_ALPHA-20260609-154821-win-x64`
+- `dist\EchoPosture-GA-1.0.0-win-x64`
 
 用户入口：
 

@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-06-13
+
+### Changed
+
+- Set the release channel and package labeling to `GA-1.0.0`.
+- Updated the launcher ASCII bridge path and self-test label for the GA release.
+
 ## 2026-06-09
 
 ### Changed

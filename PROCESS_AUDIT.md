@@ -18,7 +18,7 @@
 - 单次提交跨多个模块，或单个提交超过一个清晰子任务。
 - 改动改变用户可见行为、文案、UI、托盘菜单、热键、默认配置、冻结文件规则或发布规则。
 - 改动涉及 `ui/index.html` 冻结参考、`posture_console.py`、`tray_app.py`、`vision_test.py`、`native/BlurOverlayHost.cpp` 或 `launcher/EchoPostureLauncher.cs`。
-- 创建、更新、替换、回滚或删除 TEAM_ALPHA 包、历史 DEV 包、release 附件、备份目录或构建脚本。
+- 创建、更新、替换、回滚或删除 GA、TEAM_ALPHA 包、历史 DEV 包、release 附件、备份目录或构建脚本。
 - 修复先前错误文档、错误发布、错误验证结论或失败自测。
 
 只读检查可以不写开发日志，但如果检查结果会影响后续开发判断，应在 [DEVELOPMENT_LOG.md](DEVELOPMENT_LOG.md) 的“审计缺口/已知问题”中记录。
@@ -47,7 +47,7 @@
 
 ## 发布和包审计规则
 
-每次 TEAM_ALPHA 包、历史 DEV 包或 release 相关操作都必须记录：
+每次 GA、TEAM_ALPHA 包、历史 DEV 包或 release 相关操作都必须记录：
 
 - 源码 commit SHA 和 tag。
 - 构建时间、构建命令、构建机器路径。
@@ -69,10 +69,10 @@
 
 - 2026-05-30 初始 MVP 和早期备份缺少完整开发日志。
 - `_backups/EchoPosture-source-backup-20260530-194638` 没有 `BACKUP_MANIFEST.txt`。
-- 根目录 `logs/self-test-latest.txt` 是 2026-05-31 的旧失败日志，不能证明 2026-06-07 DEV 包或后续 TEAM_ALPHA 包通过验证。
+- 根目录 `logs/self-test-latest.txt` 是 2026-05-31 的旧失败日志，不能证明 2026-06-07 DEV 包或后续 TEAM_ALPHA/GA 包通过验证。
 - `dist/EchoPosture-DEV-20260607-144042-win-x64/logs` 当前没有可用 self-test 记录。
 - 2026-06-02、2026-06-07、2026-06-08 的大提交缺少逐项验证证据、截图证据和发布 hash 记录。
-- `dev-20260607-144042` tag 能证明历史源码点，但不能单独证明包内容、release 附件和本地产物完全一致。后续 TEAM_ALPHA tag 也必须配套记录产物 hash 和 release 回查结果。
+- `dev-20260607-144042` tag 能证明历史源码点，但不能单独证明包内容、release 附件和本地产物完全一致。后续 TEAM_ALPHA/GA tag 也必须配套记录产物 hash 和 release 回查结果。
 
 ## 开发日志模板
 
