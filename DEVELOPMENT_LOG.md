@@ -2,6 +2,26 @@
 
 本日志从 Git 历史和当前仓库文件还原，作为后续过程审计的起点。2026-06-09 以前的条目不是完整实时开发记录；它们只记录 Git 能证明的事实和已经识别出的证据缺口。后续提交必须按 [PROCESS_AUDIT.md](PROCESS_AUDIT.md) 补充验证、风险和产物证据。
 
+## 2026-06-13 - 修复模糊期间无法操作系统托盘（点击穿透回归）
+
+- Source: user 紧急 bug 报告——"一旦开始模糊便无法操作以系统托盘栏为首的一些屏幕内容"，导致无法点开托盘图标关闭软件。要求先备份、在隔离的安全文件夹（git worktree）修改、提交并推送分支、未经许可不合并主分支。
+- Git: 在 `main`（`40bdce6`）基础上新建隔离 worktree 与分支 `fix/blur-overlay-tray-clickthrough`；源码备份至 `_backups/pre-tray-clickthrough-fix-20260613-222828`（gitignored）。
+- 根因定位:
+  - 原生 GPU 覆盖层 `native/BlurOverlayHost.cpp` 已是完整点击穿透（`WM_NCHITTEST→HTTRANSPARENT`、`WM_MOUSEACTIVATE→MA_NOACTIVATE`、窗口样式 `WS_EX_TRANSPARENT|WS_EX_LAYERED|WS_EX_NOACTIVATE`），不阻挡托盘——非本 bug 来源。
+  - PyQt fallback 覆盖层 `debug_ui.py::PostureInterventionOverlay`（GPU 主机不健康时启用）：`_set_live_blur()` 调用 `SetLayeredWindowAttributes` 与 `SetWindowCompositionAttribute(ACCENT_ENABLE_BLURBEHIND)` 开启背景模糊，这些合成调用会使先前设置的 `WS_EX_TRANSPARENT` 失效；而 `_enable_windows_click_through()` 仅在窗口首次显示时调用一次，不再重设。结果：live blur 一旦开启，全屏覆盖层即开始拦截全部鼠标输入，托盘等窗口不可点击。
+- Scope（仅改 `debug_ui.py`，不动主文件、不改原生 exe）:
+  - `_enable_windows_click_through()`：补充 `WS_EX_NOACTIVATE`；改为幂等（样式已就位则跳过，避免每帧抖动）；修改扩展样式后用 `SetWindowPos(SWP_FRAMECHANGED|SWP_NOACTIVATE|...)` 强制提交，确保 `WS_EX_TRANSPARENT` 立即生效。
+  - `_set_live_blur()`：在 `SetLayeredWindowAttributes` 之后、以及 `SetWindowCompositionAttribute` 之后各重新断言一次点击穿透，使穿透样式具备每帧自愈能力。
+- Risk:
+  - 本机 shell 环境 Qt GUI 层无法初始化（既往日志已记录 `QGuiApplication` 构造挂起），无法在此环境实机目检覆盖层鼠标行为，需用户在真实桌面验证。
+  - 修复仅覆盖 PyQt fallback 路径；若用户机实际走原生 GPU 路径且仍有问题，需另行排查（该路径静态审查为点击穿透）。
+- Verification:
+  - Command: `runtime\python311\python.exe -m py_compile debug_ui.py`
+  - Result: passed（exit 0）。
+  - 实机验证: 待用户在真实桌面确认——开启模糊后系统托盘图标可右键/点击、浮窗红色退出按钮可关闭软件。
+- Gaps: 未做 GUI 实机目检（环境限制）；未重建原生 exe（无需，改动为纯 Python fallback）。
+- Conclusion: 已在隔离分支修复 fallback 覆盖层点击穿透回归，待用户实机验证后再决定是否合并。
+
 ## 2026-06-13 - GA-1.0.0 Package and Release
 
 - Source: user request to use the latest `main`, set the version to `GA-1.0.0`, build a release package, push to remote, and create a GitHub release.

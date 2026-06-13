@@ -264,10 +264,30 @@ class PostureInterventionOverlay(QWidget):
         ws_ex_layered = 0x00080000
         ws_ex_transparent = 0x00000020
         ws_ex_toolwindow = 0x00000080
+        ws_ex_noactivate = 0x08000000
+        needed = ws_ex_layered | ws_ex_transparent | ws_ex_toolwindow | ws_ex_noactivate
 
         style = user32.GetWindowLongW(hwnd, gwl_exstyle)
-        style |= ws_ex_layered | ws_ex_transparent | ws_ex_toolwindow
-        user32.SetWindowLongW(hwnd, gwl_exstyle, style)
+        if style & needed == needed:
+            # 样式已就位，无需重复设置——避免每帧 SetWindowPos 抖动。
+            return
+        user32.SetWindowLongW(hwnd, gwl_exstyle, style | needed)
+        # SetWindowLongW 修改扩展样式后必须用 SetWindowPos(SWP_FRAMECHANGED) 提交，
+        # 否则 WS_EX_TRANSPARENT 可能不会立即生效，全屏覆盖层会继续吞掉鼠标输入。
+        swp_nosize = 0x0001
+        swp_nomove = 0x0002
+        swp_nozorder = 0x0004
+        swp_noactivate = 0x0010
+        swp_framechanged = 0x0020
+        user32.SetWindowPos(
+            hwnd,
+            0,
+            0,
+            0,
+            0,
+            0,
+            swp_nosize | swp_nomove | swp_nozorder | swp_noactivate | swp_framechanged,
+        )
 
     def _set_live_blur(self, enabled: bool, blur_mix: float = 0.0) -> None:
         if sys.platform != "win32":
@@ -284,6 +304,10 @@ class PostureInterventionOverlay(QWidget):
             self._layer_opacity = layer_opacity
         except Exception:
             self._layer_opacity = 1.0
+
+        # SetLayeredWindowAttributes 可能清除 WS_EX_TRANSPARENT，立刻重新断言点击穿透，
+        # 否则模糊覆盖层会拦截对系统托盘等窗口的点击。
+        self._enable_windows_click_through()
 
         if enabled == self._live_blur_enabled:
             return
@@ -321,6 +345,10 @@ class PostureInterventionOverlay(QWidget):
             self._live_blur_enabled = bool(result) if enabled else False
         except Exception:
             self._live_blur_enabled = False
+
+        # 开启背景模糊（ACCENT_ENABLE_BLURBEHIND）后 DWM 可能让窗口重新参与命中测试，
+        # 再次强制点击穿透，确保模糊期间托盘与其它窗口始终可点击。
+        self._enable_windows_click_through()
 
 
 class DebugWindow(QMainWindow):
