@@ -14,8 +14,24 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
 
-from PyQt5.QtCore import Qt, QTimer
-from PyQt5.QtGui import QColor, QFont, QIcon, QPainter, QPixmap
+from PyQt5.QtCore import (
+    QEasingCurve,
+    QPointF,
+    QPropertyAnimation,
+    QRectF,
+    Qt,
+    QTimer,
+)
+from PyQt5.QtGui import (
+    QBrush,
+    QColor,
+    QFont,
+    QIcon,
+    QLinearGradient,
+    QPainter,
+    QPen,
+    QPixmap,
+)
 from PyQt5.QtWidgets import (
     QApplication,
     QDialog,
@@ -30,7 +46,14 @@ from PyQt5.QtWidgets import (
 )
 
 from gpu_blur_overlay import GpuBlurOverlayController
-from onboarding_toast import OnboardingToast
+from onboarding_toast import (
+    RED_SOFT,
+    SILVER_HI,
+    SILVER_LO,
+    OnboardingToast,
+    _font,
+    render_glass_card,
+)
 from posture_console import PostureConsoleWindow
 from tray_flyout import TrayFlyout
 from vision_test import (
@@ -62,51 +85,152 @@ class _EngineProxy:
         return self._worker.get_capture_fps()
 
 
+class _CountdownRing(QWidget):
+    """自绘倒计时圆环：底环 + 渐变进度弧 + 居中数字。
+
+    与玻璃卡片同一银色语言；进度弧从 12 点顺时针递减，
+    颜色由顶部银白渐入底部品牌红，作为校准时的视觉焦点。
+    """
+
+    def __init__(self, parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        self.setFixedSize(128, 128)
+        self.setAttribute(Qt.WA_TranslucentBackground, True)
+        self._remaining = 0
+        self._total = 1
+        self._num_font = QFont("Segoe UI", 44)
+        self._num_font.setBold(True)
+
+    def set_values(self, remaining: int, total: int) -> None:
+        self._remaining = max(remaining, 0)
+        self._total = max(total, 1)
+        self.update()
+
+    def paintEvent(self, event) -> None:
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing, True)
+
+        stroke = 7.0
+        inset = stroke / 2.0 + 3.0
+        rect = QRectF(inset, inset,
+                      self.width() - 2 * inset, self.height() - 2 * inset)
+
+        # 底环（淡白）
+        p.setPen(QPen(QColor(255, 255, 255, 28), stroke,
+                      Qt.SolidLine, Qt.RoundCap))
+        p.setBrush(Qt.NoBrush)
+        p.drawArc(rect, 0, 360 * 16)
+
+        # 进度弧（银白 → 品牌红渐变），从 12 点顺时针递减
+        frac = max(0.0, min(1.0, self._remaining / self._total))
+        if frac > 0.0:
+            grad = QLinearGradient(rect.topLeft(), rect.bottomLeft())
+            grad.setColorAt(0.0, SILVER_HI)
+            grad.setColorAt(1.0, RED_SOFT)
+            pen = QPen(QBrush(grad), stroke, Qt.SolidLine, Qt.RoundCap)
+            p.setPen(pen)
+            p.drawArc(rect, 90 * 16, int(-frac * 360 * 16))
+
+        # 居中数字
+        p.setPen(SILVER_HI)
+        p.setFont(self._num_font)
+        p.drawText(self.rect(), int(Qt.AlignCenter), str(self._remaining))
+        p.end()
+
+
 class StartupCalibrationDialog(QDialog):
+    """启动校准提示：无边框玻璃卡 + logo 衬底，与开场弹窗、托盘浮窗同一语言。
+
+    对外仍是 seconds → step() → _refresh() 的接口，tray_app 的倒计时逻辑零改动。
+    """
+
+    DIALOG_W = 580
+    DIALOG_H = 248
+
+    PAD_X = 42                       # 左侧文字外边距
+    RING_RIGHT = 30                  # 圆环右外边距
+    CAP_TOP = 64                     # 小标题顶
+    TITLE_TOP = 90                   # 主标题顶
+    BODY_TOP = 142                   # 说明首行顶
+    LINE_H = 24                      # 说明行高
+
     def __init__(self, seconds: int = 5) -> None:
         super().__init__()
         self.remaining_seconds = seconds
+        self.total_seconds = max(seconds, 1)
+        self._card: Optional[QPixmap] = None
+        self._fade: Optional[QPropertyAnimation] = None
+        self._shown_once = False
+
         self.setWindowTitle("EchoPosture")
         self.setWindowFlags(
-            Qt.Dialog
-            | Qt.CustomizeWindowHint
-            | Qt.WindowTitleHint
-            | Qt.WindowStaysOnTopHint
+            Qt.Dialog | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint
         )
-        self.setFixedSize(620, 280)
+        self.setAttribute(Qt.WA_TranslucentBackground, True)
+        self.setFixedSize(self.DIALOG_W, self.DIALOG_H)
 
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(34, 30, 34, 28)
-        layout.setSpacing(16)
+        # 倒计时圆环：右侧，垂直居中（动态部分作为子控件自绘，文字画进卡片）
+        self.ring = _CountdownRing(self)
+        ring_x = self.DIALOG_W - self.RING_RIGHT - self.ring.width()
+        ring_y = (self.DIALOG_H - self.ring.height()) // 2
+        self.ring.move(ring_x, ring_y)
 
-        title = QLabel("请立即坐直，并保持舒适姿态")
-        title.setAlignment(Qt.AlignCenter)
-        title.setWordWrap(True)
-        title.setFont(QFont("Microsoft YaHei", 20, QFont.Bold))
-
-        body = QLabel("EchoPosture 将在倒计时结束后自动使用摄像头校准当前姿势。")
-        body.setAlignment(Qt.AlignCenter)
-        body.setWordWrap(True)
-        body.setFont(QFont("Microsoft YaHei", 12))
-
-        self.countdown_label = QLabel("")
-        self.countdown_label.setAlignment(Qt.AlignCenter)
-        self.countdown_label.setFont(QFont("Segoe UI", 48, QFont.Bold))
-
-        layout.addWidget(title)
-        layout.addWidget(body)
-        layout.addStretch(1)
-        layout.addWidget(self.countdown_label)
         self._refresh()
-        self.setStyleSheet(
-            """
-            QDialog {
-                background: #f7f9fc;
-                border: 1px solid #d8e0ea;
-            }
-            QLabel { color: #172033; }
-            """
-        )
+        self._center_on_screen()
+
+    def _center_on_screen(self) -> None:
+        screen = QApplication.primaryScreen().availableGeometry()
+        self.move(screen.center() - self.rect().center())
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        if self._shown_once:
+            return
+        self._shown_once = True
+        self.setWindowOpacity(0.0)
+        anim = QPropertyAnimation(self, b"windowOpacity", self)
+        anim.setDuration(240)
+        anim.setStartValue(0.0)
+        anim.setEndValue(1.0)
+        anim.setEasingCurve(QEasingCurve.OutCubic)
+        anim.start()
+        self._fade = anim
+
+    def paintEvent(self, event) -> None:
+        if self._card is None:
+            self._card = self._render_card()
+        p = QPainter(self)
+        p.drawPixmap(0, 0, self._card)
+        p.end()
+
+    def _render_card(self) -> QPixmap:
+        """玻璃卡 + logo 衬底，并把三段静态文字一次性画进 pixmap（与开场弹窗一致）。"""
+        pm = render_glass_card(self.width(), self.height(), self.devicePixelRatioF())
+        p = QPainter(pm)
+        p.setRenderHint(QPainter.Antialiasing, True)
+
+        text_w = self.ring.x() - self.PAD_X - 20  # 文字区右界，给圆环留白
+
+        p.setFont(_font("Microsoft YaHei", 11, 4.2))
+        p.setPen(SILVER_LO)
+        p.drawText(QRectF(self.PAD_X, self.CAP_TOP, text_w, 16),
+                   int(Qt.AlignLeft | Qt.AlignVCenter), "ECHOPOSTURE · 启动校准")
+
+        p.setFont(_font("Microsoft YaHei", 21, 1.5, QFont.DemiBold))
+        p.setPen(SILVER_HI)
+        p.drawText(QRectF(self.PAD_X, self.TITLE_TOP, text_w, 32),
+                   int(Qt.AlignLeft | Qt.AlignVCenter), "请坐直，保持舒适姿态")
+
+        p.setFont(_font("Microsoft YaHei", 12, 0.8))
+        p.setPen(SILVER_LO)
+        body_lines = ("倒计时结束后，将自动用摄像头", "把当前姿势记为健康基准。")
+        for i, line in enumerate(body_lines):
+            p.drawText(QRectF(self.PAD_X, self.BODY_TOP + i * self.LINE_H,
+                              text_w, self.LINE_H),
+                       int(Qt.AlignLeft | Qt.AlignVCenter), line)
+
+        p.end()
+        return pm
 
     def step(self) -> bool:
         self.remaining_seconds -= 1
@@ -114,7 +238,7 @@ class StartupCalibrationDialog(QDialog):
         return self.remaining_seconds <= 0
 
     def _refresh(self) -> None:
-        self.countdown_label.setText(f"{max(self.remaining_seconds, 0)}")
+        self.ring.set_values(max(self.remaining_seconds, 0), self.total_seconds)
 
 
 class StatusPanel(QWidget):

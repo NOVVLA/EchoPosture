@@ -245,3 +245,21 @@
 - Risk: 去重缓存与宿主实际状态不一致会导致命令漏发——已在 gpu 恢复、clear、boost 路径强制重置缓存。
 - Verification: 同上一条目的 py_compile 与接线断言（hideEvent/_last_sent_target/_config_dirty 存在）；GPU 宿主实际行为待用户实机验证（压暗/模糊触发与解除、最深效果测试）。
 - Conclusion: local only; 待用户实机验证。
+
+## 2026-06-13 - Restyle Startup Calibration Dialog to Glass-Card Language
+
+- Source: user request（把校准提示框统一成与开场弹窗/托盘浮窗一致的风格：logo 半透明打底、无边框、布局好看、配色合理）。
+- Git: commit `pending`, branch `main`.
+- Scope:
+  - `tray_app.py` `StartupCalibrationDialog`：由浅色（`#f7f9fc`）带 1px 边框、居中的 `QDialog`，改造为同族视觉语言——`FramelessWindowHint` + `WA_TranslucentBackground` 无边框透明窗；复用 `onboarding_toast.render_glass_card()`（深色玻璃渐变 + 右侧 logo 蓝图衬底向左渐隐 + 1px 高光描边）；三段静态文字（小标题 `ECHOPOSTURE · 启动校准` / 主标题 `请坐直，保持舒适姿态` / 两行说明）沿用 toast 做法一次性画进缓存 pixmap，银白/银灰分级、左对齐垂直居中。
+  - 新增 `_CountdownRing` 自绘控件替代旧的大号数字：淡白底环 + 银白→品牌红渐变进度弧（12 点顺时针递减）+ 居中数字，作为右侧焦点，与左侧文字构成左文右环布局；动态部分作为子控件自绘，文字进卡片（与 toast 开关/文字分工一致）。
+  - `showEvent` 入场 240ms `windowOpacity` 0→1 淡入；`_center_on_screen` 主屏居中。
+  - 对外接口不变：`StartupCalibrationDialog(seconds)` → `step()` → `_refresh()` 全保留，`_countdown_step`/`finalize_calibration` 驱动逻辑零改动。导入相应补充（QEasingCurve/QPointF/QPropertyAnimation/QRectF、QBrush/QLinearGradient/QPen、render_glass_card/_font/SILVER_*/RED_SOFT）。
+- Risk: 无边框窗失去原生标题栏/关闭按钮（弹窗本就倒计时结束自动关闭，无影响）；窗口标志由 `Qt.Dialog|Customize|Title|StayOnTop` 改为 `Qt.Dialog|Frameless|StayOnTop`；视觉为纯样式改动，不触碰校准状态机。
+- Verification:
+  - Command: `runtime\python311\python.exe -m py_compile tray_app.py`
+  - Result: passed (exit 0)。
+  - Command: 离屏冒烟（QT_QPA_PLATFORM=offscreen 构造对话框 + repaint + 连续 step()）
+  - Result: passed；圆环定位 (422,60)、尺寸 580×248，倒计时 5→4→3→2→1→0 且归零时 `step()` 返回 True、`_CountdownRing` 数值随之更新；玻璃卡/ logo 衬底/圆环弧等矢量部分渲染正常（临时预览脚本已清理，不入库）。
+- Gaps: 本机 offscreen 沙箱 Qt 字体子系统不可用（`QFontDatabase().families()` 直接令进程崩溃），所有 `drawText` 静默不出字，故无法在本环境截出带文字成品图——左侧三段文字与圆环内数字的实际排版需用户在真机/真实显示下目检。
+- Conclusion: local only; 矢量布局与倒计时行为已验证，文字渲染待用户实机目检。
