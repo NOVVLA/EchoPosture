@@ -34,7 +34,7 @@ if os.path.isdir(QT_PLUGIN_ROOT):
     )
 
 from PyQt5.QtCore import Qt, QTimer
-from PyQt5.QtGui import QColor, QFont, QGuiApplication, QImage, QPainter, QPixmap
+from PyQt5.QtGui import QColor, QFont, QGuiApplication, QImage, QPainter, QPixmap, QRegion
 from PyQt5.QtWidgets import (
     QApplication,
     QFrame,
@@ -248,10 +248,19 @@ class PostureInterventionOverlay(QWidget):
         if not screens:
             return
 
-        rect = screens[0].geometry()
+        full_rect = screens[0].geometry()
         for screen in screens[1:]:
-            rect = rect.united(screen.geometry())
-        self.setGeometry(rect)
+            full_rect = full_rect.united(screen.geometry())
+
+        work_region = QRegion()
+        for screen in screens:
+            work_rect = screen.availableGeometry()
+            if work_rect.isNull() or work_rect.width() <= 0 or work_rect.height() <= 0:
+                work_rect = screen.geometry()
+            work_region = work_region.united(QRegion(work_rect.translated(-full_rect.topLeft())))
+
+        self.setGeometry(full_rect)
+        self.setMask(work_region)
 
     def _enable_windows_click_through(self) -> None:
         if sys.platform != "win32":
