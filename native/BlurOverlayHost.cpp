@@ -38,9 +38,6 @@ constexpr int kHotkeyId = 0x4550;
 constexpr double kRampUpSeconds = 45.0;
 constexpr double kRampDownSeconds = 0.3;
 constexpr float kMaxDimAmount = 0.32f;
-constexpr LONG kMinBottomSafeBandPx = 96;
-constexpr LONG kMaxBottomSafeBandPx = 180;
-constexpr LONG kInputEscapeBandPx = 240;
 constexpr const wchar_t* kWindowClassName = L"EchoPostureBlurOverlayHost";
 
 enum class CaptureMode
@@ -178,42 +175,6 @@ bool IsWindows10_2004OrNewer()
 
     return version.dwMajorVersion > 10 ||
         (version.dwMajorVersion == 10 && version.dwBuildNumber >= 19041);
-}
-
-RECT WorkAreaForOutput(const RECT& output_rect)
-{
-    RECT work_rect = output_rect;
-    HMONITOR monitor = MonitorFromRect(&output_rect, MONITOR_DEFAULTTONULL);
-    if (!monitor)
-    {
-        return work_rect;
-    }
-
-    MONITORINFO monitor_info = {};
-    monitor_info.cbSize = sizeof(monitor_info);
-    if (!GetMonitorInfoW(monitor, &monitor_info))
-    {
-        return work_rect;
-    }
-
-    RECT clipped = {};
-    if (IntersectRect(&clipped, &monitor_info.rcWork, &output_rect) &&
-        clipped.right > clipped.left &&
-        clipped.bottom > clipped.top)
-    {
-        work_rect = clipped;
-    }
-
-    LONG output_height = std::max<LONG>(1, output_rect.bottom - output_rect.top);
-    LONG bottom_safe_band = std::min<LONG>(
-        kMaxBottomSafeBandPx,
-        std::max<LONG>(kMinBottomSafeBandPx, output_height / 12));
-    LONG safe_bottom = output_rect.bottom - bottom_safe_band;
-    if (work_rect.bottom > safe_bottom && safe_bottom > work_rect.top + 240)
-    {
-        work_rect.bottom = safe_bottom;
-    }
-    return work_rect;
 }
 
 LRESULT CALLBACK OverlayWndProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam)
@@ -446,12 +407,9 @@ public:
             return false;
         }
 
-        output_rect_ = output_desc_.DesktopCoordinates;
-        rect_ = WorkAreaForOutput(output_rect_);
+        rect_ = output_desc_.DesktopCoordinates;
         width_ = static_cast<UINT>(std::max<LONG>(1, rect_.right - rect_.left));
         height_ = static_cast<UINT>(std::max<LONG>(1, rect_.bottom - rect_.top));
-        source_x_ = static_cast<UINT>(std::max<LONG>(0, rect_.left - output_rect_.left));
-        source_y_ = static_cast<UINT>(std::max<LONG>(0, rect_.top - output_rect_.top));
         low_width_ = std::max<UINT>(1, width_ / 4);
         low_height_ = std::max<UINT>(1, height_ / 4);
 
@@ -510,12 +468,12 @@ public:
             return false;
         }
 
+        Show();
         if (!Render(0.02f, true, reason))
         {
             Hide();
             return false;
         }
-        Show();
 
         Sleep(120);
         bool marker_seen = false;
@@ -558,12 +516,6 @@ public:
             return true;
         }
 
-        if (CursorInInputEscapeBand())
-        {
-            Hide();
-            return true;
-        }
-
         if (capture_mode_ == CaptureMode::SystemBackdrop)
         {
             Show();
@@ -590,16 +542,8 @@ public:
             return true;
         }
 
-        bool was_visible = visible_;
-        if (!Render(level, false, reason))
-        {
-            return false;
-        }
-        if (!was_visible)
-        {
-            Show();
-        }
-        return true;
+        Show();
+        return Render(level, false, reason);
     }
 
     void SetVisualConfig(float max_dim_amount, float blur_scale)
@@ -805,9 +749,6 @@ private:
             reason = "SetWindowDisplayAffinity(WDA_EXCLUDEFROMCAPTURE) failed";
             return false;
         }
-
-        EnableWindow(hwnd_, FALSE);
-        SetLayeredWindowAttributes(hwnd_, 0, 1, LWA_ALPHA);
 
         ComPtr<IDXGIDevice> dxgi_device;
         HRESULT hr = device_.As(&dxgi_device);
@@ -1177,22 +1118,7 @@ private:
         hr = resource.As(&acquired_texture);
         if (SUCCEEDED(hr))
         {
-            D3D11_BOX source_box = {};
-            source_box.left = source_x_;
-            source_box.top = source_y_;
-            source_box.front = 0;
-            source_box.right = source_x_ + width_;
-            source_box.bottom = source_y_ + height_;
-            source_box.back = 1;
-            context_->CopySubresourceRegion(
-                frame_texture_.Get(),
-                0,
-                0,
-                0,
-                0,
-                acquired_texture.Get(),
-                0,
-                &source_box);
+            context_->CopyResource(frame_texture_.Get(), acquired_texture.Get());
             has_frame_ = true;
         }
         duplication_->ReleaseFrame();
@@ -1363,14 +1289,9 @@ private:
             return false;
         }
 
-        UINT sample_x = source_x_ + std::min<UINT>(4, width_ - 1);
-        UINT sample_y = source_y_ + std::min<UINT>(4, height_ - 1);
-        UINT sample_right = std::min<UINT>(source_x_ + width_, sample_x + 16);
-        UINT sample_bottom = std::min<UINT>(source_y_ + height_, sample_y + 16);
-
         D3D11_TEXTURE2D_DESC desc = {};
-        desc.Width = std::max<UINT>(1, sample_right - sample_x);
-        desc.Height = std::max<UINT>(1, sample_bottom - sample_y);
+        desc.Width = 16;
+        desc.Height = 16;
         desc.MipLevels = 1;
         desc.ArraySize = 1;
         desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
@@ -1388,11 +1309,11 @@ private:
         }
 
         D3D11_BOX box = {};
-        box.left = sample_x;
-        box.top = sample_y;
+        box.left = 4;
+        box.top = 4;
         box.front = 0;
-        box.right = sample_right;
-        box.bottom = sample_bottom;
+        box.right = 20;
+        box.bottom = 20;
         box.back = 1;
         context_->CopySubresourceRegion(staging.Get(), 0, 0, 0, 0, acquired_texture.Get(), 0, &box);
         duplication_->ReleaseFrame();
@@ -1475,21 +1396,6 @@ private:
         }
 
         return true;
-    }
-
-    bool CursorInInputEscapeBand() const
-    {
-        POINT cursor = {};
-        if (!GetCursorPos(&cursor))
-        {
-            return false;
-        }
-        if (cursor.x < output_rect_.left || cursor.x >= output_rect_.right ||
-            cursor.y < output_rect_.top || cursor.y >= output_rect_.bottom)
-        {
-            return false;
-        }
-        return cursor.y >= output_rect_.bottom - kInputEscapeBandPx;
     }
 
     void SetCommonState()
@@ -1579,12 +1485,9 @@ private:
     ComPtr<IDXGIOutput> output_;
     ComPtr<IDXGIOutput1> output1_;
     DXGI_OUTPUT_DESC output_desc_ = {};
-    RECT output_rect_ = {};
     RECT rect_ = {};
     UINT width_ = 1;
     UINT height_ = 1;
-    UINT source_x_ = 0;
-    UINT source_y_ = 0;
     UINT low_width_ = 1;
     UINT low_height_ = 1;
     HWND hwnd_ = nullptr;
