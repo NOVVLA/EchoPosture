@@ -303,3 +303,19 @@
   - Result: passed；圆环定位 (422,60)、尺寸 580×248，倒计时 5→4→3→2→1→0 且归零时 `step()` 返回 True、`_CountdownRing` 数值随之更新；玻璃卡/ logo 衬底/圆环弧等矢量部分渲染正常（临时预览脚本已清理，不入库）。
 - Gaps: 本机 offscreen 沙箱 Qt 字体子系统不可用（`QFontDatabase().families()` 直接令进程崩溃），所有 `drawText` 静默不出字，故无法在本环境截出带文字成品图——左侧三段文字与圆环内数字的实际排版需用户在真机/真实显示下目检。
 - Conclusion: local only; 矢量布局与倒计时行为已验证，文字渲染待用户实机目检。
+
+## 2026-06-14 - Intervention Layer Control Impact Investigation Branch
+
+- Source: user request to preserve the failed taskbar/tray intervention-layer investigation on an explicitly named branch.
+- Git: branch `intervention-layer-control-impact`; documentation commit pending at time of writing.
+- Scope:
+  - Added `docs/intervention-layer-control-impact.md` to explain the branch purpose, the active runtime paths, the taskbar/tray control impact, the discarded geometry/click-through experiments, the white-flash rollback, and future safer mitigation directions.
+  - Added `docs/README.md` as a small index for branch-specific maintenance notes.
+  - No runtime source files are intentionally changed by this documentation commit.
+- Risk: this branch contains historical commits with failed overlay experiments, but the latest source state has those runtime edits reverted. Do not treat this branch as a merge-ready fix without reviewing the final diff against `main`.
+- Verification:
+  - Command: `git diff --stat main...HEAD` after commit `1c0bee8`.
+  - Result: no runtime source diff remained before adding this documentation.
+  - Earlier investigation checks included `BlurOverlayHost.exe --self-test` and Python syntax checks for `debug_ui.py`, `gpu_blur_overlay.py`, and `tray_app.py`; those checks only proved structural runnability, not a successful taskbar fix.
+- Gaps: the taskbar/tray interaction issue remains unresolved and is intentionally not pursued further on this branch. The recommended next direction is an emergency stop/control path that does not depend on opening the Windows tray during active blur.
+- Conclusion: documentation-only branch marker; useful for future maintainers to understand why this branch exists and why the failed overlay experiments were reverted.
