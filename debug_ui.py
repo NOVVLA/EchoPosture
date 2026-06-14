@@ -120,6 +120,8 @@ class PostureInterventionOverlay(QWidget):
     RAMP_UP_SECONDS = 45.0
     RAMP_DOWN_SECONDS = 0.3
     TICK_MS = 80
+    MIN_BOTTOM_SAFE_BAND_PX = 96
+    MAX_BOTTOM_SAFE_BAND_PX = 180
 
     def __init__(self) -> None:
         super().__init__()
@@ -257,6 +259,13 @@ class PostureInterventionOverlay(QWidget):
             work_rect = screen.availableGeometry()
             if work_rect.isNull() or work_rect.width() <= 0 or work_rect.height() <= 0:
                 work_rect = screen.geometry()
+            bottom_safe_band = min(
+                self.MAX_BOTTOM_SAFE_BAND_PX,
+                max(self.MIN_BOTTOM_SAFE_BAND_PX, screen.geometry().height() // 12),
+            )
+            safe_bottom = screen.geometry().bottom() + 1 - bottom_safe_band
+            if work_rect.bottom() + 1 > safe_bottom and safe_bottom > work_rect.top() + 240:
+                work_rect.setBottom(safe_bottom - 1)
             work_region = work_region.united(QRegion(work_rect.translated(-full_rect.topLeft())))
 
         self.setGeometry(full_rect)

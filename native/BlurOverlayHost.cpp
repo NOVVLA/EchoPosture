@@ -38,6 +38,8 @@ constexpr int kHotkeyId = 0x4550;
 constexpr double kRampUpSeconds = 45.0;
 constexpr double kRampDownSeconds = 0.3;
 constexpr float kMaxDimAmount = 0.32f;
+constexpr LONG kMinBottomSafeBandPx = 96;
+constexpr LONG kMaxBottomSafeBandPx = 180;
 constexpr const wchar_t* kWindowClassName = L"EchoPostureBlurOverlayHost";
 
 enum class CaptureMode
@@ -199,6 +201,16 @@ RECT WorkAreaForOutput(const RECT& output_rect)
         clipped.bottom > clipped.top)
     {
         work_rect = clipped;
+    }
+
+    LONG output_height = std::max<LONG>(1, output_rect.bottom - output_rect.top);
+    LONG bottom_safe_band = std::min<LONG>(
+        kMaxBottomSafeBandPx,
+        std::max<LONG>(kMinBottomSafeBandPx, output_height / 12));
+    LONG safe_bottom = output_rect.bottom - bottom_safe_band;
+    if (work_rect.bottom > safe_bottom && safe_bottom > work_rect.top + 240)
+    {
+        work_rect.bottom = safe_bottom;
     }
     return work_rect;
 }
