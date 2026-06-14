@@ -40,6 +40,7 @@ constexpr double kRampDownSeconds = 0.3;
 constexpr float kMaxDimAmount = 0.32f;
 constexpr LONG kMinBottomSafeBandPx = 96;
 constexpr LONG kMaxBottomSafeBandPx = 180;
+constexpr LONG kInputEscapeBandPx = 240;
 constexpr const wchar_t* kWindowClassName = L"EchoPostureBlurOverlayHost";
 
 enum class CaptureMode
@@ -509,12 +510,12 @@ public:
             return false;
         }
 
-        Show();
         if (!Render(0.02f, true, reason))
         {
             Hide();
             return false;
         }
+        Show();
 
         Sleep(120);
         bool marker_seen = false;
@@ -557,6 +558,12 @@ public:
             return true;
         }
 
+        if (CursorInInputEscapeBand())
+        {
+            Hide();
+            return true;
+        }
+
         if (capture_mode_ == CaptureMode::SystemBackdrop)
         {
             Show();
@@ -583,8 +590,16 @@ public:
             return true;
         }
 
-        Show();
-        return Render(level, false, reason);
+        bool was_visible = visible_;
+        if (!Render(level, false, reason))
+        {
+            return false;
+        }
+        if (!was_visible)
+        {
+            Show();
+        }
+        return true;
     }
 
     void SetVisualConfig(float max_dim_amount, float blur_scale)
@@ -790,6 +805,9 @@ private:
             reason = "SetWindowDisplayAffinity(WDA_EXCLUDEFROMCAPTURE) failed";
             return false;
         }
+
+        EnableWindow(hwnd_, FALSE);
+        SetLayeredWindowAttributes(hwnd_, 0, 1, LWA_ALPHA);
 
         ComPtr<IDXGIDevice> dxgi_device;
         HRESULT hr = device_.As(&dxgi_device);
@@ -1457,6 +1475,21 @@ private:
         }
 
         return true;
+    }
+
+    bool CursorInInputEscapeBand() const
+    {
+        POINT cursor = {};
+        if (!GetCursorPos(&cursor))
+        {
+            return false;
+        }
+        if (cursor.x < output_rect_.left || cursor.x >= output_rect_.right ||
+            cursor.y < output_rect_.top || cursor.y >= output_rect_.bottom)
+        {
+            return false;
+        }
+        return cursor.y >= output_rect_.bottom - kInputEscapeBandPx;
     }
 
     void SetCommonState()

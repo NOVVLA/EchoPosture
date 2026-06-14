@@ -34,7 +34,7 @@ if os.path.isdir(QT_PLUGIN_ROOT):
     )
 
 from PyQt5.QtCore import Qt, QTimer
-from PyQt5.QtGui import QColor, QFont, QGuiApplication, QImage, QPainter, QPixmap, QRegion
+from PyQt5.QtGui import QColor, QCursor, QFont, QGuiApplication, QImage, QPainter, QPixmap, QRegion
 from PyQt5.QtWidgets import (
     QApplication,
     QFrame,
@@ -122,6 +122,7 @@ class PostureInterventionOverlay(QWidget):
     TICK_MS = 80
     MIN_BOTTOM_SAFE_BAND_PX = 96
     MAX_BOTTOM_SAFE_BAND_PX = 180
+    INPUT_ESCAPE_BAND_PX = 240
 
     def __init__(self) -> None:
         super().__init__()
@@ -132,6 +133,7 @@ class PostureInterventionOverlay(QWidget):
         self._layer_opacity = 1.0
         self._last_tick = time.perf_counter()
         self._live_blur_enabled = False
+        self._input_escape_active = False
 
         self.setWindowTitle("EchoPosture Intervention Overlay")
         self.setAttribute(Qt.WA_TranslucentBackground, True)
@@ -159,7 +161,7 @@ class PostureInterventionOverlay(QWidget):
         if active:
             self._cover_all_screens()
             self._last_tick = time.perf_counter()
-            if not self.isVisible():
+            if not self._cursor_in_input_escape_band() and not self.isVisible():
                 self.show()
                 self.raise_()
                 self._enable_windows_click_through()
@@ -177,7 +179,7 @@ class PostureInterventionOverlay(QWidget):
         self._level = 1.0
         self._cover_all_screens()
         self._last_tick = time.perf_counter()
-        if not self.isVisible():
+        if not self._cursor_in_input_escape_band() and not self.isVisible():
             self.show()
             self.raise_()
             self._enable_windows_click_through()
@@ -215,6 +217,17 @@ class PostureInterventionOverlay(QWidget):
                 self.hide()
             self._set_live_blur(False)
             return
+
+        if self._cursor_in_input_escape_band():
+            self._input_escape_active = True
+            if self.isVisible():
+                self.hide()
+            self._set_live_blur(False)
+            return
+
+        if self._input_escape_active:
+            self._input_escape_active = False
+            self._cover_all_screens()
 
         if not self.isVisible():
             self.show()
@@ -271,6 +284,14 @@ class PostureInterventionOverlay(QWidget):
         self.setGeometry(full_rect)
         self.setMask(work_region)
 
+    def _cursor_in_input_escape_band(self) -> bool:
+        cursor_pos = QCursor.pos()
+        for screen in QGuiApplication.screens():
+            rect = screen.geometry()
+            if rect.contains(cursor_pos):
+                return cursor_pos.y() >= rect.bottom() + 1 - self.INPUT_ESCAPE_BAND_PX
+        return False
+
     def _enable_windows_click_through(self) -> None:
         if sys.platform != "win32":
             return
@@ -286,6 +307,7 @@ class PostureInterventionOverlay(QWidget):
         style = user32.GetWindowLongW(hwnd, gwl_exstyle)
         style |= ws_ex_layered | ws_ex_transparent | ws_ex_toolwindow
         user32.SetWindowLongW(hwnd, gwl_exstyle, style)
+        user32.EnableWindow(hwnd, False)
 
     def _set_live_blur(self, enabled: bool, blur_mix: float = 0.0) -> None:
         if sys.platform != "win32":
