@@ -2,6 +2,32 @@
 
 本日志从 Git 历史和当前仓库文件还原，作为后续过程审计的起点。2026-06-09 以前的条目不是完整实时开发记录；它们只记录 Git 能证明的事实和已经识别出的证据缺口。后续提交必须按 [PROCESS_AUDIT.md](PROCESS_AUDIT.md) 补充验证、风险和产物证据。
 
+## 2026-06-15 - Repository Rename and Public Visibility
+
+- Source: user request to stop using `ICC` as the remote repository name, use the Markdown project name, and keep the repository public.
+- Git: commit `b2d336514f684c50f2e519caacbed6204e345c89`, branch `main`, tag `none`.
+- Scope: renamed the GitHub repository from `NOVVLA/ICC` to `NOVVLA/EchoPosture`; updated local `origin` to `https://github.com/NOVVLA/EchoPosture.git`; updated process rules so the canonical repository and visibility checks match the public `EchoPosture` repository.
+- Risk:
+  - Release, push, and audit commands must use the renamed repository.
+  - Old `NOVVLA/ICC` links remain as historical release evidence only and must not be treated as the current canonical repository.
+  - Documentation that still says the repository should be private would conflict with the current public release posture.
+- Verification:
+  - Command: `gh repo view NOVVLA/ICC --json name,nameWithOwner,url,isPrivate,visibility,defaultBranchRef`
+  - Result: passed before rename; repository reported `nameWithOwner=NOVVLA/ICC`, `visibility=PUBLIC`, and `isPrivate=false`.
+  - Command: `gh repo view NOVVLA/EchoPosture --json nameWithOwner,url,visibility,isPrivate`
+  - Result: failed before rename because `NOVVLA/EchoPosture` did not yet exist.
+  - Command: `gh repo rename -R NOVVLA/ICC EchoPosture --yes`
+  - Result: passed.
+  - Command: `gh repo view NOVVLA/EchoPosture --json name,nameWithOwner,url,isPrivate,visibility,defaultBranchRef`
+  - Result: passed after rename; repository reported `nameWithOwner=NOVVLA/EchoPosture`, `url=https://github.com/NOVVLA/EchoPosture`, `visibility=PUBLIC`, `isPrivate=false`, and default branch `main`.
+  - Command: `git remote set-url origin https://github.com/NOVVLA/EchoPosture.git`
+  - Result: passed.
+  - Command: `git remote -v`
+  - Result: passed; fetch and push now point to `https://github.com/NOVVLA/EchoPosture.git`.
+- Artifacts: GitHub repository URL `https://github.com/NOVVLA/EchoPosture`.
+- Gaps: historical release URLs that were created under `NOVVLA/ICC` are retained as old evidence; GitHub should redirect them, but new commands and rules must use `NOVVLA/EchoPosture`.
+- Conclusion: repository name now matches the Markdown project name `EchoPosture`, and the target repository visibility is public.
+
 ## 2026-06-13 - GA-1.0.0 Package and Release
 
 - Source: user request to use the latest `main`, set the version to `GA-1.0.0`, build a release package, push to remote, and create a GitHub release.
@@ -93,13 +119,13 @@
   - Command: `dist\EchoPosture-TEAM_ALPHA-20260609-154821-win-x64\EchoPostureSelfTest.exe` with approved unsandboxed execution.
   - Result: passed; report showed run root `C:\Users\aaabb\AppData\Local\EchoPostureTeamAlpha\current`, GPU host exit code 0, Debug UI exit code 0, Vision exit code 0, Tray monitor exit code 0.
   - Command: `gh repo view NOVVLA/ICC --json nameWithOwner,visibility,isPrivate,url`
-  - Result: passed; repository reported `visibility=PRIVATE` and `isPrivate=true`.
+  - Result: historical pre-public-state check; superseded by the 2026-06-15 public visibility record above.
   - Command: `gh release create team-alpha-20260609-154821 dist\EchoPosture-TEAM_ALPHA-20260609-154821-win-x64.zip --repo NOVVLA/ICC --target db37ea6a88a7958de54f67f3d06c269c6acb6d23 --title "EchoPosture TEAM_ALPHA 20260609-154821" --prerelease`
   - Result: passed; release URL `https://github.com/NOVVLA/ICC/releases/tag/team-alpha-20260609-154821`.
   - Command: `gh release view team-alpha-20260609-154821 --repo NOVVLA/ICC --json tagName,name,isPrerelease,url,targetCommitish,createdAt,publishedAt,assets`
   - Result: passed; tag `team-alpha-20260609-154821`, target commit `db37ea6a88a7958de54f67f3d06c269c6acb6d23`, `isPrerelease=true`, asset state `uploaded`, size `305875036`, digest `sha256:7a0018e09a0c5a7a4f3b0ce350a27cb43c94cd01b0c19f42da2078c46f891fd3`.
   - Command: `gh repo view NOVVLA/ICC --json nameWithOwner,visibility,isPrivate,url`
-  - Result: passed after release; repository still reported `visibility=PRIVATE` and `isPrivate=true`.
+  - Result: historical pre-public-state check; superseded by the 2026-06-15 public visibility record above.
   - Command: `git ls-remote --tags origin team-alpha-20260609-154821`
   - Result: failed; network connection timed out after 300 seconds.
   - Command: `git fetch origin tag team-alpha-20260609-154821`

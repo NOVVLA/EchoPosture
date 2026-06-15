@@ -61,7 +61,7 @@
 - 单文件恢复可以从备份或旧提交恢复，但恢复结果也必须提交。
 - release 附件出错时，应覆盖同一 release 附件并更新 notes，或按用户要求创建新的修正 release；不能静默替换而不更新说明。
 - 本地发布包、release 附件、README、CHANGELOG 的版本号和 SHA256 必须一致。
-- 回滚完成后必须再次验证：工作树、目标文件、release 附件 digest、仓库私密状态。
+- 回滚完成后必须再次验证：工作树、目标文件、release 附件 digest、仓库公开状态。
 
 ## 冻结文件
 
@@ -74,10 +74,10 @@
 ## 发布规则
 
 - TEAM_ALPHA 版本必须使用 `TEAM_ALPHA` / `team-alpha-...` 标识；打包和 GitHub release 不再使用 `DEV` / `dev-...` 标识。
-- GitHub canonical 远端仓库是 `https://github.com/NOVVLA/ICC.git`；推送前应确认 `origin` 的 fetch/push URL 指向该地址。
+- GitHub canonical 远端仓库是 `https://github.com/NOVVLA/EchoPosture.git`；推送前应确认 `origin` 的 fetch/push URL 指向该地址。
 - 如果 GitHub 提示仓库 moved / relocated，必须先更新本地 `origin` 到迁移后的 canonical 地址，再继续 fetch、push 或 release 操作。
-- 创建或更新 release 后，必须回查 release 状态、附件名称、附件大小、digest、prerelease 状态和仓库私密状态。
-- GitHub 仓库必须保持私密；任何发布前后都要用 GitHub CLI 回查 `visibility=PRIVATE` 和 `isPrivate=true`。
+- 创建或更新 release 后，必须回查 release 状态、附件名称、附件大小、digest、prerelease 状态和仓库公开状态。
+- GitHub 仓库必须保持公开；任何发布前后都要用 GitHub CLI 回查 `visibility=PUBLIC` 和 `isPrivate=false`。
 - 每次创建、更新或替换本地 TEAM_ALPHA 包、release 附件或 tag 时，必须按 [PROCESS_AUDIT.md](PROCESS_AUDIT.md) 记录源码 SHA、tag、构建命令、产物路径、关键文件 hash、验证结果和未验证项。
 
 ## 备份规则

@@ -54,7 +54,7 @@
 - 包目录、入口 EXE、诊断 EXE、关键脚本。
 - SHA256 或至少关键文件 hash；正式 release 必须记录完整附件 digest。
 - `git status --short`、`git remote -v`、tag 指向和 GitHub release 回查结果。
-- 仓库私密状态回查结果；如果无法回查，必须写明原因。
+- 仓库公开状态回查结果；如果无法回查，必须写明原因。
 
 ## 备份和回滚审计规则
 
