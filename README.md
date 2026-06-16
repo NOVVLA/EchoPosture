@@ -1,195 +1,97 @@
 # EchoPosture
 
-Windows 桌面端姿态监测原型。主入口会以系统托盘方式静默运行，用摄像头识别用户的脸部、肩膀和躯干关系，并在明确需要调整姿势时逐步降低屏幕可见亮度和屏幕清晰度。当前 GA-1.0.0 版优先使用原生 GPU 模糊宿主；当桌面捕获被系统拒绝时，会切到 Windows compositor 实时模糊 fallback。
+EchoPosture is a Windows desktop posture-monitoring prototype. It uses a webcam with MediaPipe/OpenCV-based posture signals, runs quietly from the system tray, performs startup calibration, and applies gradual screen dimming or blur when posture risk remains high.
 
-## 项目规则
+It is intended as an ergonomics aid, not a medical diagnostic tool.
 
-编辑、提交、回滚、分支和发布规则见 [ROE.md](ROE.md)。过程审计、开发日志、验证证据和发布记录规则见 [PROCESS_AUDIT.md](PROCESS_AUDIT.md)，当前从 Git 还原的开发日志见 [DEVELOPMENT_LOG.md](DEVELOPMENT_LOG.md)。后续维护者必须先遵守这些文件，再修改仓库。
+## Download
 
-## 启动方式
+Use the latest GitHub release instead of cloning the source repository if you only want to run the app:
 
-推荐从英文路径入口启动：
+- Release: [EchoPosture GA-1.0.0](https://github.com/NOVVLA/EchoPosture/releases/tag/ga-1.0.0)
+- Download: [EchoPosture-GA-1.0.0-win-x64.zip](https://github.com/NOVVLA/EchoPosture/releases/download/ga-1.0.0/EchoPosture-GA-1.0.0-win-x64.zip)
+- SHA256: `345b9f9e06ca058af77197ee741b9c87e60d59fce27b7357728f9c8576cff5f4`
 
-- `C:\Users\aaabb\Documents\ICC`
+The release package is a portable folder for Windows x64. It includes the embedded Python runtime and required Python dependencies. The source repository does not include `runtime/`, `dist/`, or built `.exe` files.
 
-双击：
+## Run
 
-- `EchoPosture.exe`
+1. Download the release ZIP.
+2. Extract it to a simple local folder, for example `C:\EchoPosture`.
+3. Open the extracted folder.
+4. Double-click `EchoPosture.exe`.
+5. Allow camera access if Windows asks.
+6. When the 5-second startup prompt appears, sit upright in a comfortable posture and stay still until calibration finishes.
 
-启动后会先弹出一个 5 秒倒计时提示窗，请立即坐直并保持舒适姿态。倒计时期间程序会持续采集可用摄像头样本；倒计时结束后，程序会对这批样本做平均并作为后续监测基准。
+After calibration, EchoPosture continues running from the Windows notification area.
 
-校准完成后，右下角系统托盘会出现 EchoPosture 小标识。右键托盘图标可以打开菜单，支持 `立即重新校准`、`立即测试最深效果` 和 `停止`。双击托盘图标会打开一个小状态面板，显示当前状态、压暗程度、模糊程度、最深压暗滑块、模糊强度滑块和一键最深效果测试。
+Windows SmartScreen may warn about unsigned builds. Only run the package if it came from the release link above and the SHA256 matches.
 
-Windows 通知区域的排序和是否进入隐藏抽屉由系统和用户设置控制，程序不会修改 Explorer 或注册表去强制占用第 1 位。
+## Tray Controls
 
-调试入口：
+- Right-click the tray icon to open the menu.
+- `立即重新校准` starts a new posture baseline calibration.
+- `立即测试最深效果` previews the strongest visual intervention.
+- `停止` clears the visual overlay, releases the camera, and exits the app.
+- Double-click the tray icon to open the status panel.
 
-- [run_debug_ui.cmd](run_debug_ui.cmd)
-- `EchoPosture.exe --debug-ui`
+The status panel shows the current posture state, dimming level, blur level, maximum dimming control, blur-strength control, and a one-click max-effect test.
 
-## 当前功能
+## Self Test
 
-- 实时显示摄像头画面。
-- 在画面上叠加双眼、鼻尖、肩膀、髋部、头颈轴线和躯干轴线。
-- 一键校准当前舒适坐姿。
-- 默认启用高精度模式。
-- 默认启用高性能模式，尽量以 72 FPS 采集和刷新。
-- 调试 UI 显示姿态状态、风险原因、风险评分和持续时间。
-- 检测用户离开、多人进入、疑似换人。
-- 当姿态进入持续确认的 `BAD` 或 `CRITICAL` 时，不调整系统亮度，而是用鼠标穿透的全屏覆盖层逐步变暗。
+Run `EchoPostureSelfTest.exe` from the release package when startup or camera behavior is unclear. It checks the packaged runtime, debug UI, vision path, tray monitor path, and GPU blur helper.
 
-## 调试 UI
+Use the self test first if:
 
-右侧面板显示：
+- the camera cannot be opened;
+- the tray icon does not appear;
+- the status panel does not open;
+- screen dimming or blur does not behave as expected;
+- the app fails under a path that contains non-English characters.
 
-- `脸部距离`
-- `肩膀倾斜`
-- `估算距离`
-- `躯干倾斜`
-- `风险评分`
-- `当前基准`
-- `状态`
-- `原因`
+Emergency clear for the native blur host:
 
-`高精度模式` 和 `高性能模式` 默认打开。高精度模式需要一个校准距离，默认是 `60 cm`。如果你校准时的真实眼睛到屏幕距离不是 60 cm，请先改成实际距离，再点击校准。
+- `Ctrl+Alt+Shift+E`
 
-## 离线 UI 原型
+## What It Does
 
-非侵入式 HTML/SVG UI 原型位于：
+EchoPosture monitors posture signals from the webcam:
 
-- `ui\index.html`
+- face presence and approximate face distance;
+- shoulder position and asymmetry;
+- torso direction from shoulder and hip landmarks;
+- user-away, multi-user, and profile-mismatch states;
+- sustained `BAD` or `CRITICAL` posture risk.
 
-它完全离线运行，不接入托盘主程序、不读取摄像头、不修改系统状态；当前用于复刻 OCULI / VERTEBRA 视觉样例，并验证眼睛总开关、椎骨功能开关和状态读出的视觉交互。
+Visual intervention is intentionally delayed. It requires a confirmed `BAD` or `CRITICAL` state, risk score `>= 45`, sustained risk for at least `12` seconds, and an extra `3` seconds of continuous confirmation.
 
-注意：`ui\index.html` 是冻结的视觉参考文件。后续功能、可访问性、命中区域、favicon、文案或交互优化都不要直接改这个文件；除非明确要求修改 UI 参考本身，否则只在文档或另行创建的新原型文件中说明。
+When intervention starts, EchoPosture does not change system brightness. It uses a full-screen, topmost, click-through overlay and gradually applies dimming and blur. The native GPU blur host is preferred; if desktop capture is unavailable, the app falls back to Windows compositor blur behavior.
 
-## 校准流程
+## Privacy
 
-1. 把屏幕放在你认为舒适的位置。
-2. 坐直，保持自然使用电脑时的姿势。
-3. 在右侧填写当前眼睛到屏幕的大致距离。
-4. 点击 `校准当前姿势`。
-5. 程序会把当前视觉数据作为健康基准。
+The current app is a local Windows desktop prototype. It uses the camera for posture analysis and does not require an account or cloud service to run the released package.
 
-校准会记录：
+## Limitations
 
-- 瞳距像素值。
-- 肩膀高低差。
-- 肩宽。
-- 躯干倾斜角。
-- 头部朝向比例。
-- 脸肩比例和躯干肩宽比例。
+- EchoPosture is not a medical device and does not diagnose spinal, vision, or ergonomic conditions.
+- A single webcam cannot precisely measure real neck or spine angles.
+- Lighting, camera position, occlusion, chair position, and monitor layout can affect detection quality.
+- Windows camera permissions and desktop-capture restrictions can affect startup, self-test, or GPU blur behavior.
+- Long-running real desktop behavior should still be validated by the user on their own machine.
 
-## 判定模式
+## Source Repository
 
-### 基础模式
+The repository contains source code, build scripts, and process documentation. It does not contain generated release folders, embedded runtimes, logs, backups, or `.exe` artifacts.
 
-基础模式保留最早的规则：
+Useful developer entry points:
 
-- 当前瞳距大于基准瞳距的 `1.25` 倍，判定为离屏幕太近。
-- 肩膀高度偏离基准超过 `28px`，判定为肩膀倾斜。
+- [README_EXE.md](README_EXE.md): launcher and packaged EXE behavior.
+- [run_debug_ui.cmd](run_debug_ui.cmd): debug UI entry.
+- [run_vision_test.cmd](run_vision_test.cmd): vision test entry.
+- [run_overlay_test.cmd](run_overlay_test.cmd): overlay test entry.
+- [build_launcher.cmd](build_launcher.cmd): builds the Windows launcher package.
+- [ROE.md](ROE.md): repository editing, branching, release, and rollback rules.
+- [PROCESS_AUDIT.md](PROCESS_AUDIT.md): development-log and release-evidence rules.
+- [DEVELOPMENT_LOG.md](DEVELOPMENT_LOG.md): tracked development and release audit trail.
 
-基础模式仍在代码中保留，但调试 UI 现在默认进入高精度模式。
-
-### 高精度模式
-
-高精度模式先做前置保护，再做姿态风险评分。
-
-前置保护包括：
-
-- `AWAY`：用户离开画面。
-- `MULTI_USER`：检测到多张脸。
-- `PROFILE_MISMATCH`：用户离开或多人出现后，回来的人和原校准轮廓差异过大。
-
-这些状态会抑制姿态风险评分，避免把错误基准套到错误用户上。
-
-姿态风险包括：
-
-- 距离风险：根据校准距离和瞳距变化估算当前距离。
-- 头部转向风险：根据眼距缩窄和鼻尖相对双眼中心偏移检测左右转头。
-- 肩宽缩窄风险：当前肩宽明显低于校准肩宽时，判断可能侧身或转体。
-- 肩颈不对称风险：用肩膀高度差相对肩宽换算角度。
-- 躯干倾斜风险：用肩中心到髋中心的轴线和基准对比。
-- 持续时间风险：风险短暂跳动不会立刻报警，但持续超过阈值会升级。
-
-## 视觉干预
-
-主程序先用启动时 5 秒倒计时期间采集到的摄像头样本完成一次平均校准，然后在后台监测姿态。只有当高精度判定进入明确需要调整的 `BAD` 或 `CRITICAL` 状态，并且风险被持续确认后，才会触发视觉干预。
-
-当前触发门槛：
-
-- 状态必须是 `BAD` 或 `CRITICAL`。
-- 风险评分必须达到 `45` 或以上。
-- 持续风险时间必须达到 `12` 秒或以上。
-- 满足上述条件后，还需要连续确认 `3` 秒。
-- 一旦状态离开 `BAD` / `CRITICAL`，候选触发会立即重置。
-
-干预方式：
-
-- 不修改系统亮度。
-- 使用全屏、置顶、鼠标穿透覆盖层。
-- 约 45 秒逐步变暗。
-- 不再使用截图蒙版做模糊，避免视频或动态桌面出现静态残影。
-- 当前默认启用原生 GPU 模糊宿主；如果 DXGI/GDI 桌面捕获被系统拒绝，会改用 Windows compositor 实时模糊，状态面板里的模糊程度会继续随干预级别上升。
-- 姿态恢复后约 0.3 秒内清除暗化和模糊效果。
-- 点击托盘菜单里的 `停止` 会立即清除覆盖层、释放摄像头并退出程序。
-
-## 用户离开、多人和疑似换人
-
-高精度模式会在姿态评分前处理用户身份和场景问题：
-
-- 用户完全离开后，会进入 `AWAY`。
-- 检测到多张脸时，会进入 `MULTI_USER`。
-- 用户离开或多人出现后，再回来时会检查脸肩比例和躯干肩宽比例。
-- 如果差异过大，会进入 `PROFILE_MISMATCH`，避免把旧基准套到另一个人身上。
-
-这些判断不是人脸识别，只是基于姿态采样特征的轮廓一致性保护。
-
-## 状态说明
-
-- `GOOD`：指标正常。
-- `GOOD_PART`：部分指标可用且正常，但有指标缺失。
-- `WATCH`：正在观察风险，尚未达到报警持续时间。
-- `BAD`：需要调整姿势。
-- `CRITICAL`：高风险状态。
-- `UNKNOWN`：暂时无法可靠判断。
-- `AWAY`：用户离开。
-- `MULTI_USER`：画面中出现多人。
-- `PROFILE_MISMATCH`：疑似不是同一个用户。
-
-## 独立测试脚本
-
-视觉输出终端测试：
-
-- [run_vision_test.cmd](run_vision_test.cmd)
-
-视觉覆盖层测试：
-
-- [run_overlay_test.cmd](run_overlay_test.cmd)
-
-## 运行原理
-
-项目内已经打包了一份 Python 3.11 运行环境，放在 `runtime/python311`。
-
-`Documents\ICC` 是一个纯英文路径入口，指向当前项目文件。启动脚本会优先从这个入口运行，避免中文路径下 MediaPipe 资源加载问题。
-
-## GA-1.0.0 发布包
-
-当前 GA-1.0.0 发布包位于：
-
-- `dist\EchoPosture-GA-1.0.0-win-x64`
-
-用户入口：
-
-- `EchoPosture.exe`：托盘监测主程序。
-- `EchoPostureSelfTest.exe`：摄像头、UI 和运行环境诊断。
-
-发布包是单文件夹便携形态，包含嵌入式 Python 运行时和 Python 依赖。EXE 是原生 Windows 启动器，负责设置运行环境并启动嵌入式 Python；它不是把完整 Python 运行时压进一个单独二进制文件。
-
-## 当前限制
-
-- 这仍然是调试用 MVP，不是最终版主程序。
-- 高精度模式不是医学诊断，只是人体工学风险提示。
-- 单目摄像头不能精确测量真实颈椎角度。
-- 屏幕或摄像头位置变化不再作为单独状态检测。
-- 数据记录仍待完善；任何后续可观察改动、构建、发布、回滚或高风险验证都必须把过程证据写入 [DEVELOPMENT_LOG.md](DEVELOPMENT_LOG.md) 或其链接的 Git 可追踪文档，不能只依赖被忽略的 `logs/`、`dist/`、`runtime/` 或 `_backups/` 目录。
+The offline UI prototype in [ui/index.html](ui/index.html) is a frozen visual reference. Do not change it for general app behavior unless the UI reference itself is the intended target.
