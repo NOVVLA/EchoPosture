@@ -5,7 +5,7 @@
 ## 2026-06-15 - Repository Rename and Public Visibility
 
 - Source: user request to stop using `ICC` as the remote repository name, use the Markdown project name, and keep the repository public.
-- Git: commit `b2d336514f684c50f2e519caacbed6204e345c89`, branch `main`, tag `none`.
+- Git: commit `50443e71808f11057caadaddeef731006b6be974`, branch `main`, tag `none`.
 - Scope: renamed the GitHub repository from `NOVVLA/ICC` to `NOVVLA/EchoPosture`; updated local `origin` to `https://github.com/NOVVLA/EchoPosture.git`; updated process rules so the canonical repository and visibility checks match the public `EchoPosture` repository.
 - Risk:
   - Release, push, and audit commands must use the renamed repository.
