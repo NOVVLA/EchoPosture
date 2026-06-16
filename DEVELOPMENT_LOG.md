@@ -5,7 +5,7 @@
 ## 2026-06-16 - Public README Rewrite
 
 - Source: user request to keep the local maintainer README for internal use while replacing the remote-facing README with a guide public users can follow.
-- Git: commit `pending`, branch `main`, tag `none`.
+- Git: commit `d9a4e3917a3d49470b3d8ab86a37a3aeb390fa5c`, branch `main`, tag `none`.
 - Scope: rewrote [README.md](README.md) as a public GitHub landing page; removed local machine paths, local `dist/` and `runtime/` assumptions, and debug-first instructions; added release download, SHA256, first-run steps, tray controls, self-test guidance, source/developer entry points, and current limitations. Preserved the prior local README as untracked `README.local.md`.
 - Risk:
   - Public users must be directed to the GitHub release ZIP rather than source-tree-only or local-package paths.
