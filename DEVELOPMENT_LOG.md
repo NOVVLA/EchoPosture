@@ -2,6 +2,26 @@
 
 本日志从 Git 历史和当前仓库文件还原，作为后续过程审计的起点。2026-06-09 以前的条目不是完整实时开发记录；它们只记录 Git 能证明的事实和已经识别出的证据缺口。后续提交必须按 [PROCESS_AUDIT.md](PROCESS_AUDIT.md) 补充验证、风险和产物证据。
 
+## 2026-06-16 - Public README Rewrite
+
+- Source: user request to keep the local maintainer README for internal use while replacing the remote-facing README with a guide public users can follow.
+- Git: commit `pending`, branch `main`, tag `none`.
+- Scope: rewrote [README.md](README.md) as a public GitHub landing page; removed local machine paths, local `dist/` and `runtime/` assumptions, and debug-first instructions; added release download, SHA256, first-run steps, tray controls, self-test guidance, source/developer entry points, and current limitations. Preserved the prior local README as untracked `README.local.md`.
+- Risk:
+  - Public users must be directed to the GitHub release ZIP rather than source-tree-only or local-package paths.
+  - The root README is the GitHub landing page and must not require knowledge of this local workspace.
+  - The local maintainer README must remain untracked so it is not uploaded as public guidance.
+- Verification:
+  - Command: `gh release view ga-1.0.0 --repo NOVVLA/EchoPosture --json tagName,name,isPrerelease,isDraft,url,targetCommitish,assets`
+  - Result: passed; release `EchoPosture GA-1.0.0` is not draft or prerelease, asset `EchoPosture-GA-1.0.0-win-x64.zip` exists with digest `sha256:345b9f9e06ca058af77197ee741b9c87e60d59fce27b7357728f9c8576cff5f4`.
+  - Command: `gh repo view NOVVLA/EchoPosture --json nameWithOwner,url,visibility,isPrivate,defaultBranchRef`
+  - Result: passed; repository is `NOVVLA/EchoPosture`, `visibility=PUBLIC`, `isPrivate=false`, default branch `main`.
+  - Command: `git fetch origin main`
+  - Result: failed because Git HTTPS could not connect to `github.com:443`; GitHub API checks remained available.
+- Artifacts: public README update for `https://github.com/NOVVLA/EchoPosture`.
+- Gaps: remote update may need the GitHub API path if ordinary Git push remains unavailable in this environment.
+- Conclusion: ready to publish after diff review.
+
 ## 2026-06-15 - Repository Rename and Public Visibility
 
 - Source: user request to stop using `ICC` as the remote repository name, use the Markdown project name, and keep the repository public.
