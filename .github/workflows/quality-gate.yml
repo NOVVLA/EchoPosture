@@ -1,0 +1,68 @@
+name: quality-gate
+
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  python-quality:
+    name: python-quality
+    runs-on: windows-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
+
+      - name: Run Ruff static checks
+        run: ruff check debug_ui.py gpu_blur_overlay.py onboarding_toast.py overlay_test.py posture_console.py test_vision_worker.py tray_app.py tray_flyout.py vision_test.py vision_worker.py
+
+      - name: Compile Python source
+        shell: pwsh
+        run: |
+          $files = @(
+            "debug_ui.py",
+            "gpu_blur_overlay.py",
+            "onboarding_toast.py",
+            "overlay_test.py",
+            "posture_console.py",
+            "test_vision_worker.py",
+            "tray_app.py",
+            "tray_flyout.py",
+            "vision_test.py",
+            "vision_worker.py"
+          )
+          python -m py_compile @files
+
+      - name: Run logic tests
+        run: python test_vision_worker.py
+
+  windows-build:
+    name: windows-build
+    runs-on: windows-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Build launcher and native host
+        shell: cmd
+        run: build_launcher.cmd
