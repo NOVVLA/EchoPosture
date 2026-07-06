@@ -339,6 +339,11 @@ class HighPrecisionPostureAnalyzer(PostureAnalyzer):
         self.risk_clear_seconds = risk_clear_seconds
         self.risk_start_score = 35.0
         self.away_grace_seconds = away_grace_seconds
+        # 运行时功能开关（UI 主线程写、工作线程读；GIL 下 bool 读写原子，
+        # evaluate 每帧读取一次即可生效）。默认全开，与历史行为一致。
+        self.precision_enabled = True        # False → 回退到基础阈值判定
+        self.presence_check_enabled = True   # False → 不产出 AWAY/MULTI_USER
+        self.identity_check_enabled = True   # False → 不做换人比对
         self._risk_started_at: Optional[datetime] = None
         self._last_risky_at: Optional[datetime] = None
         self._smoothed_score = 0.0
@@ -346,6 +351,9 @@ class HighPrecisionPostureAnalyzer(PostureAnalyzer):
         self._requires_profile_check = False
 
     def evaluate(self, sample: VisionSample) -> PostureDecision:
+        if not self.precision_enabled:
+            return self._basic_mode_evaluate(sample)
+
         if self.auto_calibrate and sample.face_count <= 1 and (
             sample.face_detected or sample.pose_detected
         ):
@@ -407,6 +415,31 @@ class HighPrecisionPostureAnalyzer(PostureAnalyzer):
         reasons.append("risk_observing")
         return PostureDecision("WATCH", ",".join(reasons), True, final_score, sustained_seconds)
 
+    def _basic_mode_evaluate(self, sample: VisionSample) -> PostureDecision:
+        """PRECISION 关闭时的回退：沿用基础阈值判定（PostureAnalyzer），
+        但保留在场/换人门控，并把 BAD 折算成 risk_score/sustained_seconds，
+        保证托盘的干预链路（risk>=45 且 sustained>=12s）仍然工作。"""
+        if self.baseline is not None:
+            suppressed = self._suppressed_presence_decision(sample)
+            if suppressed is not None:
+                return suppressed
+
+        decision = super().evaluate(sample)
+        if decision.status not in {"GOOD", "GOOD_PART", "BAD"}:
+            return decision
+        instant_score = 60.0 if decision.status == "BAD" else 0.0
+        smoothed_score = self._smooth_risk_score(instant_score)
+        sustained_seconds = self._update_sustained_risk(
+            sample, instant_score, smoothed_score
+        )
+        return PostureDecision(
+            decision.status,
+            decision.reason,
+            decision.calibrated,
+            instant_score,
+            sustained_seconds,
+        )
+
     def estimated_distance_cm(self, sample: VisionSample) -> Optional[float]:
         if (
             self.baseline is None
@@ -426,13 +459,15 @@ class HighPrecisionPostureAnalyzer(PostureAnalyzer):
         self,
         sample: VisionSample,
     ) -> Optional[PostureDecision]:
+        # 离开/换人的内部状态始终跟踪（两项功能互相独立），
+        # presence_check_enabled 只决定是否产出 AWAY/MULTI_USER 抑制决策。
         if sample.face_count > 1:
             self._requires_profile_check = True
             self._away_started_at = None
-            self._reset_risk_state()
-            return PostureDecision("MULTI_USER", "multiple_faces_detected", True)
-
-        if not sample.face_detected and not sample.pose_detected:
+            if self.presence_check_enabled:
+                self._reset_risk_state()
+                return PostureDecision("MULTI_USER", "multiple_faces_detected", True)
+        elif not sample.face_detected and not sample.pose_detected:
             if self._away_started_at is None:
                 self._away_started_at = sample.timestamp
             away_seconds = max(
@@ -440,13 +475,23 @@ class HighPrecisionPostureAnalyzer(PostureAnalyzer):
                 (sample.timestamp - self._away_started_at).total_seconds(),
             )
             self._requires_profile_check = True
-            self._reset_risk_state()
-            if away_seconds >= self.away_grace_seconds:
-                return PostureDecision("AWAY", f"user_away_s={away_seconds:.1f}", True)
-            return PostureDecision("UNKNOWN", f"user_missing_observing_s={away_seconds:.1f}", True)
+            if self.presence_check_enabled:
+                self._reset_risk_state()
+                if away_seconds >= self.away_grace_seconds:
+                    return PostureDecision("AWAY", f"user_away_s={away_seconds:.1f}", True)
+                return PostureDecision(
+                    "UNKNOWN", f"user_missing_observing_s={away_seconds:.1f}", True
+                )
+            # 关闭在场检测时不抑制：无指标样本会在后续评分中自然得到 UNKNOWN
+            return None
+        else:
+            self._away_started_at = None
 
-        self._away_started_at = None
-        if self._requires_profile_check:
+        # 换人比对只在画面回到单人时进行：多人帧的“第一张脸”归属不可靠
+        if self._requires_profile_check and sample.face_count <= 1:
+            if not self.identity_check_enabled:
+                self._requires_profile_check = False
+                return None
             profile_decision = self._profile_check_decision(sample)
             if profile_decision is not None:
                 self._reset_risk_state()

@@ -178,11 +178,23 @@ def _build_registry(ctrl: "_ControlState") -> List[FeatureSpec]:
         ctrl.high_fps = on
         monitor.engine.set_capture_fps(72.0 if on else 15.0)
 
+    # 分析器功能开关：monitor.analyzer 是 HighPrecisionPostureAnalyzer，
+    # 这三个 bool 由 UI 线程写、工作线程每帧读（GIL 下原子，见 vision_test）。
+    def precision_apply(monitor, on: bool) -> None:
+        monitor.analyzer.precision_enabled = on
+
+    def presence_apply(monitor, on: bool) -> None:
+        monitor.analyzer.presence_check_enabled = on
+
+    def identity_apply(monitor, on: bool) -> None:
+        monitor.analyzer.identity_check_enabled = on
+
     return [
         FeatureSpec("calib", "CALIBRATION", "启动校准", 596, 486, -12, "action",
                     invoke=lambda m: m.recalibrate_now()),
-        FeatureSpec("prec", "PRECISION", "高精度评分", 606, 574, 2, "placeholder",
-                    enabled=False),
+        FeatureSpec("prec", "PRECISION", "高精度评分", 606, 574, 2, "toggle",
+                    apply=precision_apply,
+                    is_active=lambda m: m.analyzer.precision_enabled),
         FeatureSpec("perf", "PERFORMANCE", "72FPS 采集", 634, 662, 14, "toggle",
                     apply=perf_apply,
                     is_active=lambda m: m.engine.get_capture_fps() >= 60.0),
@@ -192,10 +204,12 @@ def _build_registry(ctrl: "_ControlState") -> List[FeatureSpec]:
         FeatureSpec("blur", "BLUR", "GPU 模糊", 648, 844, -7, "toggle",
                     apply=blur_apply,
                     is_active=lambda m: m.overlay.blur_scale > 0),
-        FeatureSpec("pres", "PRESENCE", "离开/多人检测", 620, 936, -17, "placeholder",
-                    enabled=False),
-        FeatureSpec("ident", "IDENTITY", "换人保护", 600, 1026, -11, "placeholder",
-                    enabled=False),
+        FeatureSpec("pres", "PRESENCE", "离开/多人检测", 620, 936, -17, "toggle",
+                    apply=presence_apply,
+                    is_active=lambda m: m.analyzer.presence_check_enabled),
+        FeatureSpec("ident", "IDENTITY", "换人保护", 600, 1026, -11, "toggle",
+                    apply=identity_apply,
+                    is_active=lambda m: m.analyzer.identity_check_enabled),
     ]
 
 

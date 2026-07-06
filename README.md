@@ -33,9 +33,21 @@ Windows SmartScreen may warn about unsigned builds. Only run the package if it c
 - `立即重新校准` starts a new posture baseline calibration.
 - `立即测试最深效果` previews the strongest visual intervention.
 - `停止` clears the visual overlay, releases the camera, and exits the app.
-- Double-click the tray icon to open the status panel.
+- Double-click the tray icon to open the console window.
 
-The status panel shows the current posture state, dimming level, blur level, maximum dimming control, blur-strength control, and a one-click max-effect test.
+The console shows an eye icon (overall monitoring state) and seven feature switches arranged along a spine motif, plus a side panel with dimming level, blur level, maximum dimming control, blur-strength control, and a one-click max-effect test.
+
+The seven feature switches:
+
+- `启动校准` (CALIBRATION) — trigger a new baseline calibration.
+- `高精度评分` (PRECISION) — toggle the full risk-scoring model; when off, EchoPosture falls back to simple threshold checks.
+- `72FPS 采集` (PERFORMANCE) — toggle capture between 72 FPS and a lower power-saving rate.
+- `压暗干预` (DIMMING) — toggle the screen-dimming part of visual intervention.
+- `GPU 模糊` (BLUR) — toggle the screen-blur part of visual intervention.
+- `离开/多人检测` (PRESENCE) — toggle detection of the user stepping away or a second person entering frame.
+- `换人保护` (IDENTITY) — toggle the check that flags when the person in frame no longer matches the calibrated profile.
+
+All toggles except calibration default to on and can be switched independently while monitoring is active.
 
 ## Self Test
 
@@ -45,7 +57,7 @@ Use the self test first if:
 
 - the camera cannot be opened;
 - the tray icon does not appear;
-- the status panel does not open;
+- the console window does not open;
 - screen dimming or blur does not behave as expected;
 - the app fails under a path that contains non-English characters.
 
@@ -62,6 +74,8 @@ EchoPosture monitors posture signals from the webcam:
 - torso direction from shoulder and hip landmarks;
 - user-away, multi-user, and profile-mismatch states;
 - sustained `BAD` or `CRITICAL` posture risk.
+
+Face-distance/shoulder scoring, user-away/multi-user detection, and profile-mismatch detection can each be turned off independently from the console window; all default to on.
 
 Visual intervention is intentionally delayed. It requires a confirmed `BAD` or `CRITICAL` state, risk score `>= 45`, sustained risk for at least `12` seconds, and an extra `3` seconds of continuous confirmation.
 

@@ -2,6 +2,24 @@
 
 本日志从 Git 历史和当前仓库文件还原，作为后续过程审计的起点。2026-06-09 以前的条目不是完整实时开发记录；它们只记录 Git 能证明的事实和已经识别出的证据缺口。后续提交必须按 [PROCESS_AUDIT.md](PROCESS_AUDIT.md) 补充验证、风险和产物证据。
 
+## 2026-07-07 - Wire Console Feature Toggles to Analyzer Flags
+
+- Source: user request to push the local feature-toggle changes and merge them to the remote main branch.
+- Git: commit `pending`, branch `codex/console-feature-toggles`, target `origin/main`.
+- Scope:
+  - `vision_test.py` `HighPrecisionPostureAnalyzer`: added default-on runtime flags for precision scoring, presence checks, and identity checks.
+  - `posture_console.py`: changed the PRECISION, PRESENCE, and IDENTITY vertebrae from disabled placeholders to real toggles wired to the analyzer flags.
+  - `test_feature_toggles.py`: added headless checks for defaults, off/on behavior, presence suppression, identity suppression, and basic-mode fallback scoring.
+  - `README.md`: documented the console window and the seven tray-console feature controls.
+- Risk: turning precision off uses the older threshold-based scoring path with a fixed BAD risk score for intervention compatibility; turning presence off allows multi-face frames to continue through normal scoring; the toggle values are runtime-only and reset to default-on after restart.
+- Verification:
+  - Command: `runtime\python311\python.exe -m py_compile posture_console.py vision_test.py test_feature_toggles.py`
+  - Result: passed, exit 0.
+  - Command: `runtime\python311\python.exe test_feature_toggles.py`
+  - Result: passed, output ended with `ALL TESTS PASSED`, exit 0.
+- Gaps: no live click-through test of the console vertebrae was run on the desktop UI in this pass.
+- Conclusion: ready to finish cherry-pick, verify, and push to `main`.
+
 ## 2026-06-16 - Public README Rewrite
 
 - Source: user request to keep the local maintainer README for internal use while replacing the remote-facing README with a guide public users can follow.
