@@ -140,6 +140,10 @@ class TrayFlyout(QWidget):
         self.adjustSize()
         self.setFixedSize(self.size())
 
+    def closeEvent(self, event) -> None:
+        remove_listener(self._apply_texts)
+        super().closeEvent(event)
+
     # ---- 打开：右下角定位 + 上浮淡入 ----
     def popup_bottom_right(self) -> None:
         self._sync_state()

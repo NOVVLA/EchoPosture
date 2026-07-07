@@ -86,26 +86,6 @@ All user-facing text is localized across five UI modules:
 - Rendered text (e.g. `QPainter.drawText` on cached pixmaps) is refreshed by invalidating the cache (`self._card = None`) so the next `paintEvent` redraws with the new language.
 - The language button uses `lang_button_text()` to dynamically produce the correct label based on the current mode (`auto` / `zh` / `en`) and the effective language.
 
-### Testing without a camera
-
-When no camera is available, run with `--mock-camera` to use an in-memory `MockVisionEngine` that produces a stable "good posture" sample. This lets you verify the full UI and i18n flow without hardware:
-
-```
-python tray_app.py --mock-camera
-```
-
-For pure i18n logic tests (no GUI, no camera):
-
-```
-python smoke_i18n.py
-```
-
-For a tray-flyout-only smoke test (GUI, no camera):
-
-```
-python smoke_flyout.py
-```
-
 ## Self Test
 
 Run `EchoPostureSelfTest.exe` from the release package when startup or camera behavior is unclear. It checks the packaged runtime, debug UI, vision path, tray monitor path, and GPU blur helper.

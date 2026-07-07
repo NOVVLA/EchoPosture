@@ -57,6 +57,7 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
+from debug_ui import STATUS_TEXT
 from i18n import _t, add_listener, remove_listener
 
 # ============================================================
@@ -1205,7 +1206,9 @@ class PostureConsoleWindow(QWidget):
 
         # 侧栏读出（QLabel.setText 对相同文本会自动 no-op）
         decision = self.monitor.last_decision
-        status = decision.status if decision is not None else "WAITING"
+        raw_status = decision.status if decision is not None else "WAITING"
+        # 内部码（如 GOOD/NEEDS_CALIB）经 STATUS_TEXT 映射 + _t() 翻译为本地化文本
+        status = _t(STATUS_TEXT.get(raw_status, "status.WAITING"))
         overlay = self.monitor.overlay
         dim = round(overlay.dim_level * 100)
         blur = round(overlay.blur_level * 100)
@@ -1232,4 +1235,8 @@ class PostureConsoleWindow(QWidget):
 
     def closeEvent(self, event) -> None:
         self.refresh_timer.stop()
+        # 移除本窗口及子组件注册的语言监听器，避免关闭后回调发往过期 UI
+        remove_listener(self._on_language_changed)
+        remove_listener(self.view._on_language_changed)
+        remove_listener(self.side._on_language_changed)
         super().closeEvent(event)

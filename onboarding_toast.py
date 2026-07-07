@@ -426,6 +426,10 @@ class OnboardingToast(QWidget):
         # 监听全局语言变更：刷新状态文本 + 让卡片缓存失效重绘
         add_listener(self._on_language_changed)
 
+    def closeEvent(self, event) -> None:
+        remove_listener(self._on_language_changed)
+        super().closeEvent(event)
+
     # ---- 对外入口 ----
     def show_bottom_right(self) -> None:
         screen = QApplication.primaryScreen().availableGeometry()

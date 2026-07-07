@@ -62,7 +62,7 @@ from vision_test import (
     format_value,
 )
 
-from i18n import _t, add_listener
+from i18n import _t, add_listener, remove_listener
 
 
 # 状态码 → 翻译键名（运行时用 _t() 取本地化文本）
@@ -750,6 +750,7 @@ class DebugWindow(QMainWindow):
         return "color: #6b7280;"
 
     def closeEvent(self, event) -> None:
+        remove_listener(self._on_language_changed)
         self.timer.stop()
         if self.intervention_overlay is not None:
             self.intervention_overlay.force_clear()

@@ -128,6 +128,7 @@ _TEXTS: Dict[str, Dict[str, str]] = {
         "status.UNKNOWN": "未识别",
         "status.CALIBRATING": "校准中",
         "status.NEEDS_CALIB": "等待校准",
+        "status.WAITING": "等待监测",
 
         # ---- debug_ui: REASON_TEXT 原因码映射表 ----
         "reason.press_calibrate": "请坐直后点击校准",
@@ -308,6 +309,7 @@ _TEXTS: Dict[str, Dict[str, str]] = {
         "status.UNKNOWN": "Unknown",
         "status.CALIBRATING": "Calibrating",
         "status.NEEDS_CALIB": "Needs calibration",
+        "status.WAITING": "Waiting",
 
         # ---- debug_ui: REASON_TEXT ----
         "reason.press_calibrate": "Sit upright, then click calibrate",
@@ -447,15 +449,8 @@ def _t(key: str, **kwargs) -> str:
     return text
 
 
-def set_language(lang: str) -> None:
-    """切换语言并通知所有监听器。未知值忽略；同语言不重复通知。"""
-    global _lang
-    if lang not in _TEXTS:
-        return
-    if lang == _lang:
-        return
-    _lang = lang
-    # 复制一份，避免遍历中监听器自己 add/remove 造成迭代问题
+def _notify_listeners() -> None:
+    """通知所有监听器语言/模式已变更。复制一份避免迭代中增删。"""
     for cb in list(_listeners):
         try:
             cb()
@@ -463,6 +458,22 @@ def set_language(lang: str) -> None:
             # 监听器出错不能影响其他监听器或主流程
             import traceback
             traceback.print_exc()
+
+
+def set_language(lang: str) -> bool:
+    """切换语言并通知监听器。
+
+    返回 True 表示语言实际变化并已通知；False 表示未变化（同语言去重，
+    或 lang 非法）。调用方在"模式变化但语言未变"时需自行补通知。
+    """
+    global _lang
+    if lang not in _TEXTS:
+        return False
+    if lang == _lang:
+        return False
+    _lang = lang
+    _notify_listeners()
+    return True
 
 
 def current_language() -> str:
@@ -499,12 +510,15 @@ _user_override: Optional[str] = None
 def set_auto_language() -> None:
     """切换到"跟随系统"模式：清空用户覆盖，重新走 _detect_system_language。
 
-    如果检测到的系统语言与当前一致，不会重复通知监听器。
+    若检测到的系统语言与当前一致（set_language 未通知），因模式已从 manual 变 auto，
+    仍需补一次通知以刷新按钮文案。
     """
     global _user_override
     _user_override = None
     detected = _detect_system_language()
-    set_language(detected)
+    notified = set_language(detected)
+    if not notified:
+        _notify_listeners()
 
 
 def cycle_language() -> str:
@@ -513,21 +527,28 @@ def cycle_language() -> str:
     返回切换后的模式名（'zh' / 'en' / 'auto'），供按钮文案使用。
     auto 模式下，current_language() 仍返回实际生效的 'zh' 或 'en'，
     但按钮会显示"跟随系统"以提示用户。
+
+    模式变化后，若 set_language 因同语言未通知，这里补一次——
+    按钮文案依赖 current_mode()，模式变了就需刷新。
     """
     global _user_override
     if _user_override is None:
         # 当前是 auto → 切到 zh
         _user_override = "zh"
-        set_language("zh")
+        notified = set_language("zh")
+        if not notified:
+            _notify_listeners()
         return "zh"
     if _user_override == "zh":
         _user_override = "en"
-        set_language("en")
+        set_language("en")  # zh→en 必通知，无需补
         return "en"
     # 当前是 en → 切回 auto
     _user_override = None
     detected = _detect_system_language()
-    set_language(detected)
+    notified = set_language(detected)
+    if not notified:
+        _notify_listeners()
     return "auto"
 
 

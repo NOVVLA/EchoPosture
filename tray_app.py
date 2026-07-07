@@ -46,6 +46,7 @@ from PyQt5.QtWidgets import (
 )
 
 from gpu_blur_overlay import GpuBlurOverlayController
+from debug_ui import STATUS_TEXT
 from i18n import _t, add_listener, remove_listener
 from onboarding_toast import (
     RED_SOFT,
@@ -186,6 +187,10 @@ class StartupCalibrationDialog(QDialog):
         self._card = None
         self.update()
 
+    def closeEvent(self, event) -> None:
+        remove_listener(self._on_language_changed)
+        super().closeEvent(event)
+
     def _center_on_screen(self) -> None:
         screen = QApplication.primaryScreen().availableGeometry()
         self.move(screen.center() - self.rect().center())
@@ -313,9 +318,15 @@ class StatusPanel(QWidget):
         self.max_effect_button.setText(_t("max_effect"))
         self.refresh()
 
+    def closeEvent(self, event) -> None:
+        remove_listener(self._apply_texts)
+        super().closeEvent(event)
+
     def refresh(self) -> None:
         decision = self.monitor.last_decision
-        status = decision.status if decision is not None else "WAITING"
+        raw_status = decision.status if decision is not None else "WAITING"
+        # 内部码（如 GOOD/NEEDS_CALIB）经 STATUS_TEXT 映射 + _t() 翻译为本地化文本
+        status = _t(STATUS_TEXT.get(raw_status, "status.WAITING"))
         dim = round(self.monitor.overlay.dim_level * 100)
         blur = round(self.monitor.overlay.blur_level * 100)
         self.status_label.setText(_t("sp_status", status=status))
@@ -345,30 +356,21 @@ class TrayMonitor:
         fps: float,
         calibrated_distance_cm: float,
         gpu_blur_enabled: bool = True,
-        mock_camera: bool = False,
     ) -> None:
         self.app = app
         self.camera_id = camera_id
         self.capture_width = width
         self.capture_height = height
         self.calibrated_distance_cm = calibrated_distance_cm
-        self.mock_camera = mock_camera
         self.analyzer = HighPrecisionPostureAnalyzer(
             auto_calibrate=False,
             calibrated_distance_cm=calibrated_distance_cm,
         )
         # 摄像头 + MediaPipe + 评分全部活在 VisionWorker 工作线程；
         # 主线程只低频取信箱快照，UI 不再被推理阻塞。
-        # --mock-camera 时用 MockVisionEngine 替身，跳过真实摄像头
-        if mock_camera:
-            from mock_vision import MockVisionEngine
-            engine_factory = lambda: MockVisionEngine(
-                camera_id=camera_id, width=width, height=height
-            )
-        else:
-            engine_factory = lambda: VisionEngine(
-                camera_id=camera_id, width=width, height=height
-            )
+        engine_factory = lambda: VisionEngine(
+            camera_id=camera_id, width=width, height=height
+        )
         self.worker = VisionWorker(
             engine_factory=engine_factory,
             analyzer=self.analyzer,
@@ -457,19 +459,11 @@ class TrayMonitor:
 
         MediaPipe/摄像头的构造、使用、释放都在本线程内完成，不经工作线程。
         """
-        if self.mock_camera:
-            from mock_vision import MockVisionEngine
-            engine = MockVisionEngine(
-                camera_id=self.camera_id,
-                width=self.capture_width,
-                height=self.capture_height,
-            )
-        else:
-            engine = VisionEngine(
-                camera_id=self.camera_id,
-                width=self.capture_width,
-                height=self.capture_height,
-            )
+        engine = VisionEngine(
+            camera_id=self.camera_id,
+            width=self.capture_width,
+            height=self.capture_height,
+        )
         try:
             try:
                 engine.start()
@@ -841,12 +835,6 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Use the PyQt dimming overlay fallback instead of BlurOverlayHost.exe.",
     )
-    parser.add_argument(
-        "--mock-camera",
-        action="store_true",
-        help="Use a fake in-memory camera (MockVisionEngine) instead of real hardware. "
-        "Useful for UI/i18n testing when no camera is available.",
-    )
     return parser.parse_args()
 
 
@@ -867,7 +855,6 @@ def main() -> int:
         fps=args.fps,
         calibrated_distance_cm=args.distance_cm,
         gpu_blur_enabled=not args.disable_gpu_blur,
-        mock_camera=args.mock_camera,
     )
     signal.signal(signal.SIGINT, lambda *_args: monitor.stop())
 
