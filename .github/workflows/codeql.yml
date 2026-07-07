@@ -2,8 +2,6 @@ name: codeql
 
 on:
   pull_request:
-    branches:
-      - main
   push:
   schedule:
     - cron: "24 18 * * 2"
