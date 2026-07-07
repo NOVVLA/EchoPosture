@@ -387,7 +387,11 @@ class TrayMonitor:
         self._calibrated = False
         self._monitoring_started = False
         self._intervention_candidate_started_at: Optional[datetime] = None
+        self._intervention_last_good_at: Optional[datetime] = None
         self._manual_effect_until: Optional[datetime] = None
+        # 姿态干预状态缓存：MULTI_USER 期间保持上一帧的姿态干预状态，
+        # 与手动效果（_manual_effect_until）分离，互不污染
+        self._last_posture_active: bool = False
         self.calibration_dialog: Optional[StartupCalibrationDialog] = None
         self.onboarding_toast: Optional[OnboardingToast] = None
         self.status_panel: Optional[StatusPanel] = None
@@ -495,6 +499,10 @@ class TrayMonitor:
     def recalibrate_now(self) -> None:
         if self._stopping or self._awaiting_calibration is not None:
             return
+        # 启动阶段守卫：开场弹窗或校准倒计时进行中时拒绝重新校准，
+        # 避免与启动流程的采样/定基线冲突（recal 会清空倒计时已采集的样本）
+        if self.onboarding_toast is not None or self.calibration_dialog is not None:
+            return
         # 后台重采 18 帧并定基线；UI 全程不阻塞，结果经 _tick 的回执分支处理
         was_monitoring = self.worker.is_monitoring_active()
         self.worker.begin_calibration_sampling()
@@ -521,9 +529,15 @@ class TrayMonitor:
             if snapshot.decision is not None:
                 self.last_decision = snapshot.decision
             decision = self.last_decision
-            active = self._manual_effect_active() or (
-                decision is not None and self._should_intervene(decision)
-            )
+            if decision is not None and decision.status == "MULTI_USER":
+                # 多人时保持姿态干预状态不变，跳过 _should_intervene
+                # （避免清零 _intervention_candidate_started_at 确认计时）
+                # 手动效果仍正常评估，8 秒到期自然结束
+                active = self._last_posture_active or self._manual_effect_active()
+            else:
+                posture_active = decision is not None and self._should_intervene(decision)
+                self._last_posture_active = posture_active
+                active = self._manual_effect_active() or posture_active
         else:
             active = self._manual_effect_active()
         self.overlay.set_warning_active(active)
@@ -556,7 +570,12 @@ class TrayMonitor:
                     QSystemTrayIcon.Information,
                     2200,
                 )
-                self._start_monitoring()
+                if self._monitoring_started:
+                    # 用户在校准前已通过浮窗滑块早启动过；
+                    # 校准中 worker 进 MODE_PAUSED，需直接 resume，不能走 _start_monitoring() 守卫
+                    self.worker.resume()
+                else:
+                    self._start_monitoring()
                 return
             self.tray.showMessage(
                 "EchoPosture",
@@ -571,6 +590,7 @@ class TrayMonitor:
         if result.ok:
             self._calibrated = True
             self._intervention_candidate_started_at = None
+            self._intervention_last_good_at = None
             self._manual_effect_until = None
             self.overlay.force_clear()
             if self._monitoring_started or was_monitoring:
@@ -660,23 +680,41 @@ class TrayMonitor:
         """监测主循环（工作线程）是否正在运行。"""
         return self.worker.is_monitoring_active()
 
-    def pause_monitoring(self) -> None:
-        """暂停监测并清理覆盖层，避免压暗/模糊残留。"""
+    def pause_monitoring(self) -> bool:
+        """暂停监测并清理覆盖层，避免压暗/模糊残留。
+
+        返回 True 表示已真正暂停；False 表示被启动阶段拦截（开场弹窗或校准
+        倒计时进行中），调用方应回弹滑块到原位。
+        """
         if self._stopping:
-            return
+            return False
+        # 启动阶段守卫：开场弹窗或校准倒计时进行中时，不允许浮窗滑块抢先暂停
+        if self.onboarding_toast is not None or self.calibration_dialog is not None:
+            return False
         self.worker.pause()
         self._intervention_candidate_started_at = None
+        self._intervention_last_good_at = None
         self._manual_effect_until = None
+        self._last_posture_active = False
         self.overlay.force_clear()
+        return True
 
-    def resume_monitoring(self) -> None:
-        """恢复监测。若尚未首次启动则走启动流程。"""
+    def resume_monitoring(self) -> bool:
+        """恢复监测。若尚未首次启动则走启动流程。
+
+        返回 True 表示已真正进入监测态；False 表示被启动阶段拦截，调用方
+        应回弹滑块到原位。
+        """
         if self._stopping:
-            return
+            return False
+        # 启动阶段守卫：开场弹窗或校准倒计时进行中时，不允许浮窗滑块抢先启动
+        if self.onboarding_toast is not None or self.calibration_dialog is not None:
+            return False
         if not self._monitoring_started:
             self._start_monitoring()
         else:
             self.worker.resume()
+        return True
 
     def _handle_camera_failure(self, exc: Exception) -> None:
         if isinstance(exc, CameraPermissionError):
@@ -719,15 +757,28 @@ class TrayMonitor:
         box.setWindowFlags(box.windowFlags() | Qt.WindowStaysOnTopHint)
         box.exec_()
 
+    RISK_RESET_GRACE_S = 2.0
+
     def _should_intervene(self, decision: PostureDecision) -> bool:
-        if decision.status not in {"BAD", "CRITICAL"}:
-            self._intervention_candidate_started_at = None
-            return False
-        if decision.risk_score < 45.0 or decision.sustained_seconds < 12.0:
-            self._intervention_candidate_started_at = None
+        now = datetime.now()
+        is_bad_candidate = (
+            decision.status in {"BAD", "CRITICAL"}
+            and decision.risk_score >= 45.0
+            and decision.sustained_seconds >= 12.0
+        )
+
+        if not is_bad_candidate:
+            # 非风险帧：记录时间，只有连续超过宽限期才真正重置计时
+            if self._intervention_last_good_at is None:
+                self._intervention_last_good_at = now
+            elif (now - self._intervention_last_good_at).total_seconds() >= self.RISK_RESET_GRACE_S:
+                self._intervention_candidate_started_at = None
+                self._intervention_last_good_at = None
             return False
 
-        now = datetime.now()
+        # 风险帧：重置"最后一次良好"时间戳
+        self._intervention_last_good_at = None
+
         if self._intervention_candidate_started_at is None:
             self._intervention_candidate_started_at = now
             return False

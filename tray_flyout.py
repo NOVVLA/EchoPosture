@@ -23,8 +23,9 @@ from PyQt5.QtCore import (
     QPropertyAnimation,
     Qt,
     QTimer,
+    QVariantAnimation,
 )
-from PyQt5.QtGui import QFont, QPainter, QPixmap
+from PyQt5.QtGui import QColor, QFont, QPalette, QPainter, QPixmap
 from PyQt5.QtWidgets import (
     QApplication,
     QHBoxLayout,
@@ -84,6 +85,10 @@ class TrayFlyout(QWidget):
         row = QHBoxLayout()
         self.state_label = QLabel()
         self.state_label.setFont(_font("Microsoft YaHei", 10, 3.0))
+        # 文字颜色交给 palette(QPalette.WindowText) 管理，stylesheet 只保留透明背景
+        self.state_label.setStyleSheet("background:transparent;")
+        self._current_state_color = QColor(SILVER_LO)
+        self._state_color_anim: QVariantAnimation | None = None
         row.addWidget(self.state_label)
         row.addStretch(1)
         self.switch = EyeSlideSwitch(self, one_shot=False)
@@ -178,22 +183,53 @@ class TrayFlyout(QWidget):
         self.switch.set_on(on, animate=False)
         self._update_state_label(on)
 
-    def _update_state_label(self, on: bool) -> None:
-        if on:
-            self.state_label.setText(_t("state_on"))
-            color = RED_SOFT.name()
-        else:
-            self.state_label.setText(_t("state_off"))
-            color = SILVER_LO.name()
-        self.state_label.setStyleSheet(f"color:{color}; background:transparent;")
+    def _update_state_label(self, on: bool, animate: bool = False) -> None:
+        """更新状态行文字与颜色。
+
+        文字立即切换（与开场弹窗一致）；颜色在 animate=True 时走 400ms 渐变，
+        animate=False 时瞬间切换并同步缓存。浮窗打开同步 / 语言变更应传 False，
+        仅用户拨动滑块时传 True。
+        """
+        self.state_label.setText(_t("state_on") if on else _t("state_off"))
+        target = QColor(RED_SOFT) if on else QColor(SILVER_LO)
+
+        # 先停掉任何进行中的颜色动画，避免旧动画继续写缓存
+        if self._state_color_anim is not None:
+            self._state_color_anim.stop()
+
+        if not animate:
+            self._apply_state_color(target)
+            return
+
+        # 从当前缓存色起步，无缝衔接上次中断的动画（与开场弹窗同款 400ms 线性渐变）
+        anim = QVariantAnimation(self)
+        anim.setStartValue(QColor(self._current_state_color))
+        anim.setEndValue(target)
+        anim.setDuration(400)
+        anim.valueChanged.connect(self._apply_state_color)
+        anim.start()
+        self._state_color_anim = anim
+
+    def _apply_state_color(self, color) -> None:
+        """统一入口：把颜色写到 label 的 palette，并同步缓存。"""
+        c = QColor(color)
+        pal = self.state_label.palette()
+        pal.setColor(QPalette.WindowText, c)
+        self.state_label.setPalette(pal)
+        self._current_state_color = c
 
     # ---- 交互 ----
     def _on_switch_toggled(self, on: bool) -> None:
         if on:
-            self.monitor.resume_monitoring()
+            ok = self.monitor.resume_monitoring()
         else:
-            self.monitor.pause_monitoring()
-        self._update_state_label(self.monitor.is_monitoring())
+            ok = self.monitor.pause_monitoring()
+        if not ok:
+            # 启动阶段拦截（开场弹窗或校准倒计时进行中）：回弹滑块，不打扰用户
+            self.switch.set_on(not on, animate=True)
+            self._update_state_label(not on, animate=False)
+            return
+        self._update_state_label(self.monitor.is_monitoring(), animate=True)
 
     def _on_gear(self) -> None:
         self.hide()
