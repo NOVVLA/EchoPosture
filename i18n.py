@@ -17,7 +17,11 @@
 
 from __future__ import annotations
 
+import logging
+import traceback
 from typing import Callable, Dict, Optional
+
+_logger = logging.getLogger(__name__)
 
 # ============================================================
 # 翻译表
@@ -455,9 +459,7 @@ def _notify_listeners() -> None:
         try:
             cb()
         except Exception:
-            # 监听器出错不能影响其他监听器或主流程
-            import traceback
-            traceback.print_exc()
+            _logger.warning("i18n listener raised an exception", exc_info=True)
 
 
 def set_language(lang: str) -> bool:

@@ -88,15 +88,14 @@ class GpuBlurOverlayController(QObject):
 
     def set_warning_active(self, active: bool) -> None:
         self._target_active = active
-        if self._process_is_running() and not self._use_fallback:
+        if self._gpu_ready:
             self._send_visual_config()
             self._send_target(active)
-            if self._gpu_ready:
-                self._fallback.set_warning_active(False)
+            self._fallback.set_warning_active(False)
             return
 
         if self._process_is_running() and self._host_mode == "starting":
-            self._send_target(active)
+            # GPU 进程启动中：不发送 IPC（进程尚未就绪，ready 后 _drain_status_queue 会自动重发配置和目标状态）
             self._fallback.set_warning_active(False)
             return
 
@@ -131,17 +130,16 @@ class GpuBlurOverlayController(QObject):
 
     def trigger_max_effect(self) -> None:
         self._target_active = True
-        self._last_sent_target = True   # boost 即目标开启；下次关闭必须重发
+        self._last_sent_target = True
         self._fallback.trigger_max_effect()
-        if self._process_is_running() and not self._use_fallback:
+        if self._gpu_ready:
             self._send_visual_config()
             self._send({"type": "boost"})
-            if self._gpu_ready:
-                self._fallback.set_warning_active(False)
+            self._fallback.set_warning_active(False)
             return
         if self._process_is_running() and self._host_mode == "starting":
-            self._send_visual_config()
-            self._send({"type": "boost"})
+            # GPU 启动中：boost 是一次性脉冲，此时无法发送；等 ready 后会重发 target=True
+            # （持续激活态），用户可再次点击测试。此期间 fallback 已触发 max effect。
             self._fallback.set_warning_active(False)
 
     def close(self) -> None:

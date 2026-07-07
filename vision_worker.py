@@ -103,6 +103,7 @@ class VisionWorker:
 
     CALIBRATION_INTERVAL_S = 0.18   # 与旧 calibration_timer 的 180ms 一致
     SAMPLE_CAP = 60                 # 与旧 calibration_samples 上限一致
+    CALIBRATION_TIMEOUT_S = 30.0    # 校准全局超时：begin 后最多 30 秒必须结束
 
     def __init__(
         self,
@@ -134,6 +135,8 @@ class VisionWorker:
         self._calib_samples: List[VisionSample] = []
         self._last_usable_sample: Optional[VisionSample] = None
         self._calib_request_seq = 0
+        self._calib_started_at: Optional[float] = None
+        self._calib_pending_request_id: Optional[int] = None
 
     # ============================================================
     # 主线程接口
@@ -261,6 +264,8 @@ class VisionWorker:
                 self._publish_snapshot(decision, sample)
                 self._throttle(frame_started)
             elif mode == MODE_CALIBRATING:
+                if self._calib_timed_out():
+                    continue
                 try:
                     sample = engine.read_sample()
                 except Exception as exc:
@@ -289,8 +294,11 @@ class VisionWorker:
             elif kind == "begin_calib":
                 self._calib_samples = []
                 self._last_usable_sample = None
+                self._calib_started_at = time.monotonic()
+                self._calib_pending_request_id = None
             elif kind == "finalize_calib":
                 _, distance_cm, sample_count, request_id = command
+                self._calib_pending_request_id = request_id
                 self._finalize_calibration(engine, distance_cm, sample_count, request_id)
 
     def _collect_calibration_sample(self, sample: VisionSample) -> None:
@@ -308,6 +316,8 @@ class VisionWorker:
         while (len(self._calib_samples) < sample_count
                and attempts_left > 0
                and not self._stop_event.is_set()):
+            if self._calib_timed_out():
+                return
             attempts_left -= 1
             try:
                 sample = engine.read_sample()
@@ -315,6 +325,7 @@ class VisionWorker:
                 self._publish_error(exc)
                 self._mode = MODE_PAUSED
                 self._publish_calibration(CalibrationResult(request_id, False))
+                self._clear_calibration_state()
                 return
             self._collect_calibration_sample(sample)
             self._stop_event.wait(self.CALIBRATION_INTERVAL_S / 2.0)
@@ -332,6 +343,33 @@ class VisionWorker:
         self._calib_samples = []
         self._mode = MODE_PAUSED  # 主线程拿到回执后决定是否 resume
         self._publish_calibration(CalibrationResult(request_id, ok))
+        self._clear_calibration_state()
+
+    def _calib_timed_out(self) -> bool:
+        """检查校准是否超时。超时则发布失败结果/错误并回到 PAUSED。"""
+        if self._calib_started_at is None:
+            return False
+        elapsed = time.monotonic() - self._calib_started_at
+        if elapsed < self.CALIBRATION_TIMEOUT_S:
+            return False
+        # 超时处理
+        self._calib_samples = []
+        self._mode = MODE_PAUSED
+        if self._calib_pending_request_id is not None:
+            # finalize 已发出：发布失败回执
+            self._publish_calibration(CalibrationResult(self._calib_pending_request_id, False))
+        else:
+            # 还在 begin 采样阶段（主线程没发 finalize）：发布错误
+            self._publish_error(RuntimeError(
+                f"Calibration timed out after {self.CALIBRATION_TIMEOUT_S:.0f}s"
+            ))
+        self._clear_calibration_state()
+        return True
+
+    def _clear_calibration_state(self) -> None:
+        """校准结束（成功/失败/超时）后清理状态。"""
+        self._calib_started_at = None
+        self._calib_pending_request_id = None
 
     def _throttle(self, frame_started: float) -> None:
         interval = 1.0 / self._target_fps

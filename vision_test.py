@@ -157,6 +157,17 @@ class PostureAnalyzer:
             if shoulder_delta > self.shoulder_threshold_px:
                 reasons.append("shoulder_tilt")
 
+        trunk_threshold_deg = 10.0
+        if self.baseline.trunk_lean_deg is None:
+            missing_metrics.append("trunk_baseline")
+        elif sample.trunk_lean_deg is None:
+            missing_metrics.append("trunk")
+        else:
+            active_metrics.append("trunk")
+            trunk_delta = abs(sample.trunk_lean_deg - self.baseline.trunk_lean_deg)
+            if trunk_delta > trunk_threshold_deg:
+                reasons.append("trunk_lean")
+
         if not active_metrics:
             calibration_status = self._calibration_status()
             if calibration_status:
@@ -465,7 +476,11 @@ class HighPrecisionPostureAnalyzer(PostureAnalyzer):
             self._requires_profile_check = True
             self._away_started_at = None
             if self.presence_check_enabled:
-                self._reset_risk_state()
+                # 多人时保留 _smoothed_score（恢复单人后能快速重新触发干预），
+                # 只清持续计时，避免长期多人后 sustained_seconds 暴涨到立即 CRITICAL。
+                # 路人期间不评分（MediaPipe 第一张脸归属不可靠），但风险状态不丢失。
+                self._risk_started_at = None
+                self._last_risky_at = None
                 return PostureDecision("MULTI_USER", "multiple_faces_detected", True)
         elif not sample.face_detected and not sample.pose_detected:
             if self._away_started_at is None:
