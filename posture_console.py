@@ -57,6 +57,9 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
+from debug_ui import STATUS_TEXT
+from i18n import _t, add_listener, remove_listener
+
 # ============================================================
 # 配色（取自 ui/index.html 的 :root，仅复用数值，不读取文件）
 # ============================================================
@@ -134,7 +137,7 @@ class FeatureSpec:
 
     id: str
     name: str            # 英文名，例如 "DIMMING"
-    cn: str              # 中文名，例如 "压暗干预"
+    cn: str              # 翻译键名，例如 "feature.dim.cn"（用 _t(spec.cn) 取本地化名）
     x: float
     y: float
     rot: float
@@ -190,24 +193,24 @@ def _build_registry(ctrl: "_ControlState") -> List[FeatureSpec]:
         monitor.analyzer.identity_check_enabled = on
 
     return [
-        FeatureSpec("calib", "CALIBRATION", "启动校准", 596, 486, -12, "action",
+        FeatureSpec("calib", "CALIBRATION", "feature.calib.cn", 596, 486, -12, "action",
                     invoke=lambda m: m.recalibrate_now()),
-        FeatureSpec("prec", "PRECISION", "高精度评分", 606, 574, 2, "toggle",
+        FeatureSpec("prec", "PRECISION", "feature.prec.cn", 606, 574, 2, "toggle",
                     apply=precision_apply,
                     is_active=lambda m: m.analyzer.precision_enabled),
-        FeatureSpec("perf", "PERFORMANCE", "72FPS 采集", 634, 662, 14, "toggle",
+        FeatureSpec("perf", "PERFORMANCE", "feature.perf.cn", 634, 662, 14, "toggle",
                     apply=perf_apply,
                     is_active=lambda m: m.engine.get_capture_fps() >= 60.0),
-        FeatureSpec("dim", "DIMMING", "压暗干预", 658, 752, 9, "toggle",
+        FeatureSpec("dim", "DIMMING", "feature.dim.cn", 658, 752, 9, "toggle",
                     apply=dimming_apply,
                     is_active=lambda m: m.overlay.max_dim_alpha > 0),
-        FeatureSpec("blur", "BLUR", "GPU 模糊", 648, 844, -7, "toggle",
+        FeatureSpec("blur", "BLUR", "feature.blur.cn", 648, 844, -7, "toggle",
                     apply=blur_apply,
                     is_active=lambda m: m.overlay.blur_scale > 0),
-        FeatureSpec("pres", "PRESENCE", "离开/多人检测", 620, 936, -17, "toggle",
+        FeatureSpec("pres", "PRESENCE", "feature.pres.cn", 620, 936, -17, "toggle",
                     apply=presence_apply,
                     is_active=lambda m: m.analyzer.presence_check_enabled),
-        FeatureSpec("ident", "IDENTITY", "换人保护", 600, 1026, -11, "toggle",
+        FeatureSpec("ident", "IDENTITY", "feature.ident.cn", 600, 1026, -11, "toggle",
                     apply=identity_apply,
                     is_active=lambda m: m.analyzer.identity_check_enabled),
     ]
@@ -365,8 +368,16 @@ class VertebraItem(QGraphicsObject):
         self._glow = 0.0        # 红色辉光呼吸 0..1（手绘，不用 graphics effect）
         self._breathe: Optional[QPropertyAnimation] = None
 
-        verb = {"toggle": "点击切换", "action": "点击触发"}.get(spec.kind, "即将开放")
-        self.setToolTip(f"{spec.cn}（{spec.name}） — {verb}")
+        verb = {"toggle": _t("console_verb_toggle"),
+                "action": _t("console_verb_action")}.get(spec.kind, _t("console_verb_placeholder"))
+        self.setToolTip(_t("console_tooltip", cn=_t(spec.cn), name=spec.name, verb=verb))
+
+    def refresh_tooltip(self) -> None:
+        """语言变更后重新生成 toolTip（首句 i18n 时调用）。"""
+        spec = self.spec
+        verb = {"toggle": _t("console_verb_toggle"),
+                "action": _t("console_verb_action")}.get(spec.kind, _t("console_verb_placeholder"))
+        self.setToolTip(_t("console_tooltip", cn=_t(spec.cn), name=spec.name, verb=verb))
 
     # ---- 动画属性 ----
     def _get_on(self) -> float:
@@ -564,7 +575,7 @@ class VertebraItem(QGraphicsObject):
         # 中文主名
         cn_color = QColor(text_color)
         cn_color.setAlphaF(base_alpha)
-        cn = self.spec.cn + ("（即将开放）" if placeholder else "")
+        cn = _t(self.spec.cn) + (_t("console_placeholder_suffix") if placeholder else "")
         cn_font = QFont("Microsoft YaHei", 10)
         cn_font.setWeight(QFont.Normal)
         painter.setFont(cn_font)
@@ -615,12 +626,23 @@ class ArtView(QGraphicsView):
 
         # 左下状态读出 + 右下提示（叠加在视图上，保持清晰、不随场景缩放）
         self.readout_title = self._mk_label("SYSTEM", 8, SILVER_LO, 4.2)
-        self.readout_state = self._mk_label("监测已暂停 · STANDBY", 11, SILVER_LO, 2.2)
+        self.readout_state = self._mk_label(_t("console_state_paused"), 11, SILVER_LO, 2.2)
         self.readout_mods = self._mk_label("", 8, SILVER_LO, 1.0)
         self.readout_mods.setTextFormat(Qt.RichText)
         self.readout_mods.setWordWrap(False)
-        self.hint = self._mk_label("监测开关在托盘浮窗 · 点击椎骨切换功能", 8, SILVER_LO, 2.6)
-        self.hint.setAlignment(Qt.AlignRight)
+        self.hint = self._mk_label(_t("console_hint"), 8, SILVER_LO, 2.6)
+        self.hint.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        # 自动换行 + 限制最大宽度：避免英文/长文本向左溢出与 readout 重叠或被裁切
+        self.hint.setWordWrap(True)
+        self.hint.setMaximumWidth(_scaled(420))
+
+        # 监听全局语言变更：刷新静态标签文本（动态状态行由 refresh() 自动刷）
+        add_listener(self._on_language_changed)
+
+    def _on_language_changed(self) -> None:
+        """语言变更回调：刷新所有静态标签文本。"""
+        self.readout_state.setText(_t("console_state_paused"))
+        self.hint.setText(_t("console_hint"))
 
     def _mk_label(self, text: str, pt: int, color: QColor, spacing: float) -> QLabel:
         # 浮层挂在 viewport 上，确保始终显示在场景渲染之上
@@ -806,7 +828,7 @@ class SidePanel(QWidget):
         layout.setSpacing(_scaled(8))
         self._content_layout = layout
 
-        self.title_label = QLabel("CONTROL · 调节")
+        self.title_label = QLabel(_t("console_side_title"))
         self.title_label.setObjectName("sideTitle")
         title_font = QFont("Helvetica Neue", _scaled(8))
         title_font.setLetterSpacing(QFont.AbsoluteSpacing, 3.0 * UI_SCALE)
@@ -840,12 +862,20 @@ class SidePanel(QWidget):
         layout.addWidget(self.blur_scale_slider)
 
         layout.addSpacing(_scaled(8))
-        self.max_effect_button = QPushButton("立即测试最深效果")
+        self.max_effect_button = QPushButton(_t("max_effect"))
         self.max_effect_button.setFont(QFont("Microsoft YaHei", _scaled(9)))
         self.max_effect_button.setMinimumHeight(_scaled(32))
         layout.addWidget(self.max_effect_button)
 
+        # 监听全局语言变更：刷新静态文本（状态行由 refresh() 自动刷）
+        add_listener(self._on_language_changed)
+
         layout.addStretch(1)
+
+    def _on_language_changed(self) -> None:
+        """语言变更回调：刷新标题、按钮文字。状态标签由 refresh() 自动刷新。"""
+        self.title_label.setText(_t("console_side_title"))
+        self.max_effect_button.setText(_t("max_effect"))
 
     def add_control_row(self, widget: QWidget) -> None:
         """扩展点：未来要加控制项时调用，自动插在测试按钮之前。"""
@@ -899,6 +929,17 @@ class PostureConsoleWindow(QWidget):
 
         self._run_entrance()
         self.refresh()
+
+        # 监听全局语言变更：刷新所有椎骨 toolTip
+        add_listener(self._on_language_changed)
+
+    def _on_language_changed(self) -> None:
+        """语言变更回调：刷新椎骨 toolTip。其他静态标签由各组件自己监听刷新。"""
+        for item in self.vertebrae:
+            try:
+                item.refresh_tooltip()
+            except Exception:
+                pass
 
     # ---- 窗口几何：黄金分割 + 居中 ----
     def _golden_size(self) -> tuple:
@@ -1072,7 +1113,7 @@ class PostureConsoleWindow(QWidget):
 
         if not spec.enabled:
             item.do_flash()
-            self._note(f"{spec.name} {spec.cn}：扩展占位，暂不可单独切换")
+            self._note(_t("console_note_placeholder", name=spec.name, cn=_t(spec.cn)))
             return
 
         if spec.kind == "action":
@@ -1137,10 +1178,10 @@ class PostureConsoleWindow(QWidget):
             else:
                 marker, color = "○", SILVER_LO.name()
                 name_color = SILVER.name() if monitoring else SILVER_LO.name()
-            suffix = " <span style='color:#5a5f66'>· 即将开放</span>" if not spec.enabled else ""
+            suffix = _t("console_mods_suffix") if not spec.enabled else ""
             rows.append(
                 f"<span style='color:{color}'>{marker}</span> "
-                f"<span style='color:{name_color}'>{spec.cn}</span>{suffix}"
+                f"<span style='color:{name_color}'>{_t(spec.cn)}</span>{suffix}"
             )
         return "<br>".join(rows)
 
@@ -1165,22 +1206,24 @@ class PostureConsoleWindow(QWidget):
 
         # 侧栏读出（QLabel.setText 对相同文本会自动 no-op）
         decision = self.monitor.last_decision
-        status = decision.status if decision is not None else "WAITING"
+        raw_status = decision.status if decision is not None else "WAITING"
+        # 内部码（如 GOOD/NEEDS_CALIB）经 STATUS_TEXT 映射 + _t() 翻译为本地化文本
+        status = _t(STATUS_TEXT.get(raw_status, "status.WAITING"))
         overlay = self.monitor.overlay
         dim = round(overlay.dim_level * 100)
         blur = round(overlay.blur_level * 100)
-        self.side.status_label.setText(f"当前状态：{status}")
-        self.side.dim_label.setText(f"压暗程度：{dim}%")
-        self.side.blur_label.setText(f"模糊程度：{blur}%")
-        self.side.max_dim_label.setText(f"最深压暗：{self.side.max_dim_slider.value()}%")
-        self.side.blur_scale_label.setText(f"模糊强度：{self.side.blur_scale_slider.value()}%")
+        self.side.status_label.setText(_t("sp_status", status=status))
+        self.side.dim_label.setText(_t("sp_dim", dim=dim))
+        self.side.blur_label.setText(_t("sp_blur", blur=blur))
+        self.side.max_dim_label.setText(_t("sp_max_dim", v=self.side.max_dim_slider.value()))
+        self.side.blur_scale_label.setText(_t("sp_blur_scale", v=self.side.blur_scale_slider.value()))
 
         # 左下状态行（仅变化时更新）
         if monitoring:
-            state_text = (f"监测中 · {active_count} 项功能已启用"
-                          if active_count > 0 else "监测中 · 等待启用功能")
+            state_text = (_t("console_state_active", n=active_count)
+                          if active_count > 0 else _t("console_state_waiting"))
         else:
-            state_text = "监测已暂停 · STANDBY"
+            state_text = _t("console_state_paused")
         self._set_state_text(state_text)
 
         # 左下功能清单（仅变化时更新）
@@ -1192,4 +1235,8 @@ class PostureConsoleWindow(QWidget):
 
     def closeEvent(self, event) -> None:
         self.refresh_timer.stop()
+        # 移除本窗口及子组件注册的语言监听器，避免关闭后回调发往过期 UI
+        remove_listener(self._on_language_changed)
+        remove_listener(self.view._on_language_changed)
+        remove_listener(self.side._on_language_changed)
         super().closeEvent(event)

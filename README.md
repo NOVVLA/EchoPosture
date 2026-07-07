@@ -49,6 +49,43 @@ The seven feature switches:
 
 All toggles except calibration default to on and can be switched independently while monitoring is active.
 
+## Internationalization (i18n)
+
+EchoPosture supports runtime language switching between Chinese and English, with a third "follow system" mode.
+
+### Default behavior
+
+- On startup, the app detects the system locale via the Windows API (`GetUserDefaultLocaleName`) and POSIX environment variables (`LANG`, `LC_ALL`, `LC_MESSAGES`, `LANGUAGE`).
+- Simplified Chinese (`zh-CN`, `zh-TW`, ...) maps to `zh`. English (`en-US`, `en-GB`, ...) maps to `en`. Anything else falls back to `zh` (the project's primary language).
+- The choice is session-level only. No registry entries, config files, or persistent state are written.
+
+### Three-state language toggle
+
+The tray flyout's language button cycles through three states:
+
+1. `跟随系统 · 中文` / `Auto · Chinese` — follow the detected system language
+2. `语言：中文` / `Language: Chinese` — explicitly Simplified Chinese
+3. `Language: English` / `Language: English` — explicitly English
+
+The button label always renders in the currently effective language and reflects the selected mode (manual `zh` / `en` vs `auto`).
+
+### Coverage
+
+All user-facing text is localized across five UI modules:
+
+- `tray_flyout.py` — tray flyout (caption, state, buttons, tooltips)
+- `onboarding_toast.py` — onboarding toast popup
+- `tray_app.py` — startup calibration dialog, status panel, tray messages, warning dialogs
+- `posture_console.py` — debug console (vertebra feature names, tooltips, status lines)
+- `debug_ui.py` — visual debug UI (status codes, reason codes, labels, buttons, dialogs)
+
+### Non-invasive design
+
+- Only text is changed. No icons, layout, or animation is touched.
+- Listener pattern (`add_listener` / `remove_listener`): any module can subscribe to language change events and refresh its text in place.
+- Rendered text (e.g. `QPainter.drawText` on cached pixmaps) is refreshed by invalidating the cache (`self._card = None`) so the next `paintEvent` redraws with the new language.
+- The language button uses `lang_button_text()` to dynamically produce the correct label based on the current mode (`auto` / `zh` / `en`) and the effective language.
+
 ## Self Test
 
 Run `EchoPostureSelfTest.exe` from the release package when startup or camera behavior is unclear. It checks the packaged runtime, debug UI, vision path, tray monitor path, and GPU blur helper.
