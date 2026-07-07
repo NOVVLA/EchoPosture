@@ -48,6 +48,8 @@ from PyQt5.QtGui import (
 )
 from PyQt5.QtWidgets import QApplication, QWidget
 
+from i18n import _t, add_listener, remove_listener
+
 # ---- 配色（取自 onboarding.html 的 :root，仅复用数值） ----
 SILVER_HI = QColor("#eef1f4")
 SILVER_LO = QColor("#7d838c")
@@ -203,7 +205,7 @@ class EyeSlideSwitch(QWidget):
         self.setFixedSize(TRACK_W + SWITCH_PAD * 2, TRACK_H + SWITCH_PAD * 2)
         self.setCursor(Qt.PointingHandCursor)
         self.setAttribute(Qt.WA_TranslucentBackground, True)
-        self.setAccessibleName("开启监测")
+        self.setAccessibleName(_t("onb_accessible_name"))
 
         self._one_shot = one_shot
         self._t = 0.0           # 时间轴位置（ms）
@@ -413,13 +415,16 @@ class OnboardingToast(QWidget):
         self._booted = False
         self._anims: List = []  # 持有动画引用，防止被回收
 
-        self._state_text = "监测关闭 · STANDBY"
+        self._state_text = _t("onb_state_off")
         self._state_color = QColor(SILVER_LO)
         self._state_font = _font("Microsoft YaHei", 10, 3.0)
 
         self.switch = EyeSlideSwitch(self)
         self.switch.move(TOAST_W - PAD_X - TRACK_W - SWITCH_PAD, Y_ROW - SWITCH_PAD)
         self.switch.toggled_on.connect(self._on_armed)
+
+        # 监听全局语言变更：刷新状态文本 + 让卡片缓存失效重绘
+        add_listener(self._on_language_changed)
 
     # ---- 对外入口 ----
     def show_bottom_right(self) -> None:
@@ -479,7 +484,7 @@ class OnboardingToast(QWidget):
         if self._booted:
             return
         self._booted = True
-        self._state_text = "监测开启 · LIVE"
+        self._state_text = _t("onb_state_on")
 
         recolor = QVariantAnimation(self)
         recolor.setStartValue(QColor(SILVER_LO))
@@ -517,16 +522,16 @@ class OnboardingToast(QWidget):
         p.setFont(_font("Microsoft YaHei", 10, 4.2))
         p.setPen(SILVER_LO)
         p.drawText(QRectF(PAD_X, Y_HEAD, TOAST_W - PAD_X * 2, 14),
-                   int(Qt.AlignLeft | Qt.AlignVCenter), "ECHOPOSTURE · 系统提醒")
+                   int(Qt.AlignLeft | Qt.AlignVCenter), _t("onb_caption"))
 
         p.setFont(_font("Microsoft YaHei", 15, 2.7))
         p.setPen(SILVER_HI)
         p.drawText(QRectF(PAD_X, Y_TITLE, TOAST_W - PAD_X * 2, 22),
-                   int(Qt.AlignLeft | Qt.AlignVCenter), "开启姿态监测？")
+                   int(Qt.AlignLeft | Qt.AlignVCenter), _t("onb_title"))
 
         p.setFont(_font("Microsoft YaHei", 11, 1.3))
         p.setPen(SILVER_LO)
-        sub_lines = ("摄像头将以低功耗方式留意你的坐姿，", "所有数据仅在本机处理。")
+        sub_lines = (_t("onb_body_1"), _t("onb_body_2"))
         line_h = 20
         for i, line in enumerate(sub_lines):
             p.drawText(QRectF(PAD_X, Y_SUB + i * line_h, TOAST_W - PAD_X * 2, line_h),
@@ -534,6 +539,14 @@ class OnboardingToast(QWidget):
 
         p.end()
         return pm
+
+    def _on_language_changed(self) -> None:
+        """全局语言变更回调：刷新状态文本 + 让卡片缓存失效，下次 paint 重绘。"""
+        # 状态文本：如果已经拨开过用 on 状态，否则 off 状态
+        self._state_text = _t("onb_state_on") if self._booted else _t("onb_state_off")
+        # 卡片缓存失效：下次 paintEvent 会重新 _render_card，画上新语言的静态文字
+        self._card = None
+        self.update()
 
 
 def main() -> int:

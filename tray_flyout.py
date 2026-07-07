@@ -7,7 +7,7 @@ EchoPosture 托盘配置浮窗。
 结构自上而下：
 - 左上角灰色小齿轮：打开主配置 UI（控制台窗口）。
 - 监测开关行：与开场弹窗同款的眼睛滑条开关（双向），点一下暂停/恢复监测。
-- 三个操作按钮：立即重新校准 / 立即测试最深效果 / 退出本程序（标红）。
+- 四个操作按钮：立即重新校准 / 立即测试最深效果 / 语言切换 / 退出本程序（标红）。
 
 Qt.Popup 窗口：点击浮窗以外的区域自动关闭。
 """
@@ -41,6 +41,7 @@ from onboarding_toast import (
     _font,
     render_glass_card,
 )
+from i18n import _t, add_listener, remove_listener, cycle_language, lang_button_text
 
 FLYOUT_W = 300
 FLYOUT_MARGIN = 12
@@ -92,18 +93,30 @@ class TrayFlyout(QWidget):
         layout.addSpacing(2)
 
         btn_font = _font("Microsoft YaHei", 12, 1.0, QFont.Normal)
-        self.recalibrate_button = QPushButton("立即重新校准")
-        self.max_effect_button = QPushButton("立即测试最深效果")
-        self.exit_button = QPushButton("退出本程序")
+        self.recalibrate_button = QPushButton(_t("recalibrate"))
+        self.max_effect_button = QPushButton(_t("max_effect"))
+        self.lang_button = QPushButton(lang_button_text())
+        self.exit_button = QPushButton(_t("exit"))
         self.exit_button.setObjectName("exitBtn")
-        for btn in (self.recalibrate_button, self.max_effect_button, self.exit_button):
+        # 语言切换按钮夹在 max_effect 与 exit 之间：同款样式，无图标，
+        # 仅作文本切换，不参与监测/校准/退出等动作。
+        for btn in (
+            self.recalibrate_button,
+            self.max_effect_button,
+            self.lang_button,
+            self.exit_button,
+        ):
             btn.setFont(btn_font)
             btn.setCursor(Qt.PointingHandCursor)
             btn.setMinimumHeight(34)
             layout.addWidget(btn)
         self.recalibrate_button.clicked.connect(self._on_recalibrate)
         self.max_effect_button.clicked.connect(self._on_max_effect)
+        self.lang_button.clicked.connect(self._on_toggle_language)
         self.exit_button.clicked.connect(self._on_exit)
+
+        # 监听全局语言变更：其他入口（如未来加的设置面板）切语言时，浮窗也跟着刷
+        add_listener(self._apply_texts)
 
         # 左上角灰色小齿轮 → 打开主配置 UI
         self.gear_button = QPushButton("⚙", self)
@@ -113,12 +126,12 @@ class TrayFlyout(QWidget):
         self.gear_button.setFont(gear_font)
         self.gear_button.setFixedSize(26, 26)
         self.gear_button.setCursor(Qt.PointingHandCursor)
-        self.gear_button.setToolTip("打开配置界面")
+        self.gear_button.setToolTip(_t("gear_tooltip"))
         self.gear_button.move(12, 9)
         self.gear_button.clicked.connect(self._on_gear)
 
         # 齿轮右侧的小标题
-        self.caption = QLabel("ECHOPOSTURE · 控制", self)
+        self.caption = QLabel(_t("caption"), self)
         self.caption.setFont(_font("Microsoft YaHei", 10, 4.2))
         self.caption.setStyleSheet(f"color:{SILVER_LO.name()}; background:transparent;")
         self.caption.adjustSize()
@@ -163,10 +176,10 @@ class TrayFlyout(QWidget):
 
     def _update_state_label(self, on: bool) -> None:
         if on:
-            self.state_label.setText("监测运行中 · LIVE")
+            self.state_label.setText(_t("state_on"))
             color = RED_SOFT.name()
         else:
-            self.state_label.setText("已暂停 · STANDBY")
+            self.state_label.setText(_t("state_off"))
             color = SILVER_LO.name()
         self.state_label.setStyleSheet(f"color:{color}; background:transparent;")
 
@@ -194,6 +207,31 @@ class TrayFlyout(QWidget):
     def _on_exit(self) -> None:
         self.hide()
         self.monitor.stop()
+
+    # ---- 语言切换：非侵入式，仅刷新文本，不动图标 / 不动布局 ----
+    def _on_toggle_language(self) -> None:
+        # 三态循环：zh → en → auto(跟随系统) → zh
+        # cycle_language 内部会调 set_language，从而触发 _apply_texts（通过 i18n 监听器列表）
+        cycle_language()
+
+    def _apply_texts(self) -> None:
+        """切换语言后，把所有可见文本一次性刷新到当前语言。
+
+        - 按钮宽度跟随布局自适应，不会被新文本截断（layout 横向填满 FLYOUT_W）。
+        - caption 是绝对定位的 QLabel，重新 adjustSize + 重定位，避免与齿轮重叠。
+        - 不重建浮窗、不重画玻璃卡片，保持视觉与原风格完全一致。
+        - lang_button 文案由 lang_button_text() 决定，反映当前模式（zh / en / 跟随系统）。
+        """
+        self.recalibrate_button.setText(_t("recalibrate"))
+        self.max_effect_button.setText(_t("max_effect"))
+        self.lang_button.setText(lang_button_text())
+        self.exit_button.setText(_t("exit"))
+        self.gear_button.setToolTip(_t("gear_tooltip"))
+        self.caption.setText(_t("caption"))
+        self.caption.adjustSize()
+        # 与 __init__ 中同一公式，保证 caption 纵向居中于齿轮行不漂移
+        self.caption.move(44, 9 + (26 - self.caption.height()) // 2)
+        self._update_state_label(self.monitor.is_monitoring())
 
     # ---- 绘制：玻璃卡片预渲染，paintEvent 只 blit ----
     def paintEvent(self, event) -> None:

@@ -62,55 +62,59 @@ from vision_test import (
     format_value,
 )
 
+from i18n import _t, add_listener
 
+
+# 状态码 → 翻译键名（运行时用 _t() 取本地化文本）
 STATUS_TEXT: Dict[str, str] = {
-    "GOOD": "正常",
-    "GOOD_PART": "部分正常",
-    "WATCH": "观察中",
-    "BAD": "需要调整",
-    "CRITICAL": "高风险",
-    "AWAY": "已离开",
-    "MULTI_USER": "多人",
-    "PROFILE_MISMATCH": "疑似换人",
-    "UNKNOWN": "未识别",
-    "CALIBRATING": "校准中",
-    "NEEDS_CALIB": "等待校准",
+    "GOOD": "status.GOOD",
+    "GOOD_PART": "status.GOOD_PART",
+    "WATCH": "status.WATCH",
+    "BAD": "status.BAD",
+    "CRITICAL": "status.CRITICAL",
+    "AWAY": "status.AWAY",
+    "MULTI_USER": "status.MULTI_USER",
+    "PROFILE_MISMATCH": "status.PROFILE_MISMATCH",
+    "UNKNOWN": "status.UNKNOWN",
+    "CALIBRATING": "status.CALIBRATING",
+    "NEEDS_CALIB": "status.NEEDS_CALIB",
 }
 
+# 原因码 → 翻译键名（运行时用 _t() 取本地化文本）
 REASON_TEXT: Dict[str, str] = {
-    "press_calibrate": "请坐直后点击校准",
-    "within_baseline": "与基准姿势接近",
-    "too_close": "脸离屏幕过近",
-    "shoulder_tilt": "肩膀高度偏差较大",
-    "missing_face_or_pose": "脸部或肩膀未识别",
-    "no_usable_metrics": "暂时没有可用视觉指标",
-    "face_within_baseline": "脸部距离正常",
-    "shoulder_within_baseline": "肩膀高度正常",
-    "within_scientific_limits": "高精度指标在建议范围内",
-    "distance_calibration": "校准距离",
-    "distance_unreliable_head_turn": "转头时距离估算不可靠",
-    "head_turn": "头部转向",
-    "head_not_facing_camera": "头部未正对屏幕",
-    "head_turn_eye_width_ratio": "头部转向眼距比例",
-    "head_turn_ratio_delta": "头部转向偏移",
-    "multiple_faces_detected": "检测到多张脸",
-    "user_away_s": "用户离开秒数",
-    "user_missing_observing_s": "用户缺失观察秒数",
-    "profile_check_waiting": "等待用户轮廓校验",
-    "profile_face_shoulder_delta": "脸肩比例变化",
-    "profile_torso_shoulder_delta": "躯干肩宽比例变化",
-    "distance_too_close": "距离过近",
-    "distance_near": "距离偏近",
-    "distance_too_far": "距离过远",
-    "distance_far": "距离偏远",
-    "shoulder_asymmetry": "肩颈不对称",
-    "shoulder_width": "肩宽",
-    "shoulder_width_narrow": "肩宽明显缩窄",
-    "trunk_lean": "躯干倾斜",
-    "sustained_risk_s": "持续风险秒数",
-    "smoothed_risk_score": "平滑风险评分",
-    "risk_score": "风险评分",
-    "risk_observing": "风险观察中",
+    "press_calibrate": "reason.press_calibrate",
+    "within_baseline": "reason.within_baseline",
+    "too_close": "reason.too_close",
+    "shoulder_tilt": "reason.shoulder_tilt",
+    "missing_face_or_pose": "reason.missing_face_or_pose",
+    "no_usable_metrics": "reason.no_usable_metrics",
+    "face_within_baseline": "reason.face_within_baseline",
+    "shoulder_within_baseline": "reason.shoulder_within_baseline",
+    "within_scientific_limits": "reason.within_scientific_limits",
+    "distance_calibration": "reason.distance_calibration",
+    "distance_unreliable_head_turn": "reason.distance_unreliable_head_turn",
+    "head_turn": "reason.head_turn",
+    "head_not_facing_camera": "reason.head_not_facing_camera",
+    "head_turn_eye_width_ratio": "reason.head_turn_eye_width_ratio",
+    "head_turn_ratio_delta": "reason.head_turn_ratio_delta",
+    "multiple_faces_detected": "reason.multiple_faces_detected",
+    "user_away_s": "reason.user_away_s",
+    "user_missing_observing_s": "reason.user_missing_observing_s",
+    "profile_check_waiting": "reason.profile_check_waiting",
+    "profile_face_shoulder_delta": "reason.profile_face_shoulder_delta",
+    "profile_torso_shoulder_delta": "reason.profile_torso_shoulder_delta",
+    "distance_too_close": "reason.distance_too_close",
+    "distance_near": "reason.distance_near",
+    "distance_too_far": "reason.distance_too_far",
+    "distance_far": "reason.distance_far",
+    "shoulder_asymmetry": "reason.shoulder_asymmetry",
+    "shoulder_width": "reason.shoulder_width",
+    "shoulder_width_narrow": "reason.shoulder_width_narrow",
+    "trunk_lean": "reason.trunk_lean",
+    "sustained_risk_s": "reason.sustained_risk_s",
+    "smoothed_risk_score": "reason.smoothed_risk_score",
+    "risk_score": "reason.risk_score",
+    "risk_observing": "reason.risk_observing",
 }
 
 
@@ -351,11 +355,11 @@ class DebugWindow(QMainWindow):
         self.video_label.setMinimumSize(640, 480)
         self.video_label.setStyleSheet("background: #111; color: #ccc;")
 
-        self.status_label = QLabel("等待校准")
+        self.status_label = QLabel(_t("debug_status_init"))
         self.status_label.setFont(QFont("Microsoft YaHei", 20, QFont.Bold))
         self.status_label.setAlignment(Qt.AlignCenter)
 
-        self.reason_label = QLabel("请坐直后点击校准")
+        self.reason_label = QLabel(_t("debug_reason_init"))
         self.reason_label.setWordWrap(True)
         self.reason_label.setAlignment(Qt.AlignCenter)
 
@@ -365,12 +369,12 @@ class DebugWindow(QMainWindow):
         self.trunk_label = QLabel("--")
         self.risk_label = QLabel("--")
         self.baseline_label = QLabel("--")
-        self.calibration_label = QLabel("未校准")
+        self.calibration_label = QLabel(_t("debug_calib_init"))
         self.calibration_label.setWordWrap(True)
 
-        self.calibrate_button = QPushButton("校准当前姿势")
+        self.calibrate_button = QPushButton(_t("debug_calibrate_btn"))
         self.calibrate_button.clicked.connect(self.calibrate_current_sample)
-        self.precision_checkbox = QCheckBox("高精度模式（需要输入校准距离）")
+        self.precision_checkbox = QCheckBox(_t("debug_precision_cb"))
         self.precision_checkbox.toggled.connect(self.toggle_high_precision)
         self.distance_input = QDoubleSpinBox()
         self.distance_input.setRange(35.0, 150.0)
@@ -380,8 +384,11 @@ class DebugWindow(QMainWindow):
         self.distance_input.setSuffix(" cm")
         self.distance_input.setEnabled(False)
         self.distance_input.valueChanged.connect(self.update_reference_distance)
-        self.performance_checkbox = QCheckBox("高性能模式（72帧捕捉用于高流畅度）")
+        self.performance_checkbox = QCheckBox(_t("debug_performance_cb"))
         self.performance_checkbox.toggled.connect(self.toggle_high_performance)
+
+        # 监听全局语言变更：刷新静态 UI 文本
+        add_listener(self._on_language_changed)
 
         self._build_layout()
         self._apply_style()
@@ -406,23 +413,29 @@ class DebugWindow(QMainWindow):
         panel_layout.setContentsMargins(16, 16, 16, 16)
         panel_layout.setSpacing(12)
 
-        title = QLabel("视觉监听")
+        title = QLabel(_t("debug_panel_title"))
         title.setFont(QFont("Microsoft YaHei", 18, QFont.Bold))
 
         metric_grid = QGridLayout()
         metric_grid.setHorizontalSpacing(10)
         metric_grid.setVerticalSpacing(8)
-        metric_grid.addWidget(QLabel("脸部距离"), 0, 0)
+        self.face_metric_label = QLabel(_t("debug_metric_face"))
+        metric_grid.addWidget(self.face_metric_label, 0, 0)
         metric_grid.addWidget(self.face_label, 0, 1)
-        metric_grid.addWidget(QLabel("肩膀倾斜"), 1, 0)
+        self.shoulder_metric_label = QLabel(_t("debug_metric_shoulder"))
+        metric_grid.addWidget(self.shoulder_metric_label, 1, 0)
         metric_grid.addWidget(self.shoulder_label, 1, 1)
-        metric_grid.addWidget(QLabel("估算距离"), 2, 0)
+        self.distance_metric_label = QLabel(_t("debug_metric_distance"))
+        metric_grid.addWidget(self.distance_metric_label, 2, 0)
         metric_grid.addWidget(self.distance_label, 2, 1)
-        metric_grid.addWidget(QLabel("躯干倾斜"), 3, 0)
+        self.trunk_metric_label = QLabel(_t("debug_metric_trunk"))
+        metric_grid.addWidget(self.trunk_metric_label, 3, 0)
         metric_grid.addWidget(self.trunk_label, 3, 1)
-        metric_grid.addWidget(QLabel("风险评分"), 4, 0)
+        self.risk_metric_label = QLabel(_t("debug_metric_risk"))
+        metric_grid.addWidget(self.risk_metric_label, 4, 0)
         metric_grid.addWidget(self.risk_label, 4, 1)
-        metric_grid.addWidget(QLabel("当前基准"), 5, 0)
+        self.baseline_metric_label = QLabel(_t("debug_metric_baseline"))
+        metric_grid.addWidget(self.baseline_metric_label, 5, 0)
         metric_grid.addWidget(self.baseline_label, 5, 1)
 
         panel_layout.addWidget(title)
@@ -436,6 +449,7 @@ class DebugWindow(QMainWindow):
         panel_layout.addWidget(self.performance_checkbox)
         panel_layout.addStretch(1)
         panel_layout.addWidget(self.calibrate_button)
+        self.title_label = title
 
         layout.addWidget(self.video_label, 1)
         layout.addWidget(panel)
@@ -484,15 +498,15 @@ class DebugWindow(QMainWindow):
 
     def calibrate_current_sample(self) -> None:
         if self.current_sample is None:
-            self.calibration_label.setText("还没有摄像头样本")
+            self.calibration_label.setText(_t("debug_calib_no_sample"))
             return
 
         distance_cm = float(self.distance_input.value()) if self.high_precision_enabled else None
         if not self.analyzer.set_baseline_from_sample(self.current_sample, distance_cm):
-            self.calibration_label.setText("校准失败：没有识别到脸部或肩膀")
+            self.calibration_label.setText(_t("debug_calib_fail"))
             return
 
-        self.calibration_label.setText("已校准：当前姿势已作为健康基准")
+        self.calibration_label.setText(_t("debug_calib_ok"))
         self.baseline_label.setText(format_baseline(self.analyzer.baseline))
         decision = self.analyzer.evaluate(self.current_sample)
         self._show_metrics(self.current_sample, decision)
@@ -636,12 +650,12 @@ class DebugWindow(QMainWindow):
         return max(1, int(1000 / max(fps, 1.0)))
 
     def _show_metrics(self, sample: VisionSample, decision: PostureDecision) -> None:
-        self.status_label.setText(STATUS_TEXT.get(decision.status, decision.status))
+        self.status_label.setText(_t(STATUS_TEXT.get(decision.status, decision.status)))
         self.reason_label.setText(self._human_reason(decision.reason))
         self.status_label.setStyleSheet(self._status_style(decision.status))
 
-        face_text = f"{format_value(sample.interpupillary_px)}  越大越近"
-        shoulder_text = f"{format_value(sample.shoulder_diff_px)}  越大越歪"
+        face_text = _t("debug_face_suffix", v=format_value(sample.interpupillary_px))
+        shoulder_text = _t("debug_shoulder_suffix", v=format_value(sample.shoulder_diff_px))
         estimated_distance = None
         if isinstance(self.analyzer, HighPrecisionPostureAnalyzer):
             estimated_distance = self.analyzer.estimated_distance_cm(sample)
@@ -669,20 +683,14 @@ class DebugWindow(QMainWindow):
 
     def _show_camera_permission_warning(self, detail: str) -> None:
         self._show_warning_dialog(
-            "摄像头权限不可用",
-            "EchoPosture 无法打开摄像头。\n\n"
-            "请在 Windows 设置 > 隐私和安全性 > 摄像头 中允许桌面应用访问摄像头，"
-            "确认没有其他程序独占摄像头，然后重新启动 EchoPosture。\n\n"
-            f"详细信息：{detail}",
+            _t("warn_camera_perm_title"),
+            _t("warn_camera_perm_body", detail=detail),
         )
 
     def _show_camera_black_frame_warning(self, detail: str) -> None:
         self._show_warning_dialog(
-            "摄像头画面不可用",
-            "EchoPosture 已取得摄像头访问权限，但摄像头输出是全黑或几乎全黑，"
-            "当前无法看清姿态。\n\n"
-            "请检查镜头遮挡、隐私挡片、驱动禁用、虚拟摄像头输出或环境光线，然后重新启动监测。\n\n"
-            f"详细信息：{detail}",
+            _t("warn_camera_black_title"),
+            _t("warn_camera_black_body", detail=detail),
         )
 
     def _show_warning_dialog(self, title: str, message: str) -> None:
@@ -690,19 +698,40 @@ class DebugWindow(QMainWindow):
         box.setWindowFlags(box.windowFlags() | Qt.WindowStaysOnTopHint)
         box.exec_()
 
+    def _on_language_changed(self) -> None:
+        """语言变更回调：刷新所有静态 UI 文本。
+
+        动态标签（status_label / reason_label / face_label 等）由 update_frame
+        周期刷新，会自动用新语言；这里只刷一次性的静态控件。
+        """
+        self.title_label.setText(_t("debug_panel_title"))
+        self.status_label.setText(_t("debug_status_init"))
+        self.reason_label.setText(_t("debug_reason_init"))
+        self.calibration_label.setText(_t("debug_calib_init"))
+        self.calibrate_button.setText(_t("debug_calibrate_btn"))
+        self.precision_checkbox.setText(_t("debug_precision_cb"))
+        self.performance_checkbox.setText(_t("debug_performance_cb"))
+        self.face_metric_label.setText(_t("debug_metric_face"))
+        self.shoulder_metric_label.setText(_t("debug_metric_shoulder"))
+        self.distance_metric_label.setText(_t("debug_metric_distance"))
+        self.trunk_metric_label.setText(_t("debug_metric_trunk"))
+        self.risk_metric_label.setText(_t("debug_metric_risk"))
+        self.baseline_metric_label.setText(_t("debug_metric_baseline"))
+
     def _human_reason(self, reason: str) -> str:
         if not reason:
             return "--"
 
+        # 用 reason key 直接替换为本地化文本（_t 自动按当前语言返回）
         translated = reason
-        for key, text in REASON_TEXT.items():
-            translated = translated.replace(key, text)
-        translated = translated.replace("missing=", "缺失：")
-        translated = translated.replace("face", "脸部")
-        translated = translated.replace("shoulder", "肩膀")
-        translated = translated.replace("trunk", "躯干")
-        translated = translated.replace("distance", "距离")
-        translated = translated.replace("baseline", "基准")
+        for key, tkey in REASON_TEXT.items():
+            translated = translated.replace(key, _t(tkey))
+        translated = translated.replace("missing=", _t("reason_frag.missing"))
+        translated = translated.replace("face", _t("reason_frag.face"))
+        translated = translated.replace("shoulder", _t("reason_frag.shoulder"))
+        translated = translated.replace("trunk", _t("reason_frag.trunk"))
+        translated = translated.replace("distance", _t("reason_frag.distance"))
+        translated = translated.replace("baseline", _t("reason_frag.baseline"))
         translated = translated.replace("+", " / ")
         translated = translated.replace(",", "，")
         translated = translated.replace(";", "；")
@@ -765,11 +794,8 @@ def main() -> int:
     except CameraPermissionError as exc:
         QMessageBox.warning(
             None,
-            "摄像头权限不可用",
-            "EchoPosture 无法打开摄像头。\n\n"
-            "请在 Windows 设置 > 隐私和安全性 > 摄像头 中允许桌面应用访问摄像头，"
-            "确认没有其他程序独占摄像头，然后重新启动 EchoPosture。\n\n"
-            f"详细信息：{exc}",
+            _t("warn_camera_perm_title"),
+            _t("warn_camera_perm_body", detail=exc),
         )
         return 1
     except Exception as exc:

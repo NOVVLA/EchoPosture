@@ -1,4 +1,4 @@
-﻿"""
+"""
 EchoPosture tray runtime.
 
 This is the production-style entry point: no debug window, just a tray icon,
@@ -46,6 +46,7 @@ from PyQt5.QtWidgets import (
 )
 
 from gpu_blur_overlay import GpuBlurOverlayController
+from i18n import _t, add_listener, remove_listener
 from onboarding_toast import (
     RED_SOFT,
     SILVER_HI,
@@ -175,8 +176,15 @@ class StartupCalibrationDialog(QDialog):
         ring_y = (self.DIALOG_H - self.ring.height()) // 2
         self.ring.move(ring_x, ring_y)
 
+        # 语言变更时让卡片缓存失效，下次 paintEvent 用新语言重绘
+        add_listener(self._on_language_changed)
+
         self._refresh()
         self._center_on_screen()
+
+    def _on_language_changed(self) -> None:
+        self._card = None
+        self.update()
 
     def _center_on_screen(self) -> None:
         screen = QApplication.primaryScreen().availableGeometry()
@@ -214,16 +222,16 @@ class StartupCalibrationDialog(QDialog):
         p.setFont(_font("Microsoft YaHei", 11, 4.2))
         p.setPen(SILVER_LO)
         p.drawText(QRectF(self.PAD_X, self.CAP_TOP, text_w, 16),
-                   int(Qt.AlignLeft | Qt.AlignVCenter), "ECHOPOSTURE · 启动校准")
+                   int(Qt.AlignLeft | Qt.AlignVCenter), _t("sd_caption"))
 
         p.setFont(_font("Microsoft YaHei", 21, 1.5, QFont.DemiBold))
         p.setPen(SILVER_HI)
         p.drawText(QRectF(self.PAD_X, self.TITLE_TOP, text_w, 32),
-                   int(Qt.AlignLeft | Qt.AlignVCenter), "请坐直，保持舒适姿态")
+                   int(Qt.AlignLeft | Qt.AlignVCenter), _t("sd_title"))
 
         p.setFont(_font("Microsoft YaHei", 12, 0.8))
         p.setPen(SILVER_LO)
-        body_lines = ("倒计时结束后，将自动用摄像头", "把当前姿势记为健康基准。")
+        body_lines = (_t("sd_body_1"), _t("sd_body_2"))
         for i, line in enumerate(body_lines):
             p.drawText(QRectF(self.PAD_X, self.BODY_TOP + i * self.LINE_H,
                               text_w, self.LINE_H),
@@ -280,7 +288,7 @@ class StatusPanel(QWidget):
         self.blur_scale_slider.valueChanged.connect(self._visual_config_changed)
         layout.addWidget(self.blur_scale_slider)
 
-        self.max_effect_button = QPushButton("立即测试最深效果")
+        self.max_effect_button = QPushButton(_t("max_effect"))
         self.max_effect_button.clicked.connect(self.monitor.trigger_max_visual_effect)
         layout.addWidget(self.max_effect_button)
 
@@ -292,9 +300,17 @@ class StatusPanel(QWidget):
             """
         )
 
+        # 语言变更时刷新所有标签文本（按钮文字也跟着切）
+        add_listener(self._apply_texts)
+
         self.refresh_timer = QTimer(self)
         self.refresh_timer.timeout.connect(self.refresh)
         self.refresh_timer.start(250)
+        self.refresh()
+
+    def _apply_texts(self) -> None:
+        """语言变更回调：刷新按钮文字。标签由 refresh() 自动用新模板重画。"""
+        self.max_effect_button.setText(_t("max_effect"))
         self.refresh()
 
     def refresh(self) -> None:
@@ -302,9 +318,9 @@ class StatusPanel(QWidget):
         status = decision.status if decision is not None else "WAITING"
         dim = round(self.monitor.overlay.dim_level * 100)
         blur = round(self.monitor.overlay.blur_level * 100)
-        self.status_label.setText(f"当前状态：{status}")
-        self.dim_label.setText(f"压暗程度：{dim}%")
-        self.blur_label.setText(f"模糊程度：{blur}%")
+        self.status_label.setText(_t("sp_status", status=status))
+        self.dim_label.setText(_t("sp_dim", dim=dim))
+        self.blur_label.setText(_t("sp_blur", blur=blur))
         self._refresh_control_labels()
 
     def _visual_config_changed(self) -> None:
@@ -315,8 +331,8 @@ class StatusPanel(QWidget):
         self._refresh_control_labels()
 
     def _refresh_control_labels(self) -> None:
-        self.max_dim_label.setText(f"最深压暗：{self.max_dim_slider.value()}%")
-        self.blur_scale_label.setText(f"模糊强度：{self.blur_scale_slider.value()}%")
+        self.max_dim_label.setText(_t("sp_max_dim", v=self.max_dim_slider.value()))
+        self.blur_scale_label.setText(_t("sp_blur_scale", v=self.blur_scale_slider.value()))
 
 
 class TrayMonitor:
@@ -329,22 +345,32 @@ class TrayMonitor:
         fps: float,
         calibrated_distance_cm: float,
         gpu_blur_enabled: bool = True,
+        mock_camera: bool = False,
     ) -> None:
         self.app = app
         self.camera_id = camera_id
         self.capture_width = width
         self.capture_height = height
         self.calibrated_distance_cm = calibrated_distance_cm
+        self.mock_camera = mock_camera
         self.analyzer = HighPrecisionPostureAnalyzer(
             auto_calibrate=False,
             calibrated_distance_cm=calibrated_distance_cm,
         )
         # 摄像头 + MediaPipe + 评分全部活在 VisionWorker 工作线程；
         # 主线程只低频取信箱快照，UI 不再被推理阻塞。
-        self.worker = VisionWorker(
-            engine_factory=lambda: VisionEngine(
+        # --mock-camera 时用 MockVisionEngine 替身，跳过真实摄像头
+        if mock_camera:
+            from mock_vision import MockVisionEngine
+            engine_factory = lambda: MockVisionEngine(
                 camera_id=camera_id, width=width, height=height
-            ),
+            )
+        else:
+            engine_factory = lambda: VisionEngine(
+                camera_id=camera_id, width=width, height=height
+            )
+        self.worker = VisionWorker(
+            engine_factory=engine_factory,
             analyzer=self.analyzer,
             target_fps=fps,
         )
@@ -431,11 +457,19 @@ class TrayMonitor:
 
         MediaPipe/摄像头的构造、使用、释放都在本线程内完成，不经工作线程。
         """
-        engine = VisionEngine(
-            camera_id=self.camera_id,
-            width=self.capture_width,
-            height=self.capture_height,
-        )
+        if self.mock_camera:
+            from mock_vision import MockVisionEngine
+            engine = MockVisionEngine(
+                camera_id=self.camera_id,
+                width=self.capture_width,
+                height=self.capture_height,
+            )
+        else:
+            engine = VisionEngine(
+                camera_id=self.camera_id,
+                width=self.capture_width,
+                height=self.capture_height,
+            )
         try:
             try:
                 engine.start()
@@ -506,7 +540,7 @@ class TrayMonitor:
             return
         self.tray.showMessage(
             "EchoPosture",
-            f"监测已停止：{exc}",
+            _t("tm_worker_error", exc=exc),
             QSystemTrayIcon.Warning,
             5000,
         )
@@ -524,7 +558,7 @@ class TrayMonitor:
             if result.ok:
                 self.tray.showMessage(
                     "EchoPosture",
-                    "校准完成，姿态监测已开始。",
+                    _t("tm_calib_ok"),
                     QSystemTrayIcon.Information,
                     2200,
                 )
@@ -532,7 +566,7 @@ class TrayMonitor:
                 return
             self.tray.showMessage(
                 "EchoPosture",
-                "校准失败：没有识别到可用姿态。请重新启动并坐直。",
+                _t("tm_calib_fail_startup"),
                 QSystemTrayIcon.Warning,
                 5000,
             )
@@ -552,7 +586,7 @@ class TrayMonitor:
                 self._start_monitoring()
             self.tray.showMessage(
                 "EchoPosture",
-                "已按当前姿势重新校准。",
+                _t("tm_recal_ok"),
                 QSystemTrayIcon.Information,
                 2200,
             )
@@ -562,7 +596,7 @@ class TrayMonitor:
             self.worker.resume()
         self.tray.showMessage(
             "EchoPosture",
-            "重新校准失败：没有识别到可用姿态。",
+            _t("tm_recal_fail"),
             QSystemTrayIcon.Warning,
             4000,
         )
@@ -572,7 +606,7 @@ class TrayMonitor:
         self.overlay.trigger_max_effect()
         self.tray.showMessage(
             "EchoPosture",
-            "已触发 8 秒最深压暗和模糊。",
+            _t("tm_max_effect"),
             QSystemTrayIcon.Information,
             1800,
         )
@@ -660,30 +694,22 @@ class TrayMonitor:
     def _show_camera_permission_warning(self, detail: str) -> None:
         self._show_warning_once(
             "camera_permission",
-            "摄像头权限不可用",
-            "EchoPosture 无法打开摄像头。\n\n"
-            "请在 Windows 设置 > 隐私和安全性 > 摄像头 中允许桌面应用访问摄像头，"
-            "确认没有其他程序独占摄像头，然后重新启动 EchoPosture。\n\n"
-            f"详细信息：{detail}",
+            _t("warn_camera_perm_title"),
+            _t("warn_camera_perm_body", detail=detail),
         )
 
     def _show_camera_black_frame_warning(self, detail: str) -> None:
         self._show_warning_once(
             "camera_black_frame",
-            "摄像头画面不可用",
-            "EchoPosture 已取得摄像头访问权限，但摄像头输出是全黑或几乎全黑，"
-            "当前无法看清姿态。\n\n"
-            "请检查镜头遮挡、隐私挡片、驱动禁用、虚拟摄像头输出或环境光线，然后重新启动监测。\n\n"
-            f"详细信息：{detail}",
+            _t("warn_camera_black_title"),
+            _t("warn_camera_black_body", detail=detail),
         )
 
     def _show_screen_capture_warning(self, detail: str) -> None:
         self._show_warning_once(
             "screen_capture_permission",
-            "屏幕捕获权限受限",
-            "EchoPosture 无法读取桌面画面用于 GPU 模糊，已切换到基础压暗 fallback。\n\n"
-            "请检查屏幕捕获权限、显卡/远程桌面限制或安全软件拦截。\n\n"
-            f"详细信息：{detail}",
+            _t("warn_screen_capture_title"),
+            _t("warn_screen_capture_body", detail=detail),
         )
 
     def _show_pending_screen_capture_warning(self) -> None:
@@ -731,7 +757,7 @@ class TrayMonitor:
             self.flyout = None
             self.tray.showMessage(
                 "EchoPosture",
-                f"托盘浮窗打开失败，监测仍在运行：{exc}",
+                _t("tm_flyout_open_fail", exc=exc),
                 QSystemTrayIcon.Warning,
                 4000,
             )
@@ -757,7 +783,7 @@ class TrayMonitor:
             self.console = None
             self.tray.showMessage(
                 "EchoPosture",
-                f"控制台窗口打开失败，监测仍在运行：{exc}",
+                _t("tm_console_open_fail", exc=exc),
                 QSystemTrayIcon.Warning,
                 4000,
             )
@@ -815,6 +841,12 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Use the PyQt dimming overlay fallback instead of BlurOverlayHost.exe.",
     )
+    parser.add_argument(
+        "--mock-camera",
+        action="store_true",
+        help="Use a fake in-memory camera (MockVisionEngine) instead of real hardware. "
+        "Useful for UI/i18n testing when no camera is available.",
+    )
     return parser.parse_args()
 
 
@@ -835,6 +867,7 @@ def main() -> int:
         fps=args.fps,
         calibrated_distance_cm=args.distance_cm,
         gpu_blur_enabled=not args.disable_gpu_blur,
+        mock_camera=args.mock_camera,
     )
     signal.signal(signal.SIGINT, lambda *_args: monitor.stop())
 
