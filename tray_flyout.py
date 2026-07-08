@@ -151,6 +151,10 @@ class TrayFlyout(QWidget):
 
     # ---- 打开：右下角定位 + 上浮淡入 ----
     def popup_bottom_right(self) -> None:
+        # Qt.Popup 关闭时会触发 closeEvent 移除监听器；
+        # 每次打开时重新注册，确保语言切换能刷新浮窗文本。
+        # add_listener 内部有去重，重复调用安全。
+        add_listener(self._apply_texts)
         self._sync_state()
         screen = QApplication.primaryScreen().availableGeometry()
         x = screen.x() + screen.width() - self.width() - FLYOUT_MARGIN
@@ -225,9 +229,9 @@ class TrayFlyout(QWidget):
         else:
             ok = self.monitor.pause_monitoring()
         if not ok:
-            # 启动阶段拦截（开场弹窗或校准倒计时进行中）：回弹滑块，不打扰用户
-            self.switch.set_on(not on, animate=True)
-            self._update_state_label(not on, animate=False)
+            # 启动阶段拦截（开场弹窗或校准倒计时进行中）：半程回弹动画反馈"不可用"
+            self.switch.bounce_back()
+            self._update_state_label(False, animate=False)
             return
         self._update_state_label(self.monitor.is_monitoring(), animate=True)
 
@@ -271,7 +275,8 @@ class TrayFlyout(QWidget):
         self.caption.adjustSize()
         # 与 __init__ 中同一公式，保证 caption 纵向居中于齿轮行不漂移
         self.caption.move(44, 9 + (26 - self.caption.height()) // 2)
-        self._update_state_label(self.monitor.is_monitoring())
+        # 语言切换只刷新文本，不改滑块视觉状态；用 switch.is_on() 保证文字与滑块一致
+        self._update_state_label(self.switch.is_on(), animate=False)
 
     # ---- 绘制：玻璃卡片预渲染，paintEvent 只 blit ----
     def paintEvent(self, event) -> None:
