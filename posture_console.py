@@ -640,8 +640,7 @@ class ArtView(QGraphicsView):
         add_listener(self._on_language_changed)
 
     def _on_language_changed(self) -> None:
-        """语言变更回调：刷新所有静态标签文本。"""
-        self.readout_state.setText(_t("console_state_paused"))
+        """语言变更回调：刷新静态标签 hint。动态状态行由 PostureConsoleWindow.refresh() 统一刷。"""
         self.hint.setText(_t("console_hint"))
 
     def _mk_label(self, text: str, pt: int, color: QColor, spacing: float) -> QLabel:
@@ -934,12 +933,15 @@ class PostureConsoleWindow(QWidget):
         add_listener(self._on_language_changed)
 
     def _on_language_changed(self) -> None:
-        """语言变更回调：刷新椎骨 toolTip。其他静态标签由各组件自己监听刷新。"""
+        """语言变更回调：刷新椎骨 toolTip + 清空文本脏缓存，下次 refresh 强制重绘。"""
         for item in self.vertebrae:
             try:
                 item.refresh_tooltip()
             except Exception:
                 pass
+        # 语言切换后 _t() 返回值改变，旧缓存的文本不再匹配，强制下次 refresh 重写
+        self._last_state_text = None
+        self._last_mods_html = None
 
     # ---- 窗口几何：黄金分割 + 居中 ----
     def _golden_size(self) -> tuple:
