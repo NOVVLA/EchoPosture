@@ -30,6 +30,7 @@ from PyQt5.QtCore import (
     QPointF,
     QPropertyAnimation,
     QRectF,
+    QSequentialAnimationGroup,
     Qt,
     QTimer,
     QVariantAnimation,
@@ -221,6 +222,7 @@ class EyeSlideSwitch(QWidget):
         self._anim = QVariantAnimation(self)
         self._anim.setEasingCurve(QEasingCurve.Linear)
         self._anim.valueChanged.connect(self._on_tick)
+        self._seq_anim: Optional[QSequentialAnimationGroup] = None
 
     def is_on(self) -> bool:
         return self._on
@@ -239,10 +241,55 @@ class EyeSlideSwitch(QWidget):
 
     def _animate_to(self, target: float) -> None:
         self._anim.stop()
+        if self._seq_anim is not None:
+            self._seq_anim.stop()
         self._anim.setStartValue(self._t)
         self._anim.setEndValue(target)
         self._anim.setDuration(int(abs(target - self._t)))
         self._anim.start()
+
+    def bounce_back(self) -> None:
+        """被拒绝反馈：推到约 45% 位置再弹回关闭位，不改 _on 状态。
+
+        两段式动画：
+        - 前进：当前位置 → 45%（180ms OutCubic，快速推到半开）
+        - 回弹：45% → 0（320ms OutBack，轻微超射后落回关闭位）
+
+        视觉上旋钮、眼睛、轨道颜色同步做半开→回退，比直接 set_on(False)
+        更有"推不动"的拒绝感。_Channel.at() 对 t<0 做了 clamp，OutBack
+        短暂超射负值不会出问题。
+        """
+        self._on = False
+        self._anim.stop()
+        if self._seq_anim is not None:
+            self._seq_anim.stop()
+
+        mid = self.TIMELINE_MS * 0.45
+        start = max(0.0, min(self._t, mid))
+
+        seq = QSequentialAnimationGroup(self)
+
+        push = QVariantAnimation(self)
+        push.setStartValue(start)
+        push.setEndValue(mid)
+        push.setDuration(180)
+        push.setEasingCurve(QEasingCurve(QEasingCurve.OutCubic))
+        push.valueChanged.connect(self._on_tick)
+
+        snap = QVariantAnimation(self)
+        snap.setStartValue(mid)
+        snap.setEndValue(0.0)
+        snap.setDuration(320)
+        overshoot = QEasingCurve(QEasingCurve.OutBack)
+        overshoot.setOvershoot(1.5)
+        snap.setEasingCurve(overshoot)
+        snap.valueChanged.connect(self._on_tick)
+        snap.finished.connect(lambda: self._on_tick(0.0))
+
+        seq.addAnimation(push)
+        seq.addAnimation(snap)
+        seq.start()
+        self._seq_anim = seq
 
     def _on_tick(self, value) -> None:
         self._t = float(value)
