@@ -44,5 +44,7 @@ jobs:
           AI_MODEL: ${{ secrets.AI_MODEL }}
           AI_REVIEW_MODEL: ${{ secrets.AI_REVIEW_MODEL }}
           AI_FAST_MODEL: ${{ secrets.AI_FAST_MODEL }}
+          AI_BACKUP_API_URL: ${{ secrets.AI_BACKUP_API_URL }}
+          AI_BACKUP_MODEL: ${{ secrets.AI_BACKUP_MODEL }}
           GITHUB_TOKEN: ${{ github.token }}
         run: python .github/ai-flows/pr_review.py

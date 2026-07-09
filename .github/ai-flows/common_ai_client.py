@@ -29,6 +29,16 @@ class AIClientResponseError(AIClientError):
     """Raised when the AI response is missing or cannot be parsed."""
 
 
+class AIClientAccessBlockedError(AIClientResponseError):
+    """Raised when a known Claude or gateway access block is detected."""
+
+
+BACKUP_TRIGGER_MARKERS = (
+    "此错误由Cloudflare代表网站所有者生成。",
+    "如您对此事不知情，请首先尝试升级您的 Claude Code 客户端版本，其次请联系技术或管理员。",
+)
+
+
 def _env(name: str, default: str | None = None) -> str | None:
     value = os.environ.get(name)
     if value is None or value.strip() == "":
@@ -68,6 +78,29 @@ def chat_completions_url(api_url: str | None = None) -> str:
     )
 
 
+def _compact_for_match(value: str) -> str:
+    return "".join(value.lower().split())
+
+
+def is_backup_trigger_text(value: str) -> bool:
+    compact = _compact_for_match(value)
+    return any(_compact_for_match(marker) in compact for marker in BACKUP_TRIGGER_MARKERS)
+
+
+def backup_standby_enabled(model: str | None = None) -> bool:
+    candidates = [
+        model,
+        _env("AI_MODEL"),
+        _env("AI_REVIEW_MODEL"),
+        _env("AI_FAST_MODEL"),
+    ]
+    return any("claude" in candidate.lower() for candidate in candidates if candidate)
+
+
+def backup_configured() -> bool:
+    return bool(_env("AI_BACKUP_API_URL") and _env("AI_BACKUP_MODEL"))
+
+
 def build_request_body(
     messages: list[dict[str, Any]] | None = None,
     *,
@@ -91,20 +124,17 @@ def build_request_body(
     return body
 
 
-def chat_completion_raw(
-    messages: list[dict[str, Any]] | None = None,
+def _post_chat_completion(
     *,
-    model: str | None = None,
-    request_body: dict[str, Any] | None = None,
-    api_url: str | None = None,
-    api_key: str | None = None,
-    timeout: int = DEFAULT_TIMEOUT_SECONDS,
+    body: dict[str, Any],
+    api_url: str | None,
+    api_key: str | None,
+    timeout: int,
 ) -> str:
     key = api_key or _env("AI_API_KEY")
     if not key:
         raise AIClientConfigError("AI_API_KEY is required.")
 
-    body = build_request_body(messages, model=model, request_body=request_body)
     payload = json.dumps(body).encode("utf-8")
     request = urllib.request.Request(
         chat_completions_url(api_url),
@@ -132,6 +162,86 @@ def chat_completion_raw(
         return data["choices"][0]["message"]["content"]
     except (KeyError, IndexError, TypeError, json.JSONDecodeError) as exc:
         raise AIClientResponseError("AI API response did not contain message content.") from exc
+
+
+def _backup_request_body(body: dict[str, Any]) -> dict[str, Any]:
+    backup_body = dict(body)
+    backup_body["model"] = _env("AI_BACKUP_MODEL")
+    return backup_body
+
+
+def _try_backup_chat_completion(
+    *,
+    body: dict[str, Any],
+    api_key: str | None,
+    timeout: int,
+    original_error: AIClientResponseError | None = None,
+) -> str:
+    if not backup_configured():
+        if original_error is not None:
+            raise AIClientAccessBlockedError(
+                "Primary AI route was blocked and AI_BACKUP_API_URL/AI_BACKUP_MODEL "
+                "are not configured."
+            ) from original_error
+        raise AIClientAccessBlockedError(
+            "Primary AI route returned a known access-block message and backup is not configured."
+        )
+
+    try:
+        content = _post_chat_completion(
+            body=_backup_request_body(body),
+            api_url=_env("AI_BACKUP_API_URL"),
+            api_key=api_key,
+            timeout=timeout,
+        )
+    except AIClientResponseError as exc:
+        if is_backup_trigger_text(str(exc)):
+            raise AIClientAccessBlockedError(
+                "Backup AI route also returned a known access-block message."
+            ) from exc
+        raise
+    if is_backup_trigger_text(content):
+        raise AIClientAccessBlockedError("Backup AI route also returned a known access-block message.")
+    return content
+
+
+def chat_completion_raw(
+    messages: list[dict[str, Any]] | None = None,
+    *,
+    model: str | None = None,
+    request_body: dict[str, Any] | None = None,
+    api_url: str | None = None,
+    api_key: str | None = None,
+    timeout: int = DEFAULT_TIMEOUT_SECONDS,
+    allow_backup: bool = True,
+) -> str:
+    body = build_request_body(messages, model=model, request_body=request_body)
+    backup_ready = allow_backup and backup_standby_enabled(str(body.get("model") or model or ""))
+
+    try:
+        content = _post_chat_completion(
+            body=body,
+            api_url=api_url,
+            api_key=api_key,
+            timeout=timeout,
+        )
+    except AIClientResponseError as exc:
+        if backup_ready and is_backup_trigger_text(str(exc)):
+            return _try_backup_chat_completion(
+                body=body,
+                api_key=api_key,
+                timeout=timeout,
+                original_error=exc,
+            )
+        raise
+
+    if backup_ready and is_backup_trigger_text(content):
+        return _try_backup_chat_completion(
+            body=body,
+            api_key=api_key,
+            timeout=timeout,
+        )
+    return content
 
 
 def chat_completion(

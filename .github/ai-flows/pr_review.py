@@ -18,7 +18,7 @@ import urllib.parse
 import urllib.request
 from typing import Any
 
-from common_ai_client import AIClientError, chat_completion_raw
+from common_ai_client import AIClientAccessBlockedError, AIClientError, chat_completion_raw
 from github_ops import env_flag, load_prompt, write_step_summary
 from json_guard import guard_result, safe_fallback
 
@@ -254,6 +254,28 @@ def build_review_messages(
 def ai_review(messages: list[dict[str, str]]) -> dict[str, Any]:
     try:
         raw = chat_completion_raw(messages)
+    except AIClientAccessBlockedError as exc:
+        return {
+            "decision": {
+                "action": "ignore",
+                "confidence": 0,
+                "risk": "medium",
+            },
+            "analysis": {
+                "summary": "",
+                "problems": [],
+                "evidence": [],
+                "recommended_fixes": [],
+            },
+            "effects": {
+                "close_pr": False,
+                "request_changes": False,
+                "rename_branch": False,
+                "notify_team": False,
+                "labels": ["ai-client-access-blocked"],
+            },
+            "human_message": f"AI provider access was blocked and no safe backup reply is available: {exc}",
+        }
     except AIClientError as exc:
         fallback = safe_fallback()
         fallback["effects"]["labels"] = ["ai-client-error"]
@@ -527,8 +549,10 @@ def run(argv: list[str] | None = None) -> int:
     effects = result.get("effects", {})
     add_labels(repo, pull_number, effects.get("labels", []), dry_run=dry_run)
 
+    labels = effects.get("labels", [])
+    suppress_comment = isinstance(labels, list) and "ai-client-access-blocked" in labels
     force_reply = context["trigger"] == "issue_comment"
-    if result.get("decision", {}).get("action") != "ignore" or force_reply:
+    if not suppress_comment and (result.get("decision", {}).get("action") != "ignore" or force_reply):
         create_issue_comment(repo, pull_number, comment_body, dry_run=dry_run)
 
     if request_changes_allowed:
