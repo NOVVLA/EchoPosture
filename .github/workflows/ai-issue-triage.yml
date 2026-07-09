@@ -1,25 +1,29 @@
 name: ai-issue-triage
 
 on:
-  workflow_dispatch:
-    inputs:
-      dry_run:
-        description: "Keep framework execution read-only"
-        required: true
-        default: "true"
-        type: choice
-        options:
-          - "true"
-          - "false"
+  issues:
+    types: [opened, edited, reopened]
+  issue_comment:
+    types: [created]
 
 permissions:
   contents: read
+  issues: write
 
 jobs:
-  framework:
-    name: ai-issue-triage-framework
+  triage:
+    name: ai-issue-triage
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 20
+    if: >-
+      ${{
+        github.event_name == 'issues' ||
+        (
+          github.event_name == 'issue_comment' &&
+          !github.event.issue.pull_request &&
+          contains(github.event.comment.body, '@ai-issue')
+        )
+      }}
 
     steps:
       - name: Check out repository
@@ -37,5 +41,7 @@ jobs:
           AI_MODEL: ${{ secrets.AI_MODEL }}
           AI_REVIEW_MODEL: ${{ secrets.AI_REVIEW_MODEL }}
           AI_FAST_MODEL: ${{ secrets.AI_FAST_MODEL }}
-          AI_MAINTAINER_DRY_RUN: ${{ inputs.dry_run }}
+          AI_BACKUP_API_URL: ${{ secrets.AI_BACKUP_API_URL }}
+          AI_BACKUP_MODEL: ${{ secrets.AI_BACKUP_MODEL }}
+          GITHUB_TOKEN: ${{ github.token }}
         run: python .github/ai-flows/issue_triage.py

@@ -157,6 +157,36 @@ def guard_result(raw: str | dict[str, Any]) -> dict[str, Any]:
             if isinstance(analysis.get("recommended_fixes"), list)
             else []
         ),
+        "possible_modules": (
+            analysis.get("possible_modules")
+            if isinstance(analysis.get("possible_modules"), list)
+            else []
+        ),
+        "missing_information": (
+            analysis.get("missing_information")
+            if isinstance(analysis.get("missing_information"), list)
+            else []
+        ),
+        "maintainer_suggestions": (
+            analysis.get("maintainer_suggestions")
+            if isinstance(analysis.get("maintainer_suggestions"), list)
+            else []
+        ),
+    }
+
+    classification = candidate.get("classification")
+    if not isinstance(classification, dict):
+        classification = {}
+    classification_type = classification.get("type")
+    if classification_type not in {"bug", "feature", "question", "docs", "needs-info", "unknown"}:
+        classification_type = "unknown"
+    priority = classification.get("priority")
+    if priority not in {"low", "medium", "high"}:
+        priority = "medium"
+    normalized_classification = {
+        "type": classification_type,
+        "priority": priority,
+        "labels": _as_labels(classification.get("labels")),
     }
 
     return {
@@ -165,6 +195,7 @@ def guard_result(raw: str | dict[str, Any]) -> dict[str, Any]:
             "confidence": confidence,
             "risk": risk,
         },
+        "classification": normalized_classification,
         "analysis": normalized_analysis,
         "effects": normalized_effects,
         "human_message": human_message,
