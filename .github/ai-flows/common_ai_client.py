@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import os
+import urllib.parse
 import urllib.error
 import urllib.request
 from typing import Any
@@ -13,6 +14,7 @@ from typing import Any
 DEFAULT_TIMEOUT_SECONDS = 60
 DEFAULT_TEMPERATURE = 0
 DEFAULT_RESPONSE_FORMAT = {"type": "json_object"}
+DEFAULT_USER_AGENT = "EchoPosture-AI-Maintainer/1.0"
 
 
 class AIClientError(RuntimeError):
@@ -35,14 +37,35 @@ def _env(name: str, default: str | None = None) -> str | None:
 
 
 def chat_completions_url(api_url: str | None = None) -> str:
-    configured = api_url or _env("AI_API_URL")
+    configured = _env("AI_CHAT_COMPLETIONS_URL") or api_url or _env("AI_API_URL")
     if not configured:
         raise AIClientConfigError("AI_API_URL is required.")
 
-    base = configured.rstrip("/")
-    if base.endswith("/chat/completions"):
-        return base
-    return f"{base}/chat/completions"
+    configured = configured.strip()
+    if "://" not in configured:
+        configured = f"https://{configured}"
+
+    parsed = urllib.parse.urlparse(configured)
+    path = parsed.path.rstrip("/")
+    if path.endswith("/chat/completions"):
+        final_path = path
+    elif path in {"", "/"}:
+        final_path = "/v1/chat/completions"
+    elif path.endswith("/v1"):
+        final_path = f"{path}/chat/completions"
+    else:
+        final_path = f"{path}/v1/chat/completions"
+
+    return urllib.parse.urlunparse(
+        (
+            parsed.scheme,
+            parsed.netloc,
+            final_path,
+            "",
+            parsed.query,
+            "",
+        )
+    )
 
 
 def build_request_body(
@@ -90,6 +113,7 @@ def chat_completion_raw(
             "Authorization": f"Bearer {key}",
             "Content-Type": "application/json",
             "Accept": "application/json",
+            "User-Agent": _env("AI_USER_AGENT", DEFAULT_USER_AGENT) or DEFAULT_USER_AGENT,
         },
         method="POST",
     )
