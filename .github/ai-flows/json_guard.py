@@ -59,10 +59,37 @@ def _as_labels(value: Any) -> list[str]:
 
 
 def parse_json_object(raw: str) -> dict[str, Any]:
-    parsed = json.loads(raw)
+    text = raw.strip()
+    if text.startswith("```"):
+        lines = text.splitlines()
+        if lines and lines[0].strip().startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+        text = "\n".join(lines).strip()
+
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        parsed = _extract_first_json_object(text)
+
     if not isinstance(parsed, dict):
         raise ValueError("AI output must be a JSON object.")
     return parsed
+
+
+def _extract_first_json_object(text: str) -> dict[str, Any]:
+    decoder = json.JSONDecoder()
+    for index, char in enumerate(text):
+        if char != "{":
+            continue
+        try:
+            parsed, _ = decoder.raw_decode(text[index:])
+        except json.JSONDecodeError:
+            continue
+        if isinstance(parsed, dict):
+            return parsed
+    raise ValueError("AI output did not contain a JSON object.")
 
 
 def guard_result(raw: str | dict[str, Any]) -> dict[str, Any]:
