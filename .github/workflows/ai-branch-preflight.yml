@@ -1,0 +1,41 @@
+name: ai-branch-preflight
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Keep framework execution read-only"
+        required: true
+        default: "true"
+        type: choice
+        options:
+          - "true"
+          - "false"
+
+permissions:
+  contents: read
+
+jobs:
+  framework:
+    name: ai-branch-preflight-framework
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Run framework
+        env:
+          AI_API_URL: ${{ secrets.AI_API_URL }}
+          AI_API_KEY: ${{ secrets.AI_API_KEY }}
+          AI_MODEL: ${{ secrets.AI_MODEL }}
+          AI_REVIEW_MODEL: ${{ secrets.AI_REVIEW_MODEL }}
+          AI_FAST_MODEL: ${{ secrets.AI_FAST_MODEL }}
+          AI_MAINTAINER_DRY_RUN: ${{ inputs.dry_run }}
+        run: python .github/ai-flows/branch_preflight.py
