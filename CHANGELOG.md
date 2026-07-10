@@ -1,5 +1,17 @@
 # Changelog
 
+## 2026-07-10
+
+### Added
+
+- Added the AI Maintainer framework for PR review and Issue triage, including structured JSON safety gates, multi-turn commands, and Claude-route backup failover.
+- Added runtime console feature controls and current-main improvements accumulated since GA-1.0.0.
+
+### Changed
+
+- Set the release channel and package labeling to `GA-1.2.0 - Maintainer Intelligence`.
+- Updated the launcher ASCII bridge path to `%LOCALAPPDATA%\EchoPostureGA120` and the self-test label to GA-1.2.0.
+
 ## 2026-06-13
 
 ### Changed
