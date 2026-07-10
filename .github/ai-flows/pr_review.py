@@ -27,6 +27,9 @@ MAX_DIFF_CHARS = int(os.environ.get("AI_PR_REVIEW_MAX_DIFF_CHARS", "70000"))
 MAX_COMMENT_CHARS = 60000
 RECENT_COMMENT_LIMIT = 20
 AI_REVIEW_TRIGGER = "@ai-review"
+PRIMARY_REVIEW_REASONING_EFFORT = (
+    os.environ.get("AI_PR_REVIEW_REASONING_EFFORT", "high").strip().lower() or "high"
+)
 HARD_CLOSE_RULES = {
     "obviously_unrelated_code",
     "malicious_submission",
@@ -252,7 +255,22 @@ def build_review_messages(
 
 
 def ai_review(messages: list[dict[str, str]]) -> dict[str, Any]:
+    request_body = {
+        "messages": messages,
+        "temperature": 0,
+        "response_format": {"type": "json_object"},
+        "reasoning_effort": PRIMARY_REVIEW_REASONING_EFFORT,
+    }
+
     try:
+        raw = chat_completion_raw(request_body=request_body)
+    except AIClientError as exc:
+        # Some OpenAI-compatible gateways reject unsupported parameters instead of
+        # ignoring them. Retry the primary review without the optional field only
+        # when the response identifies reasoning_effort as the problem.
+        error_text = str(exc).lower()
+        if "http 400" not in error_text or "reasoning_effort" not in error_text:
+            raise
         raw = chat_completion_raw(messages)
     except AIClientAccessBlockedError as exc:
         return {
