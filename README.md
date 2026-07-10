@@ -10,7 +10,7 @@ Use the latest GitHub release instead of cloning the source repository if you on
 
 - Release: [EchoPosture GA-1.2.0 - Maintainer Intelligence](https://github.com/NOVVLA/EchoPosture/releases/tag/ga-1.2.0)
 - Download: [EchoPosture-GA-1.2.0-Maintainer-Intelligence-win-x64.zip](https://github.com/NOVVLA/EchoPosture/releases/download/ga-1.2.0/EchoPosture-GA-1.2.0-Maintainer-Intelligence-win-x64.zip)
-- SHA256: `c4421f9ed760a680f21cc958fa1df84dacfba4f0d52f55fbaf0515bd5c5c5553`
+- SHA256: `ae0a615b45cfc57829c00523f40dde05bd245011877cee8c1c5edf14e5798ec7`
 
 The release package is a portable folder for Windows x64. It includes the embedded Python runtime and required Python dependencies. The source repository does not include `runtime/`, `dist/`, or built `.exe` files.
 

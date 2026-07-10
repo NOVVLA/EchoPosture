@@ -4,7 +4,7 @@
 
 - Source: user request to package the current remote `main` as GA-1.2.0 and publish a new downloadable GitHub Release with an OpenAI-style feature name.
 - Git: release source commit `4b102be87b99a44b903cb140cf8190e156d0c322`, branch `main`, tag `ga-1.2.0`.
-- Scope: changed launcher release labeling to GA-1.2.0, moved the ASCII bridge to `%LOCALAPPDATA%\EchoPostureGA120`, rebuilt all Windows executables, assembled the current-main portable runtime, and named the release `EchoPosture GA-1.2.0 - Maintainer Intelligence`.
+- Scope: changed launcher release labeling to GA-1.2.0, moved the ASCII bridge to `%LOCALAPPDATA%\EchoPostureGA120`, rebuilt all Windows executables, assembled a minimal current-main portable runtime, removed local logs/internal work files, and named the release `EchoPosture GA-1.2.0 - Maintainer Intelligence`.
 - Verification:
   - `runtime\python311\python.exe -m py_compile ...`: passed.
   - `runtime\python311\python.exe test_vision_worker.py`: passed; output ended with `ALL TESTS PASSED`.
@@ -12,12 +12,14 @@
   - `.\build_launcher.cmd`: passed; rebuilt `BlurOverlayHost.exe`, `EchoPosture.exe`, and `EchoPostureSelfTest.exe`.
   - First package self-test: environment-only calibration failure because no usable face/shoulder sample was captured; GPU, UI, and vision stages exited 0.
   - Second package self-test: passed; run root `%LOCALAPPDATA%\EchoPostureGA120\current`, all four stages exited 0, `startup_calibrated=True`, and `baseline=True`.
-  - ZIP structure audit: required EXEs, embedded Python, `i18n.py`, GA build metadata, and successful self-test report were present.
+  - Sanitized package verification: GPU host, Debug UI, and Vision stages exited 0; the tray stage could not capture a face/shoulder calibration sample in two attempts, matching the known environment-sensitive calibration condition rather than a missing-file failure.
+  - ZIP structure audit: required EXEs, embedded Python, runtime modules, `LICENSE`, and GA build metadata were present; forbidden entries count was 0.
+  - Sensitive-content audit: no local user paths, API keys, token-like values, logs, internal process documents, build scripts, test files, or repository metadata were present outside the embedded third-party runtime.
 - Artifacts:
   - Package: `dist\EchoPosture-GA-1.2.0-Maintainer-Intelligence-win-x64`
   - ZIP: `dist\EchoPosture-GA-1.2.0-Maintainer-Intelligence-win-x64.zip`
-  - ZIP size: `301584976` bytes
-  - SHA256: `C4421F9ED760A680F21CC958FA1DF84DACFBA4F0D52F55FBAF0515BD5C5C5553`
+  - ZIP size: `301525653` bytes
+  - SHA256: `AE0A615B45CFC57829C00523F40DDE05BD245011877CEE8C1C5EDF14E5798EC7`
 - Release focus: current desktop mainline, bilingual UI, runtime console controls, AI Maintainer PR/Issue automation, and Claude-route backup failover.
 - Remaining gap: long-running camera/overlay behavior and everyday tray interaction still require normal user-side desktop use beyond the packaged self-test.
 
