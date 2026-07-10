@@ -1,5 +1,26 @@
 # Development Log
 
+## 2026-07-10 - GA-1.2.0 Maintainer Intelligence Package and Release
+
+- Source: user request to package the current remote `main` as GA-1.2.0 and publish a new downloadable GitHub Release with an OpenAI-style feature name.
+- Git: release source commit `4b102be87b99a44b903cb140cf8190e156d0c322`, branch `main`, tag `ga-1.2.0`.
+- Scope: changed launcher release labeling to GA-1.2.0, moved the ASCII bridge to `%LOCALAPPDATA%\EchoPostureGA120`, rebuilt all Windows executables, assembled the current-main portable runtime, and named the release `EchoPosture GA-1.2.0 - Maintainer Intelligence`.
+- Verification:
+  - `runtime\python311\python.exe -m py_compile ...`: passed.
+  - `runtime\python311\python.exe test_vision_worker.py`: passed; output ended with `ALL TESTS PASSED`.
+  - `runtime\python311\python.exe test_feature_toggles.py`: passed; output ended with `ALL TESTS PASSED`.
+  - `.\build_launcher.cmd`: passed; rebuilt `BlurOverlayHost.exe`, `EchoPosture.exe`, and `EchoPostureSelfTest.exe`.
+  - First package self-test: environment-only calibration failure because no usable face/shoulder sample was captured; GPU, UI, and vision stages exited 0.
+  - Second package self-test: passed; run root `%LOCALAPPDATA%\EchoPostureGA120\current`, all four stages exited 0, `startup_calibrated=True`, and `baseline=True`.
+  - ZIP structure audit: required EXEs, embedded Python, `i18n.py`, GA build metadata, and successful self-test report were present.
+- Artifacts:
+  - Package: `dist\EchoPosture-GA-1.2.0-Maintainer-Intelligence-win-x64`
+  - ZIP: `dist\EchoPosture-GA-1.2.0-Maintainer-Intelligence-win-x64.zip`
+  - ZIP size: `301584976` bytes
+  - SHA256: `C4421F9ED760A680F21CC958FA1DF84DACFBA4F0D52F55FBAF0515BD5C5C5553`
+- Release focus: current desktop mainline, bilingual UI, runtime console controls, AI Maintainer PR/Issue automation, and Claude-route backup failover.
+- Remaining gap: long-running camera/overlay behavior and everyday tray interaction still require normal user-side desktop use beyond the packaged self-test.
+
 本日志从 Git 历史和当前仓库文件还原，作为后续过程审计的起点。2026-06-09 以前的条目不是完整实时开发记录；它们只记录 Git 能证明的事实和已经识别出的证据缺口。后续提交必须按 [PROCESS_AUDIT.md](PROCESS_AUDIT.md) 补充验证、风险和产物证据。
 
 ## 2026-07-07 - Wire Console Feature Toggles to Analyzer Flags

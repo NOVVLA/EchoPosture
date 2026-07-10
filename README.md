@@ -8,9 +8,9 @@ It is intended as an ergonomics aid, not a medical diagnostic tool.
 
 Use the latest GitHub release instead of cloning the source repository if you only want to run the app:
 
-- Release: [EchoPosture GA-1.0.0](https://github.com/NOVVLA/EchoPosture/releases/tag/ga-1.0.0)
-- Download: [EchoPosture-GA-1.0.0-win-x64.zip](https://github.com/NOVVLA/EchoPosture/releases/download/ga-1.0.0/EchoPosture-GA-1.0.0-win-x64.zip)
-- SHA256: `345b9f9e06ca058af77197ee741b9c87e60d59fce27b7357728f9c8576cff5f4`
+- Release: [EchoPosture GA-1.2.0 - Maintainer Intelligence](https://github.com/NOVVLA/EchoPosture/releases/tag/ga-1.2.0)
+- Download: [EchoPosture-GA-1.2.0-Maintainer-Intelligence-win-x64.zip](https://github.com/NOVVLA/EchoPosture/releases/download/ga-1.2.0/EchoPosture-GA-1.2.0-Maintainer-Intelligence-win-x64.zip)
+- SHA256: `c4421f9ed760a680f21cc958fa1df84dacfba4f0d52f55fbaf0515bd5c5c5553`
 
 The release package is a portable folder for Windows x64. It includes the embedded Python runtime and required Python dependencies. The source repository does not include `runtime/`, `dist/`, or built `.exe` files.
 
