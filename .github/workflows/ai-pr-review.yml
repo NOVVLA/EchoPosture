@@ -42,6 +42,7 @@ jobs:
           AI_API_URL: ${{ secrets.AI_API_URL }}
           AI_API_KEY: ${{ secrets.AI_API_KEY }}
           AI_MODEL: ${{ secrets.AI_MODEL }}
+          AI_PR_REVIEW_REASONING_EFFORT: ${{ secrets.AI_PR_REVIEW_REASONING_EFFORT }}
           AI_REVIEW_MODEL: ${{ secrets.AI_REVIEW_MODEL }}
           AI_FAST_MODEL: ${{ secrets.AI_FAST_MODEL }}
           AI_BACKUP_API_URL: ${{ secrets.AI_BACKUP_API_URL }}

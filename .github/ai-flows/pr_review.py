@@ -27,6 +27,9 @@ MAX_DIFF_CHARS = int(os.environ.get("AI_PR_REVIEW_MAX_DIFF_CHARS", "70000"))
 MAX_COMMENT_CHARS = 60000
 RECENT_COMMENT_LIMIT = 20
 AI_REVIEW_TRIGGER = "@ai-review"
+PRIMARY_REVIEW_REASONING_EFFORT = (
+    os.environ.get("AI_PR_REVIEW_REASONING_EFFORT", "high").strip().lower() or "high"
+)
 HARD_CLOSE_RULES = {
     "obviously_unrelated_code",
     "malicious_submission",
@@ -252,8 +255,15 @@ def build_review_messages(
 
 
 def ai_review(messages: list[dict[str, str]]) -> dict[str, Any]:
+    request_body = {
+        "messages": messages,
+        "temperature": 0,
+        "response_format": {"type": "json_object"},
+        "reasoning_effort": PRIMARY_REVIEW_REASONING_EFFORT,
+    }
+
     try:
-        raw = chat_completion_raw(messages)
+        raw = chat_completion_raw(request_body=request_body)
     except AIClientAccessBlockedError as exc:
         return {
             "decision": {
@@ -277,12 +287,49 @@ def ai_review(messages: list[dict[str, str]]) -> dict[str, Any]:
             "human_message": f"AI provider access was blocked and no safe backup reply is available: {exc}",
         }
     except AIClientError as exc:
-        fallback = safe_fallback()
-        fallback["effects"]["labels"] = ["ai-client-error"]
-        fallback["human_message"] = f"AI client failed safely: {exc}"
-        return fallback
+        # Some OpenAI-compatible gateways reject unsupported parameters instead of
+        # ignoring them. Retry the primary review without the optional field only
+        # when the response identifies reasoning_effort as the problem.
+        error_text = str(exc).lower()
+        if "http 400" in error_text and "reasoning_effort" in error_text:
+            try:
+                raw = chat_completion_raw(messages)
+            except AIClientAccessBlockedError as retry_exc:
+                return {
+                    "decision": {
+                        "action": "ignore",
+                        "confidence": 0,
+                        "risk": "medium",
+                    },
+                    "analysis": {
+                        "summary": "",
+                        "problems": [],
+                        "evidence": [],
+                        "recommended_fixes": [],
+                    },
+                    "effects": {
+                        "close_pr": False,
+                        "request_changes": False,
+                        "rename_branch": False,
+                        "notify_team": False,
+                        "labels": ["ai-client-access-blocked"],
+                    },
+                    "human_message": (
+                        "AI provider access was blocked and no safe backup reply is available: "
+                        f"{retry_exc}"
+                    ),
+                }
+            except AIClientError as retry_exc:
+                fallback = safe_fallback()
+                fallback["effects"]["labels"] = ["ai-client-error"]
+                fallback["human_message"] = f"AI client failed safely: {retry_exc}"
+                return fallback
+        else:
+            fallback = safe_fallback()
+            fallback["effects"]["labels"] = ["ai-client-error"]
+            fallback["human_message"] = f"AI client failed safely: {exc}"
+            return fallback
     return guard_result(raw)
-
 
 def hard_close_rule(result: dict[str, Any]) -> str | None:
     evidence = result.get("analysis", {}).get("evidence", [])
