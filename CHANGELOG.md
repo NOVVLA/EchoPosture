@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-07-11
+
+### Fixed
+
+- Preserved the tray flyout's translated monitoring state across language changes and reopening.
+- Guarded tray pause, resume, and recalibration controls while startup calibration is active, including restoring the rejected flyout toggle state.
+
+### Changed
+
+- Set the release channel, package labeling, launcher ASCII bridge, and self-test label to `GA-1.2.1` / `%LOCALAPPDATA%\EchoPostureGA121`.
+
 ## 2026-07-10
 
 ### Added
