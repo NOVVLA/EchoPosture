@@ -3,4 +3,4 @@
 
 opencv-python>=4.8.0
 mediapipe==0.10.14
-PyQt5>=5.15.9
+PyQt5>=5.15.11
