@@ -1,6 +1,6 @@
 --index-url http://pypi.tuna.tsinghua.edu.cn/simple
 --trusted-host pypi.tuna.tsinghua.edu.cn
 
-opencv-python>=4.8.0
+opencv-python>=4.10.0.84
 mediapipe==0.10.14
 PyQt5>=5.15.9
