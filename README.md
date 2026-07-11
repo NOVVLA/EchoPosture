@@ -8,9 +8,9 @@ It is intended as an ergonomics aid, not a medical diagnostic tool.
 
 Use the latest GitHub release instead of cloning the source repository if you only want to run the app:
 
-- Release: [EchoPosture GA-1.2.0 - Maintainer Intelligence](https://github.com/NOVVLA/EchoPosture/releases/tag/ga-1.2.0)
-- Download: [EchoPosture-GA-1.2.0-Maintainer-Intelligence-win-x64.zip](https://github.com/NOVVLA/EchoPosture/releases/download/ga-1.2.0/EchoPosture-GA-1.2.0-Maintainer-Intelligence-win-x64.zip)
-- SHA256: `ae0a615b45cfc57829c00523f40dde05bd245011877cee8c1c5edf14e5798ec7`
+- Release: [EchoPosture GA-1.2.1](https://github.com/NOVVLA/EchoPosture/releases/tag/ga-1.2.1)
+- Download: [EchoPosture-GA-1.2.1-win-x64.zip](https://github.com/NOVVLA/EchoPosture/releases/download/ga-1.2.1/EchoPosture-GA-1.2.1-win-x64.zip)
+- SHA256: `7d8f6142eb760ad456155f327b7c4550ee222a85bb24a3a6964318ca5267b618`
 
 The release package is a portable folder for Windows x64. It includes the embedded Python runtime and required Python dependencies. The source repository does not include `runtime/`, `dist/`, or built `.exe` files.
 
@@ -136,13 +136,15 @@ The repository contains source code, build scripts, and process documentation. I
 
 Useful developer entry points:
 
-- [README_EXE.md](README_EXE.md): launcher and packaged EXE behavior.
+- [AGENTS.md（Repository Guidelines，仓库贡献者指南）](AGENTS.md): contributor workflow and development conventions.
+- [上传必读(英文版).md（Remote Upload Rules，远端上传规则）](<上传必读(英文版).md>): pre-upload filtering and review requirements.
+- [README_EXE.md（Executable Launcher Guide，EXE 启动器说明）](README_EXE.md): launcher and packaged EXE behavior.
 - [run_debug_ui.cmd](run_debug_ui.cmd): debug UI entry.
 - [run_vision_test.cmd](run_vision_test.cmd): vision test entry.
 - [run_overlay_test.cmd](run_overlay_test.cmd): overlay test entry.
 - [build_launcher.cmd](build_launcher.cmd): builds the Windows launcher package.
-- [ROE.md](ROE.md): repository editing, branching, release, and rollback rules.
-- [PROCESS_AUDIT.md](PROCESS_AUDIT.md): development-log and release-evidence rules.
-- [DEVELOPMENT_LOG.md](DEVELOPMENT_LOG.md): tracked development and release audit trail.
+- [ROE.md（Rules of Engagement，项目协作与操作规则）](ROE.md): repository editing, branching, release, and rollback rules.
+- [PROCESS_AUDIT.md（Process Audit Rules，过程审计规则）](PROCESS_AUDIT.md): development-log and release-evidence rules.
+- [DEVELOPMENT_LOG.md（Development Log，开发日志）](DEVELOPMENT_LOG.md): tracked development and release audit trail.
 
 The offline UI prototype in [ui/index.html](ui/index.html) is a frozen visual reference. Do not change it for general app behavior unless the UI reference itself is the intended target.
