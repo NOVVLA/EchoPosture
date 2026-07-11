@@ -390,3 +390,36 @@
   - Result: passed；圆环定位 (422,60)、尺寸 580×248，倒计时 5→4→3→2→1→0 且归零时 `step()` 返回 True、`_CountdownRing` 数值随之更新；玻璃卡/ logo 衬底/圆环弧等矢量部分渲染正常（临时预览脚本已清理，不入库）。
 - Gaps: 本机 offscreen 沙箱 Qt 字体子系统不可用（`QFontDatabase().families()` 直接令进程崩溃），所有 `drawText` 静默不出字，故无法在本环境截出带文字成品图——左侧三段文字与圆环内数字的实际排版需用户在真机/真实显示下目检。
 - Conclusion: local only; 矢量布局与倒计时行为已验证，文字渲染待用户实机目检。
+
+## 2026-07-11 - Security Policy and Dependency Update Automation
+
+- Source: user request to add the highest-priority repository health and security files.
+- Git: commit `pending`, branch `docs/security-maintenance`, tag `none`.
+- Scope:
+  - Added `SECURITY.md` with supported-version boundaries, a private reporting route, response targets, coordinated
+    disclosure guidance, dependency triage expectations, privacy precautions, and safe-harbor language.
+  - Added `.github/dependabot.yml` for weekly root-level `pip` and GitHub Actions version checks with bounded open pull
+    request counts.
+  - Repository settings for Dependabot alerts and private vulnerability reporting are intended to be enabled and
+    verified as part of the same maintenance task.
+- Risk:
+  - The response targets create ongoing maintainer expectations and must be revisited if maintainer capacity changes.
+  - Dependabot pull requests can expose compatibility regressions in MediaPipe, OpenCV, PyQt, packaging, launcher, or
+    native build paths; automated updates still require normal review and verification.
+  - The existing HTTP Python package index configuration remains outside this file-addition task and is a follow-up
+    supply-chain risk.
+- Verification:
+  - Command: `git diff --check`.
+  - Result: passed (exit 0); no whitespace errors.
+  - Command: line-length review for `SECURITY.md` and `.github/dependabot.yml`.
+  - Result: passed; no line exceeded 120 characters.
+  - Command: manual schema review against GitHub's official Dependabot options reference.
+  - Result: passed; configuration uses version 2 with required ecosystem, directory, and schedule fields for root-level
+    `pip` and `github-actions` manifests.
+  - Command: local YAML parser checks through Python PyYAML and Ruby YAML.
+  - Result: skipped; neither PyYAML nor Ruby is installed in the available environment. The configuration remains
+    subject to GitHub's server-side processing after merge.
+- Artifacts: documentation and repository configuration only; no release or binary artifacts.
+- Gaps: Dependabot's first scheduled job and generated pull request cannot be verified before the configuration reaches
+  the default branch.
+- Conclusion: file-level validation passed; ready for remote pull-request verification.
