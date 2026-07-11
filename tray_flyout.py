@@ -191,9 +191,13 @@ class TrayFlyout(QWidget):
     # ---- 交互 ----
     def _on_switch_toggled(self, on: bool) -> None:
         if on:
-            self.monitor.resume_monitoring()
+            ok = self.monitor.resume_monitoring()
         else:
-            self.monitor.pause_monitoring()
+            ok = self.monitor.pause_monitoring()
+        if not ok:
+            self.switch.set_on(not on, animate=True)
+            self._update_state_label(not on)
+            return
         self._update_state_label(self.monitor.is_monitoring())
 
     def _on_gear(self) -> None:
