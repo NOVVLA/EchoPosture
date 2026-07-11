@@ -495,6 +495,8 @@ class TrayMonitor:
     def recalibrate_now(self) -> None:
         if self._stopping or self._awaiting_calibration is not None:
             return
+        if self.onboarding_toast is not None or self.calibration_dialog is not None:
+            return
         # 后台重采 18 帧并定基线；UI 全程不阻塞，结果经 _tick 的回执分支处理
         was_monitoring = self.worker.is_monitoring_active()
         self.worker.begin_calibration_sampling()
@@ -556,7 +558,10 @@ class TrayMonitor:
                     QSystemTrayIcon.Information,
                     2200,
                 )
-                self._start_monitoring()
+                if self._monitoring_started:
+                    self.worker.resume()
+                else:
+                    self._start_monitoring()
                 return
             self.tray.showMessage(
                 "EchoPosture",
@@ -660,23 +665,29 @@ class TrayMonitor:
         """监测主循环（工作线程）是否正在运行。"""
         return self.worker.is_monitoring_active()
 
-    def pause_monitoring(self) -> None:
-        """暂停监测并清理覆盖层，避免压暗/模糊残留。"""
+    def pause_monitoring(self) -> bool:
+        """暂停监测并清理覆盖层；启动流程拒绝操作时返回 False。"""
         if self._stopping:
-            return
+            return False
+        if self.onboarding_toast is not None or self.calibration_dialog is not None:
+            return False
         self.worker.pause()
         self._intervention_candidate_started_at = None
         self._manual_effect_until = None
         self.overlay.force_clear()
+        return True
 
-    def resume_monitoring(self) -> None:
-        """恢复监测。若尚未首次启动则走启动流程。"""
+    def resume_monitoring(self) -> bool:
+        """恢复监测；若启动流程尚未结束则返回 False。"""
         if self._stopping:
-            return
+            return False
+        if self.onboarding_toast is not None or self.calibration_dialog is not None:
+            return False
         if not self._monitoring_started:
             self._start_monitoring()
         else:
             self.worker.resume()
+        return True
 
     def _handle_camera_failure(self, exc: Exception) -> None:
         if isinstance(exc, CameraPermissionError):
