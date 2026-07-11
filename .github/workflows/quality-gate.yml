@@ -30,7 +30,7 @@ jobs:
           pip install -r requirements-dev.txt
 
       - name: Run Ruff static checks
-        run: ruff check debug_ui.py gpu_blur_overlay.py onboarding_toast.py overlay_test.py posture_console.py test_vision_worker.py tray_app.py tray_flyout.py vision_test.py vision_worker.py
+        run: ruff check debug_ui.py gpu_blur_overlay.py onboarding_toast.py overlay_test.py posture_console.py test_tray_flyout.py test_vision_worker.py tray_app.py tray_flyout.py vision_test.py vision_worker.py
 
       - name: Compile Python source
         shell: pwsh
@@ -41,6 +41,7 @@ jobs:
             "onboarding_toast.py",
             "overlay_test.py",
             "posture_console.py",
+            "test_tray_flyout.py",
             "test_vision_worker.py",
             "tray_app.py",
             "tray_flyout.py",
@@ -50,7 +51,9 @@ jobs:
           python -m py_compile @files
 
       - name: Run logic tests
-        run: python test_vision_worker.py
+        run: |
+          python test_tray_flyout.py
+          python test_vision_worker.py
 
   windows-build:
     name: windows-build

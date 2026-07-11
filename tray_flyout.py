@@ -146,6 +146,7 @@ class TrayFlyout(QWidget):
 
     # ---- 打开：右下角定位 + 上浮淡入 ----
     def popup_bottom_right(self) -> None:
+        add_listener(self._apply_texts)
         self._sync_state()
         screen = QApplication.primaryScreen().availableGeometry()
         x = screen.x() + screen.width() - self.width() - FLYOUT_MARGIN
@@ -235,7 +236,7 @@ class TrayFlyout(QWidget):
         self.caption.adjustSize()
         # 与 __init__ 中同一公式，保证 caption 纵向居中于齿轮行不漂移
         self.caption.move(44, 9 + (26 - self.caption.height()) // 2)
-        self._update_state_label(self.monitor.is_monitoring())
+        self._update_state_label(self.switch.is_on())
 
     # ---- 绘制：玻璃卡片预渲染，paintEvent 只 blit ----
     def paintEvent(self, event) -> None:
