@@ -400,8 +400,8 @@
     disclosure guidance, dependency triage expectations, privacy precautions, and safe-harbor language.
   - Added `.github/dependabot.yml` for weekly root-level `pip` and GitHub Actions version checks with bounded open pull
     request counts.
-  - Repository settings for Dependabot alerts and private vulnerability reporting are intended to be enabled and
-    verified as part of the same maintenance task.
+  - Enabled and verified repository settings for Dependabot alerts, Dependabot security updates, and private
+    vulnerability reporting as part of the same maintenance task.
 - Risk:
   - The response targets create ongoing maintainer expectations and must be revisited if maintainer capacity changes.
   - Dependabot pull requests can expose compatibility regressions in MediaPipe, OpenCV, PyQt, packaging, launcher, or
@@ -419,6 +419,10 @@
   - Command: local YAML parser checks through Python PyYAML and Ruby YAML.
   - Result: skipped; neither PyYAML nor Ruby is installed in the available environment. The configuration remains
     subject to GitHub's server-side processing after merge.
+  - Command: GitHub REST API enablement and status checks for vulnerability alerts, automated security fixes, and
+    private vulnerability reporting.
+  - Result: passed; enablement calls returned HTTP 204, private vulnerability reporting returned `enabled: true`, and
+    automated security fixes returned `enabled: true` with `paused: false`.
 - Artifacts: documentation and repository configuration only; no release or binary artifacts.
 - Gaps: Dependabot's first scheduled job and generated pull request cannot be verified before the configuration reaches
   the default branch.
