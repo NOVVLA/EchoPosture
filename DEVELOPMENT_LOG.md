@@ -1,5 +1,18 @@
 # Development Log
 
+## 2026-07-11 - Keep Open Python Dependency Ranges Stable
+
+- Source: user request after review of Dependabot PRs #16 and #17, which only raised open `>=` lower bounds despite CI already resolving the newer releases.
+- Git: commit `pending`, branch `chore/dependabot-open-range-policy`, target `origin/main`.
+- Scope: set the root `pip` Dependabot entry to `versioning-strategy: increase-if-necessary`. Existing compatible open requirements, such as `opencv-python>=4.8.0` and `PyQt5>=5.15.9`, will no longer be mechanically raised for routine version updates.
+- Risk: Dependabot will not create a version-update PR when the current open requirement already permits the available version. A maintainer must deliberately change a minimum version when dropping older-runtime compatibility is intended. Security updates remain enabled separately through GitHub Dependabot alerts and security updates.
+- Verification:
+  - Source: GitHub Dependabot options reference confirms that `pip` supports `versioning-strategy`; its `increase-if-necessary` example preserves an already-compatible requirement for a minor update.
+  - Command: `git diff --check`
+  - Result: passed, exit 0.
+- Gaps: GitHub validates the Dependabot configuration after the PR is opened; no local Dependabot runner is configured.
+- Conclusion: pending review and GitHub configuration validation.
+
 ## 2026-07-10 - GA-1.2.0 Maintainer Intelligence Package and Release
 
 - Source: user request to package the current remote `main` as GA-1.2.0 and publish a new downloadable GitHub Release with an OpenAI-style feature name.
