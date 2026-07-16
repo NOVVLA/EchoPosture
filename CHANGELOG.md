@@ -1,4 +1,4 @@
-# Changelog
+# CHANGELOG（Changelog，版本变更记录）
 
 ## 2026-07-11
 
@@ -63,7 +63,7 @@
 - Added gradual visual intervention controls that only activate after confirmed `BAD` or `CRITICAL` posture decisions with sustained risk.
 - Added `gpu_blur_overlay.py` and `native/BlurOverlayHost.cpp` for optional D3D11/DXGI GPU blur overlay support with Windows compositor blur fallback.
 - Added C# launcher sources and build scripts for `EchoPosture.exe`, `EchoPostureSelfTest.exe`, and `BlurOverlayHost.exe`.
-- Added `README_EXE.md` with launcher, self-test, GPU blur fallback, and emergency clear notes.
+- Added `README_EXE.md`（Executable Launcher Guide，EXE 启动器说明） with launcher, self-test, GPU blur fallback, and emergency clear notes.
 
 ### Changed
 

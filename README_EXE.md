@@ -2,6 +2,8 @@
 
 The project now includes a Windows executable launcher.
 
+Document name: `README_EXE.md`（Executable Launcher Guide，EXE 启动器说明）。
+
 Primary entry:
 
 - `EchoPosture.exe`

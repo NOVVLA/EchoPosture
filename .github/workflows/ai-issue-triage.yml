@@ -1,4 +1,4 @@
-name: ai-issue-triage
+name: ai-issue-triage（可在评论中使用 @ai-issue 追问或询问 AI）
 
 on:
   issues:
@@ -12,7 +12,7 @@ permissions:
 
 jobs:
   triage:
-    name: ai-issue-triage
+    name: ai-issue-triage（可在评论中使用 @ai-issue 追问或询问 AI）
     runs-on: ubuntu-latest
     timeout-minutes: 20
     if: >-

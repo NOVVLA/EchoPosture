@@ -1,11 +1,11 @@
-# Process Audit Rules
+# PROCESS_AUDIT（Process Audit Rules，过程审计规则）
 
-本文件规定 EchoPosture 的开发日志、验证证据、发布记录和回滚记录如何写入 Git 可追踪文档。它补充 [ROE.md](ROE.md)，目标是让后续维护者能从仓库本身复查每次关键开发过程，而不是依赖被忽略的本地日志、口头说明或发布包目录。
+本文件规定 EchoPosture 的开发日志、验证证据、发布记录和回滚记录如何写入 Git 可追踪文档。它补充 [ROE.md（Rules of Engagement，项目协作与操作规则）](ROE.md)，目标是让后续维护者能从仓库本身复查每次关键开发过程，而不是依赖被忽略的本地日志、口头说明或发布包目录。
 
 ## 基本要求
 
 - Git 历史是事实来源，但不能单独作为过程审计记录。每个高风险或可观察改动都必须有可读开发日志。
-- 开发日志必须写入 [DEVELOPMENT_LOG.md](DEVELOPMENT_LOG.md) 或该文件明确链接的 `docs/` 文档，不能只放在 `logs/`、`dist/`、`_backups/`、`runtime/` 或聊天记录里。
+- 开发日志必须写入 [DEVELOPMENT_LOG.md（Development Log，开发日志）](DEVELOPMENT_LOG.md) 或该文件明确链接的 `docs/` 文档，不能只放在 `logs/`、`dist/`、`_backups/`、`runtime/` 或聊天记录里。
 - `logs/`、`dist/`、`runtime/`、`_backups/` 是本地产物目录，默认不提交。需要保留其中的证据时，只提交摘要、命令、hash、关键输出和结论，不提交整包或大日志。
 - 每条开发日志必须区分事实、推断和人工判断。不能把未运行的验证写成已通过。
 - 如果验证失败、跳过或只能人工判断，日志必须明确写出原因、影响范围和后续处理状态。
@@ -21,7 +21,7 @@
 - 创建、更新、替换、回滚或删除 GA、TEAM_ALPHA 包、历史 DEV 包、release 附件、备份目录或构建脚本。
 - 修复先前错误文档、错误发布、错误验证结论或失败自测。
 
-只读检查可以不写开发日志，但如果检查结果会影响后续开发判断，应在 [DEVELOPMENT_LOG.md](DEVELOPMENT_LOG.md) 的“审计缺口/已知问题”中记录。
+只读检查可以不写开发日志，但如果检查结果会影响后续开发判断，应在 [DEVELOPMENT_LOG.md（Development Log，开发日志）](DEVELOPMENT_LOG.md) 的“审计缺口/已知问题”中记录。
 
 ## 日志条目必须包含
 

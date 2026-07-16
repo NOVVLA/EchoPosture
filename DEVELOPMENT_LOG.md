@@ -1,4 +1,18 @@
-# Development Log
+# DEVELOPMENT_LOG（Development Log，开发日志）
+
+## 2026-07-16 - Clarify AI Workflow Names and Repository Document Labels
+
+- Source: user request to make the AI issue-triage and PR-review workflow entries easier to discover and to clarify repository document names for maintainers.
+- Git: commit `pending`, branch `main`, target `origin/main`.
+- Scope: changed only the display names of `ai-issue-triage` and `ai-pr-review` (including their jobs) to show their respective `@ai-issue` and `@ai-review` comment entry points. Added bilingual filename labels and links in `CHANGELOG.md`, `README_EXE.md`, `DEVELOPMENT_LOG.md`, `PROCESS_AUDIT.md`, and `ROE.md`.
+- Risk: GitHub Actions checks will display longer Unicode names. Workflow triggers, permissions, job steps, conditions, and implementation code are unchanged.
+- Verification:
+  - Command: `git diff --check`
+  - Result: passed, exit 0.
+  - Command: `git diff --word-diff=porcelain -- .github/workflows/ai-issue-triage.yml .github/workflows/ai-pr-review.yml`
+  - Result: passed; review confirmed that only the two workflow and job `name` scalar values changed in each file.
+- Gaps: no remote Actions run has executed for this display-name-only change. The local environment lacks both PowerShell `ConvertFrom-Yaml` and Python `PyYAML`, so a local YAML parser was unavailable.
+- Conclusion: ready to commit and push to `main`; no runtime or workflow-logic behavior changed.
 
 ## 2026-07-11 - Keep Open Python Dependency Ranges Stable
 
@@ -36,7 +50,7 @@
 - Release focus: current desktop mainline, bilingual UI, runtime console controls, AI Maintainer PR/Issue automation, and Claude-route backup failover.
 - Remaining gap: long-running camera/overlay behavior and everyday tray interaction still require normal user-side desktop use beyond the packaged self-test.
 
-本日志从 Git 历史和当前仓库文件还原，作为后续过程审计的起点。2026-06-09 以前的条目不是完整实时开发记录；它们只记录 Git 能证明的事实和已经识别出的证据缺口。后续提交必须按 [PROCESS_AUDIT.md](PROCESS_AUDIT.md) 补充验证、风险和产物证据。
+本日志从 Git 历史和当前仓库文件还原，作为后续过程审计的起点。2026-06-09 以前的条目不是完整实时开发记录；它们只记录 Git 能证明的事实和已经识别出的证据缺口。后续提交必须按 [PROCESS_AUDIT.md（Process Audit Rules，过程审计规则）](PROCESS_AUDIT.md) 补充验证、风险和产物证据。
 
 ## 2026-07-07 - Wire Console Feature Toggles to Analyzer Flags
 
@@ -161,7 +175,7 @@
 
 - Source: user request to make future development logs credible and readable from Git.
 - Git: commit `pending`, branch `main`.
-- Scope: added [PROCESS_AUDIT.md](PROCESS_AUDIT.md), added this [DEVELOPMENT_LOG.md](DEVELOPMENT_LOG.md), and linked both from [README.md](README.md) and [ROE.md](ROE.md).
+- Scope: added [PROCESS_AUDIT.md（Process Audit Rules，过程审计规则）](PROCESS_AUDIT.md), added this [DEVELOPMENT_LOG.md（Development Log，开发日志）](DEVELOPMENT_LOG.md), and linked both from [README.md](README.md) and [ROE.md（Rules of Engagement，项目协作与操作规则）](ROE.md).
 - Risk:
   - Documentation rules now affect future commit and release workflow.
   - Existing working-tree changes in `CHANGELOG.md`, `README_EXE.md`, `launcher/EchoPostureLauncher.cs`, and TEAM_ALPHA edits in existing docs were present during this documentation pass and are not validated by this entry unless separately logged.
@@ -321,7 +335,7 @@
 - Missing audit content:
   - Rules were updated, but no separate process audit file existed before this change.
   - No release verification template existed before this change.
-- Conclusion: these commits improve process rules but need this log and [PROCESS_AUDIT.md](PROCESS_AUDIT.md) to make future records auditable.
+- Conclusion: these commits improve process rules but need this log and [PROCESS_AUDIT.md（Process Audit Rules，过程审计规则）](PROCESS_AUDIT.md) to make future records auditable.
 
 ## 2026-06-09 - Tray Icon Logo Asset
 

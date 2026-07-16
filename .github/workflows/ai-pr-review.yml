@@ -1,4 +1,4 @@
-name: ai-pr-review
+name: ai-pr-review（可在评论中使用 @ai-review 追问或询问 AI）
 
 on:
   pull_request:
@@ -13,7 +13,7 @@ permissions:
 
 jobs:
   review:
-    name: ai-pr-review
+    name: ai-pr-review（可在评论中使用 @ai-review 追问或询问 AI）
     runs-on: ubuntu-latest
     timeout-minutes: 20
     if: >-
