@@ -1,5 +1,21 @@
 # DEVELOPMENT_LOG（Development Log，开发日志）
 
+## 2026-07-17 - Align Maintainer Documentation with GA-1.2.1
+
+- Source: user request to correct stale GA-1.0.0 references and unify the current version information.
+- Git: commit `pending`, branch `main`, target `origin/main`.
+- Scope: updated `README_EXE.md` and the local-only `README.local.md` to identify GA-1.2.1, its `EchoPostureGA121` ASCII bridge, and the `EchoPosture-GA-1.2.1-win-x64` package directory.
+- Risk: documentation-only change; no launcher, runtime, package, or release artifact was modified.
+- Verification:
+  - Command: `rg -n "GA-1.0.0|EchoPostureGA100" README.md README.local.md README_EXE.md`
+  - Result: passed; no stale GA-1.0.0 or `EchoPostureGA100` references remain in the current README files.
+  - Command: compare the documented bridge and package directory with `launcher/EchoPostureLauncher.cs` and local `dist` contents.
+  - Result: passed; the launcher uses `EchoPostureGA121`, and `dist/EchoPosture-GA-1.2.1-win-x64` exists.
+  - Command: `git diff --check`
+  - Result: passed, exit 0.
+- Gaps: no runtime test was run because the change only corrects documentation version labels.
+- Conclusion: ready to commit and push; current README version information is aligned with GA-1.2.1.
+
 ## 2026-07-16 - Clarify AI Workflow Names and Repository Document Labels
 
 - Source: user request to make the AI issue-triage and PR-review workflow entries easier to discover and to clarify repository document names for maintainers.

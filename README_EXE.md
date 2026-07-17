@@ -28,9 +28,9 @@ Build command:
 - `build_launcher.cmd`
 - `build_blur_overlay_host.cmd` builds only the GPU blur helper.
 
-The EXE is a lightweight native launcher. It does not bundle the full Python runtime into a single binary. Instead, it launches the embedded runtime in `runtime/python311`, sets the required environment variables, and creates an ASCII path bridge at `%LOCALAPPDATA%\EchoPostureGA100\current` before starting the app.
+The EXE is a lightweight native launcher. It does not bundle the full Python runtime into a single binary. Instead, it launches the embedded runtime in `runtime/python311`, sets the required environment variables, and creates an ASCII path bridge at `%LOCALAPPDATA%\EchoPostureGA121\current` before starting the app.
 
-This keeps the GA-1.0.0 package as a one-folder portable app while avoiding `.cmd` as the user-facing entry point.
+This keeps the GA-1.2.1 package as a one-folder portable app while avoiding `.cmd` as the user-facing entry point.
 
 The main UI starts with high precision mode and high performance mode enabled. Visual intervention requires a repeatedly confirmed `BAD` or `CRITICAL` decision, risk score `>= 45`, sustained risk for at least `12` seconds, and an extra `3` seconds of continuous confirmation. It then applies a gradual click-through visual overlay without changing system brightness.
 
