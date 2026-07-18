@@ -136,6 +136,8 @@ The repository contains source code, build scripts, and process documentation. I
 
 Useful developer entry points:
 
+- [CONTRIBUTING.md](CONTRIBUTING.md): development setup, test selection, and pull request expectations.
+- [docs/README.md](docs/README.md): architecture, release, and troubleshooting documentation index.
 - [AGENTS.md（Repository Guidelines，仓库贡献者指南）](AGENTS.md): contributor workflow and development conventions.
 - [上传必读(英文版).md（Remote Upload Rules，远端上传规则）](<上传必读(英文版).md>): pre-upload filtering and review requirements.
 - [README_EXE.md（Executable Launcher Guide，EXE 启动器说明）](README_EXE.md): launcher and packaged EXE behavior.

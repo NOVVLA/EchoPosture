@@ -1,5 +1,37 @@
 # DEVELOPMENT_LOG（Development Log，开发日志）
 
+## 2026-07-18 - Add Maintainer Architecture, Release, Troubleshooting, and Contribution Guides
+
+- Source: user request to complete the first-round documentation set and verify that each document is operationally useful.
+- Git: commit `pending`, branch `main`, target `origin/main`.
+- Scope: added `CONTRIBUTING.md` and `docs/README.md`, `docs/ARCHITECTURE.md`, `docs/RELEASE.md`, and
+  `docs/TROUBLESHOOTING.md`; linked the new documentation index and contribution guide from the public README.
+- Risk: documentation-only change. Incorrect architecture, package, or diagnostic claims could misdirect contributors
+  or release maintainers, so critical assertions were checked against source, CI, the GA-1.2.1 package, and the live
+  GitHub release.
+- Verification:
+  - Command: local Markdown link resolver over `CONTRIBUTING.md`, `README.md`, and `docs/*.md`.
+  - Result: passed; 32 local links resolved to existing files.
+  - Command: source assertion check against `launcher/EchoPostureLauncher.cs`, `tray_app.py`, `vision_worker.py`,
+    `gpu_blur_overlay.py`, `native/BlurOverlayHost.cpp`, and `build_launcher.cmd`.
+  - Result: passed; all 28 checked launcher, timing, intervention, IPC, hotkey, and build assertions matched source.
+  - Command: compare the documented release allowlist with `dist/EchoPosture-GA-1.2.1-win-x64`.
+  - Result: passed; all 17 required top-level entries were present, there were no extra entries, and no forbidden
+    top-level repository, audit, backup, or log directories were present.
+  - Command: `Get-FileHash -Algorithm SHA256 dist\EchoPosture-GA-1.2.1-win-x64.zip` and live
+    `gh release view ga-1.2.1` metadata comparison.
+  - Result: passed; local ZIP and uploaded asset both reported
+    `7d8f6142eb760ad456155f327b7c4550ee222a85bb24a3a6964318ca5267b618`; live asset name, uploaded state,
+    release/tag, draft/prerelease state, and target commit also matched the guide's current baseline.
+  - Command: stale version and personal workspace path scan over the new documentation.
+  - Result: passed; no GA-1.0.0, `EchoPostureGA100`, or personal absolute workspace path was present.
+  - Command: `git diff --check`.
+  - Result: passed, exit 0.
+- Gaps: no application runtime, camera, overlay, or package build test was run because executable behavior did not
+  change. Markdown rendering was checked structurally rather than through a browser preview.
+- Conclusion: ready to commit and push; the first-round documentation set has navigable entry points, source-grounded
+  architecture, an auditable release checklist, symptom-driven diagnostics, and a contributor workflow tied to CI.
+
 ## 2026-07-17 - Align Maintainer Documentation with GA-1.2.1
 
 - Source: user request to correct stale GA-1.0.0 references and unify the current version information.
