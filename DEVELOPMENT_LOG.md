@@ -3,7 +3,8 @@
 ## 2026-07-25 - Implement Read-Only AI Branch Preflight and Release Notes Drafts
 
 - Source: user request to complete the two lowest-risk AI maintainer workflow frameworks and push them to the canonical remote.
-- Git: commit pending, branch main, target origin/main.
+- Git: implementation commit `260e49757b0a6e4469d87ffac3a9665c62c92509`
+  (`feat(workflows): implement AI branch and release drafts`), branch `main`, pushed to `origin/main`.
 - Scope: replaced the placeholder implementations for ai-branch-preflight and ai-release-notes with flow-specific
   context collection, OpenAI-compatible JSON analysis, guarded read-only results, structured Actions summaries, workflow
   inputs, prompts, and deterministic mock tests. Updated the quality gate to lint, compile, and run those tests.
@@ -24,8 +25,22 @@
   - Command: Ruff local check
   - Result: skipped; neither system Python nor runtime/python311 has the Ruff module. The updated remote quality gate installs
     requirements-dev.txt and will provide the authoritative clean-environment Ruff result.
-- Gaps: live workflow verification, clean-environment Ruff, and provider response must be recorded after the changes reach main.
-- Conclusion: ready to commit and push; the flows remain read-only regardless of requested model output.
+  - Command: remote quality gate run `30149698916` and CodeQL run `30149698902` on the implementation commit
+    `260e497`.
+  - Result: passed. `python-quality` installed the development requirements, ran Ruff, compiled the Python sources, and
+    passed the logic tests; `windows-build` passed; CodeQL `analyze` passed after building the launcher and native host.
+  - Command: manual remote `ai-branch-preflight` run `30149717871` with `base_ref=main`, `target_ref=HEAD`, and
+    `dry_run=true`.
+  - Result: passed. The configured model returned structured JSON with `action=ignore`, confidence `0.90`, and correctly
+    reported that both refs resolve to the same commit; no repository write was attempted.
+  - Command: manual remote `ai-release-notes` run `30149718787` with `from_ref=ga-1.2.1`, `to_ref=HEAD`,
+    `version=0.0.0-validation`, `channel=GA`, and `dry_run=true`.
+  - Result: passed. The configured model returned a human-review draft, flagged the validation version as a placeholder,
+    and explicitly reported that no tag, release, asset, checksum, or repository file was created or modified.
+- Gaps: none for this L1 read-only implementation. The two remaining framework-only flows still require their own
+  context collection and separately reviewed action policies before they can be implemented.
+- Conclusion: implemented, pushed, and exercised against the configured provider. Both flows remain read-only regardless
+  of requested model output and are advisory only; they are not merge gates.
 
 ## 2026-07-18 - Add Maintainer Architecture, Release, Troubleshooting, and Contribution Guides
 
