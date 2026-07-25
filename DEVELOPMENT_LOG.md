@@ -1,5 +1,27 @@
 # DEVELOPMENT_LOG（Development Log，开发日志）
 
+## 2026-07-25 - Strengthen PR Review Escalation Guidance Without Weakening Close Gates
+
+- Source: user request to make the PR reviewer more willing to identify present, easily minimized defects and to
+  investigate allowed close conditions assertively, while preserving every existing close gate.
+- Git: commit pending, branch `main`, target `origin/main`.
+- Scope: updated the PR review prompt to reject "easy to fix" as a reason to ignore a proven problem, require explicit
+  findings for evidence-backed defects, and direct the model to test every close gate when it considers closure. Added
+  a pure-logic regression test and included it in the remote quality gate.
+- Risk: prompt guidance may produce more review findings and more primary close candidates. It does not expand the five
+  hard close-rule categories, lower the primary `0.95` confidence threshold, bypass the independent reviewer, or
+  permit merging.
+- Verification:
+  - Command: `runtime\python311\python.exe test_ai_pr_review_guards.py`.
+  - Result: passed. Verifies that second-review disagreement, insufficient primary confidence, and missing hard-rule
+    evidence all prevent closure.
+  - Command: existing AI maintainer, startup, tray flyout, and vision worker logic tests; plus Python compilation and
+    `git diff --check`.
+  - Result: passed.
+- Gaps: clean-environment Ruff, quality gate, Windows build, and CodeQL remain pending after push.
+- Conclusion: ready to commit and push. The model is more assertive about raising defects, but ordinary defects remain
+  request-changes cases and automated closure still requires all existing independent gates.
+
 ## 2026-07-25 - Replace AI Release Notes Draft with Strict Post-Publication Audit
 
 - Source: user request to audit every formally published GitHub Release, strictly identify missing release information,
