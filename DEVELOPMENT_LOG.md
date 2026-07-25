@@ -4,7 +4,9 @@
 
 - Source: user request to audit every formally published GitHub Release, strictly identify missing release information,
   and create a follow-up Issue when the published information needs completion.
-- Git: commit pending, branch `main`, target `origin/main`.
+- Git: implementation commits `ff5a3b7317709e5989757660f1525c372d718f78`
+  (`feat(workflows): audit published releases`) and `625978df0750a852a6eb85bba60da122808d789c`
+  (`fix(workflows): enforce strict release findings`), branch `main`, pushed to `origin/main`.
 - Scope: replaced `ai-release-notes` with `ai-release-audit`. It runs on `release.published` and supports a manual tag
   re-audit. The flow runs trusted default-branch code, reads only bounded Release metadata, applies deterministic
   naming/body/asset/digest checks, and accepts only allowlisted AI finding categories with evidence and confidence at
@@ -25,10 +27,17 @@
   - Command: local Ruff check.
   - Result: skipped; Ruff is not installed in the local runtime. The updated remote quality gate installs
     `requirements-dev.txt` and is the clean-environment authority.
-- Gaps: clean-environment quality gate and a manual dry-run against a real published Release remain pending after
-  push.
-- Conclusion: implementation in progress; automatic Issue creation will occur only for future `release.published` events
-  with deterministic findings or high-confidence allowlisted AI findings.
+  - Command: remote quality-gate runs `30152308106` and `30152392639`, plus CodeQL runs `30152308116` and
+    `30152392641`.
+  - Result: all passed. Each quality gate completed Ruff, Python compilation, the logic suite, and the Windows build;
+    each CodeQL run completed native build and analysis.
+  - Command: manual dry-run `ai-release-audit` run `30152400507` against published `ga-1.2.1`.
+  - Result: passed. The model identified four allowlisted, evidenced follow-ups and produced
+    `outcome=issue_planned`; `dry_run=true` prevented creation of the proposed Issue.
+- Gaps: none for the implemented trigger and dry-run path. The next real `release.published` event will create its
+  deduplicated Issue when the deterministic or strict allowlisted finding gate is met.
+- Conclusion: implemented, pushed, and exercised against the configured provider. The workflow can only create a
+  follow-up Issue; it cannot edit or withdraw a Release or otherwise modify release assets, tags, or repository files.
 
 ## 2026-07-25 - Implement Read-Only AI Branch Preflight and Release Notes Drafts
 
