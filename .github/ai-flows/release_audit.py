@@ -21,7 +21,7 @@ from json_guard import parse_json_object
 MAX_BODY_CHARS = 12000
 MAX_ASSETS = 20
 MAX_FINDINGS = 12
-AI_CONFIDENCE_TO_OPEN_ISSUE = 0.85
+AI_CONFIDENCE_TO_OPEN_ISSUE = 0.70
 GA_TAG = re.compile(r"^ga-(\d+\.\d+\.\d+)$")
 TEAM_ALPHA_TAG = re.compile(r"^team-alpha-(\d{8}-\d{6})$")
 MARKER_PREFIX = "[release-audit:"

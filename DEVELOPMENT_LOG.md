@@ -7,7 +7,8 @@
 - Git: commit pending, branch `main`, target `origin/main`.
 - Scope: replaced `ai-release-notes` with `ai-release-audit`. It runs on `release.published` and supports a manual tag
   re-audit. The flow runs trusted default-branch code, reads only bounded Release metadata, applies deterministic
-  naming/body/asset/digest checks, and accepts only allowlisted, confidence-gated AI finding categories.
+  naming/body/asset/digest checks, and accepts only allowlisted AI finding categories with evidence and confidence at
+  least `0.70`.
 - Risk: this flow can create one public Issue for a published Release. It has only `contents: read` and `issues: write`;
   it cannot edit or withdraw a Release, change tags or assets, alter repository files, merge, or change settings. Open
   audit Issues are deduplicated by a stable tag marker.
