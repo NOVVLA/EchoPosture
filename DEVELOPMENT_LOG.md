@@ -1,5 +1,34 @@
 # DEVELOPMENT_LOG（Development Log，开发日志）
 
+## 2026-07-25 - Replace AI Release Notes Draft with Strict Post-Publication Audit
+
+- Source: user request to audit every formally published GitHub Release, strictly identify missing release information,
+  and create a follow-up Issue when the published information needs completion.
+- Git: commit pending, branch `main`, target `origin/main`.
+- Scope: replaced `ai-release-notes` with `ai-release-audit`. It runs on `release.published` and supports a manual tag
+  re-audit. The flow runs trusted default-branch code, reads only bounded Release metadata, applies deterministic
+  naming/body/asset/digest checks, and accepts only allowlisted, confidence-gated AI finding categories.
+- Risk: this flow can create one public Issue for a published Release. It has only `contents: read` and `issues: write`;
+  it cannot edit or withdraw a Release, change tags or assets, alter repository files, merge, or change settings. Open
+  audit Issues are deduplicated by a stable tag marker.
+- Verification:
+  - Command: `runtime\python311\python.exe test_ai_maintainer_manual_flows.py`.
+  - Result: passed. Covers clean-release no-op, missing required information planning exactly one Issue, and rejection of
+    AI finding categories outside the allowlist.
+  - Command: `runtime\python311\python.exe test_startup_guards.py`, `test_tray_flyout.py`, and
+    `test_vision_worker.py`.
+  - Result: passed; existing logic suites remained green.
+  - Command: `runtime\python311\python.exe -m py_compile .github\ai-flows\branch_preflight.py`
+    `.github\ai-flows\release_audit.py test_ai_maintainer_manual_flows.py`, and `git diff --check`.
+  - Result: passed.
+  - Command: local Ruff check.
+  - Result: skipped; Ruff is not installed in the local runtime. The updated remote quality gate installs
+    `requirements-dev.txt` and is the clean-environment authority.
+- Gaps: clean-environment quality gate and a manual dry-run against a real published Release remain pending after
+  push.
+- Conclusion: implementation in progress; automatic Issue creation will occur only for future `release.published` events
+  with deterministic findings or high-confidence allowlisted AI findings.
+
 ## 2026-07-25 - Implement Read-Only AI Branch Preflight and Release Notes Drafts
 
 - Source: user request to complete the two lowest-risk AI maintainer workflow frameworks and push them to the canonical remote.
