@@ -30,17 +30,20 @@ jobs:
           pip install -r requirements-dev.txt
 
       - name: Run Ruff static checks
-        run: ruff check debug_ui.py gpu_blur_overlay.py onboarding_toast.py overlay_test.py posture_console.py test_startup_guards.py test_tray_flyout.py test_vision_worker.py tray_app.py tray_flyout.py vision_test.py vision_worker.py
+        run: ruff check .github/ai-flows/branch_preflight.py .github/ai-flows/release_notes.py debug_ui.py gpu_blur_overlay.py onboarding_toast.py overlay_test.py posture_console.py test_ai_maintainer_manual_flows.py test_startup_guards.py test_tray_flyout.py test_vision_worker.py tray_app.py tray_flyout.py vision_test.py vision_worker.py
 
       - name: Compile Python source
         shell: pwsh
         run: |
           $files = @(
             "debug_ui.py",
+            ".github/ai-flows/branch_preflight.py",
+            ".github/ai-flows/release_notes.py",
             "gpu_blur_overlay.py",
             "onboarding_toast.py",
             "overlay_test.py",
             "posture_console.py",
+            "test_ai_maintainer_manual_flows.py",
             "test_startup_guards.py",
             "test_tray_flyout.py",
             "test_vision_worker.py",
@@ -56,6 +59,7 @@ jobs:
           python test_startup_guards.py
           python test_tray_flyout.py
           python test_vision_worker.py
+          python test_ai_maintainer_manual_flows.py
 
   windows-build:
     name: windows-build

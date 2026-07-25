@@ -1,5 +1,32 @@
 # DEVELOPMENT_LOG（Development Log，开发日志）
 
+## 2026-07-25 - Implement Read-Only AI Branch Preflight and Release Notes Drafts
+
+- Source: user request to complete the two lowest-risk AI maintainer workflow frameworks and push them to the canonical remote.
+- Git: commit pending, branch main, target origin/main.
+- Scope: replaced the placeholder implementations for ai-branch-preflight and ai-release-notes with flow-specific
+  context collection, OpenAI-compatible JSON analysis, guarded read-only results, structured Actions summaries, workflow
+  inputs, prompts, and deterministic mock tests. Updated the quality gate to lint, compile, and run those tests.
+- Risk: the workflows receive repository metadata and configured AI service Secrets at runtime. They must remain
+  read-only: no comments, labels, reviews, merges, tags, releases, asset uploads, repository-file edits, or audit-log
+  edits are permitted by either flow.
+- Verification:
+  - Command: runtime/python311/python.exe test_ai_maintainer_manual_flows.py
+  - Result: passed; mock branch and release executions produced step summaries and cleared every requested write effect.
+  - Command: runtime/python311/python.exe test_startup_guards.py, test_tray_flyout.py, and test_vision_worker.py
+  - Result: passed; existing logic suite remained green in the project runtime.
+  - Command: runtime/python311/python.exe -m py_compile on both new flow modules and the new test
+  - Result: passed.
+  - Command: local branch and release context collection against main..HEAD and ga-1.2.1..HEAD
+  - Result: passed; branch comparison returned the expected empty baseline and release collection returned 16 commits.
+  - Command: git diff --check and changed-file line-length scan
+  - Result: passed.
+  - Command: Ruff local check
+  - Result: skipped; neither system Python nor runtime/python311 has the Ruff module. The updated remote quality gate installs
+    requirements-dev.txt and will provide the authoritative clean-environment Ruff result.
+- Gaps: live workflow verification, clean-environment Ruff, and provider response must be recorded after the changes reach main.
+- Conclusion: ready to commit and push; the flows remain read-only regardless of requested model output.
+
 ## 2026-07-18 - Add Maintainer Architecture, Release, Troubleshooting, and Contribution Guides
 
 - Source: user request to complete the first-round documentation set and verify that each document is operationally useful.

@@ -3,8 +3,29 @@ name: ai-release-notes
 on:
   workflow_dispatch:
     inputs:
+      from_ref:
+        description: "Commit, tag, or branch immediately before this release range"
+        required: true
+        type: string
+      to_ref:
+        description: "Release candidate ref"
+        required: true
+        default: "HEAD"
+        type: string
+      version:
+        description: "Proposed visible release version"
+        required: true
+        type: string
+      channel:
+        description: "Release channel for the draft"
+        required: true
+        default: "GA"
+        type: choice
+        options:
+          - "GA"
+          - "TEAM_ALPHA"
       dry_run:
-        description: "Keep framework execution read-only"
+        description: "Record this read-only draft execution"
         required: true
         default: "true"
         type: choice
@@ -17,13 +38,15 @@ permissions:
 
 jobs:
   framework:
-    name: ai-release-notes-framework
+    name: ai-release-notes
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
 
       - name: Set up Python
         uses: actions/setup-python@v6
@@ -35,7 +58,10 @@ jobs:
           AI_API_URL: ${{ secrets.AI_API_URL }}
           AI_API_KEY: ${{ secrets.AI_API_KEY }}
           AI_MODEL: ${{ secrets.AI_MODEL }}
-          AI_REVIEW_MODEL: ${{ secrets.AI_REVIEW_MODEL }}
-          AI_FAST_MODEL: ${{ secrets.AI_FAST_MODEL }}
           AI_MAINTAINER_DRY_RUN: ${{ inputs.dry_run }}
-        run: python .github/ai-flows/release_notes.py
+        run: >-
+          python .github/ai-flows/release_notes.py
+          --from-ref "${{ inputs.from_ref }}"
+          --to-ref "${{ inputs.to_ref }}"
+          --version "${{ inputs.version }}"
+          --channel "${{ inputs.channel }}"
