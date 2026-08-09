@@ -609,3 +609,28 @@
 - Gaps: Dependabot's first scheduled job and generated pull request cannot be verified before the configuration reaches
   the default branch.
 - Conclusion: file-level validation passed; ready for remote pull-request verification.
+
+## 2026-08-09 - Phase 1 Calibration Safety and Multi-user Debounce
+
+- Source: user request to implement the first priority from `docs/plans/EchoPosture_vision_identity_upgrade_plan.md`.
+- Git: commit `a037193`, branch `codex/pr2-phase1-calibration-safety`, tag `none`.
+- Scope:
+  - `vision_test.py`: require a single person, both face and pose observations, and complete core posture metrics before automatic calibration; debounce multi-user state for 0.3 seconds.
+  - `vision_worker.py`: reuse the shared calibration predicate, filter averaged samples, and reset the calibration window when a second person appears.
+  - `test_feature_toggles.py`, `test_vision_worker.py`: add deterministic coverage for incomplete/multi-person calibration samples, calibration-window reset, and multi-user debounce.
+  - `docs/plans/EchoPosture_vision_identity_upgrade_plan.md`: move the locally untracked copy to the canonical repository path; its Git blob was verified identical to `origin/main` before the move.
+- Risk: stricter calibration may reject short-lived partial camera observations and require the user to remain visible with complete face and pose metrics; multi-user status now waits 0.3 seconds before suppression.
+- Verification:
+  - Command: `runtime\\python311\\python.exe -m py_compile vision_test.py vision_worker.py test_feature_toggles.py test_vision_worker.py` with `PYTHONDONTWRITEBYTECODE=1`.
+  - Result: passed, exit 0.
+  - Command: `runtime\\python311\\python.exe test_feature_toggles.py` with `PYTHONDONTWRITEBYTECODE=1`.
+  - Result: passed; `ALL TESTS PASSED`, exit 0.
+  - Command: `runtime\\python311\\python.exe test_vision_worker.py` with `PYTHONDONTWRITEBYTECODE=1`.
+  - Result: passed; `ALL TESTS PASSED`, exit 0.
+  - Command: `runtime\\python311\\python.exe test_startup_guards.py` with `PYTHONDONTWRITEBYTECODE=1`.
+  - Result: passed; 8 tests, exit 0.
+  - Command: `git diff --check`.
+  - Result: passed; only the repository's existing LF/CRLF conversion warnings were reported.
+- Gaps: Ruff was not run because the `ruff` command is unavailable in the current environment; no real-camera or packaged Windows self-test was run; the PR and remote merge were not yet completed at log-entry creation time.
+- Artifacts: no release or binary artifacts.
+- Conclusion: local implementation validated for logic tests; ready for PR review after commit and push.

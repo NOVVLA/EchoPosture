@@ -72,6 +72,19 @@ class VisionSample:
     torso_height_px: Optional[float] = None
 
 
+def calibration_sample_is_complete(sample: VisionSample) -> bool:
+    """Return whether a sample is safe to use for a posture baseline."""
+    return (
+        sample.face_count == 1
+        and sample.face_detected
+        and sample.pose_detected
+        and sample.interpupillary_px is not None
+        and sample.signed_shoulder_diff_px is not None
+        and sample.shoulder_width_px is not None
+        and sample.trunk_lean_deg is not None
+    )
+
+
 @dataclass(frozen=True)
 class PostureDecision:
     status: str
@@ -122,9 +135,7 @@ class PostureAnalyzer:
         )
 
     def evaluate(self, sample: VisionSample) -> PostureDecision:
-        if self.auto_calibrate and sample.face_count <= 1 and (
-            sample.face_detected or sample.pose_detected
-        ):
+        if self.auto_calibrate and calibration_sample_is_complete(sample):
             self._update_baseline(sample)
         if self.baseline is None:
             if not self.auto_calibrate:
@@ -327,6 +338,7 @@ class HighPrecisionPostureAnalyzer(PostureAnalyzer):
         critical_sustain_seconds: float = 30.0,
         risk_clear_seconds: float = 4.0,
         away_grace_seconds: float = 2.0,
+        multi_present_confirm_seconds: float = 0.3,
     ) -> None:
         super().__init__(
             calibration_samples=calibration_samples,
@@ -339,6 +351,7 @@ class HighPrecisionPostureAnalyzer(PostureAnalyzer):
         self.risk_clear_seconds = risk_clear_seconds
         self.risk_start_score = 35.0
         self.away_grace_seconds = away_grace_seconds
+        self.multi_present_confirm_seconds = max(0.0, multi_present_confirm_seconds)
         # 运行时功能开关（UI 主线程写、工作线程读；GIL 下 bool 读写原子，
         # evaluate 每帧读取一次即可生效）。默认全开，与历史行为一致。
         self.precision_enabled = True        # False → 回退到基础阈值判定
@@ -348,15 +361,14 @@ class HighPrecisionPostureAnalyzer(PostureAnalyzer):
         self._last_risky_at: Optional[datetime] = None
         self._smoothed_score = 0.0
         self._away_started_at: Optional[datetime] = None
+        self._multi_started_at: Optional[datetime] = None
         self._requires_profile_check = False
 
     def evaluate(self, sample: VisionSample) -> PostureDecision:
         if not self.precision_enabled:
             return self._basic_mode_evaluate(sample)
 
-        if self.auto_calibrate and sample.face_count <= 1 and (
-            sample.face_detected or sample.pose_detected
-        ):
+        if self.auto_calibrate and calibration_sample_is_complete(sample):
             self._update_baseline(sample)
         if self.baseline is None:
             if not self.auto_calibrate:
@@ -465,9 +477,22 @@ class HighPrecisionPostureAnalyzer(PostureAnalyzer):
             self._requires_profile_check = True
             self._away_started_at = None
             if self.presence_check_enabled:
+                if self._multi_started_at is None:
+                    self._multi_started_at = sample.timestamp
+                multi_seconds = max(
+                    0.0,
+                    (sample.timestamp - self._multi_started_at).total_seconds(),
+                )
                 self._reset_risk_state()
+                if multi_seconds < self.multi_present_confirm_seconds:
+                    return PostureDecision(
+                        "UNKNOWN",
+                        f"multi_user_observing_s={multi_seconds:.1f}",
+                        True,
+                    )
                 return PostureDecision("MULTI_USER", "multiple_faces_detected", True)
         elif not sample.face_detected and not sample.pose_detected:
+            self._multi_started_at = None
             if self._away_started_at is None:
                 self._away_started_at = sample.timestamp
             away_seconds = max(
@@ -485,6 +510,7 @@ class HighPrecisionPostureAnalyzer(PostureAnalyzer):
             # 关闭在场检测时不抑制：无指标样本会在后续评分中自然得到 UNKNOWN
             return None
         else:
+            self._multi_started_at = None
             self._away_started_at = None
 
         # 换人比对只在画面回到单人时进行：多人帧的“第一张脸”归属不可靠

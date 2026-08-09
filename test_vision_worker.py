@@ -25,7 +25,7 @@ from vision_worker import (
 )
 
 
-def make_sample(ipd: float = 60.0) -> VisionSample:
+def make_sample(ipd: float = 60.0, face_count: int = 1) -> VisionSample:
     return VisionSample(
         timestamp=datetime.now(),
         interpupillary_px=ipd,
@@ -35,7 +35,7 @@ def make_sample(ipd: float = 60.0) -> VisionSample:
         trunk_lean_deg=2.0,
         face_detected=True,
         pose_detected=True,
-        face_count=1,
+        face_count=face_count,
         head_turn_ratio=0.02,
         torso_height_px=180.0,
     )
@@ -135,7 +135,20 @@ def test_average_matches_legacy_semantics():
     fallback = make_sample(50.0)
     assert average_calibration_sample([], fallback) is fallback
     assert sample_is_usable(make_sample())
+    assert not sample_is_usable(make_sample(face_count=2))
+    assert average_calibration_sample([make_sample(60.0), make_sample(80.0, face_count=2)]) is not None
+    assert average_calibration_sample([make_sample(face_count=2)]) is None
     print("test_average_matches_legacy_semantics OK")
+
+
+def test_multi_person_resets_calibration_window():
+    engine = FakeEngine()
+    worker, _ = build_worker(engine)
+    worker._collect_calibration_sample(make_sample(60.0))
+    worker._collect_calibration_sample(make_sample(60.0, face_count=2))
+    assert worker._calib_samples == []
+    assert worker._last_usable_sample is None
+    print("test_multi_person_resets_calibration_window OK")
 
 
 def test_calibration_failure_and_error_propagation():
@@ -208,6 +221,7 @@ def test_set_capture_fps_roundtrip():
 
 if __name__ == "__main__":
     test_average_matches_legacy_semantics()
+    test_multi_person_resets_calibration_window()
     test_thread_affinity_and_mailbox()
     test_calibration_failure_and_error_propagation()
     test_monitoring_error_pauses_worker()

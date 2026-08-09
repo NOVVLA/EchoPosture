@@ -31,6 +31,7 @@ from vision_test import (
     CameraPermissionError,
     PostureDecision,
     VisionSample,
+    calibration_sample_is_complete,
 )
 
 MODE_PAUSED = "paused"
@@ -39,30 +40,32 @@ MODE_CALIBRATING = "calibrating"
 
 
 def sample_is_usable(sample: VisionSample) -> bool:
-    """校准样本有效性条件（与旧 tray_app._capture_calibration_sample 一致）。"""
-    return (
-        sample.interpupillary_px is not None
-        or sample.signed_shoulder_diff_px is not None
-        or sample.trunk_lean_deg is not None
-    )
+    """Return whether a sample is safe to use for a posture baseline.
+
+    Calibration must never combine multiple people or partial observations.
+    The monitoring path can still produce partial samples; this stricter
+    predicate is only for baseline construction.
+    """
+    return calibration_sample_is_complete(sample)
 
 
 def average_calibration_sample(
     samples: List[VisionSample],
     fallback: Optional[VisionSample] = None,
 ) -> Optional[VisionSample]:
-    """对一批校准样本逐字段求平均（迁移自旧 tray_app._average_calibration_sample）。"""
-    if not samples:
-        return fallback
+    """Average only single-person, complete calibration samples."""
+    eligible_samples = [sample for sample in samples if sample_is_usable(sample)]
+    if not eligible_samples:
+        return fallback if fallback is not None and sample_is_usable(fallback) else None
 
     def avg(name: str) -> Optional[float]:
-        values = [getattr(sample, name) for sample in samples]
+        values = [getattr(sample, name) for sample in eligible_samples]
         usable = [value for value in values if value is not None]
         if not usable:
             return None
         return sum(usable) / len(usable)
 
-    base = samples[-1]
+    base = eligible_samples[-1]
     return replace(
         base,
         timestamp=datetime.now(),
@@ -73,8 +76,9 @@ def average_calibration_sample(
         trunk_lean_deg=avg("trunk_lean_deg"),
         head_turn_ratio=avg("head_turn_ratio"),
         torso_height_px=avg("torso_height_px"),
-        face_detected=any(sample.face_detected for sample in samples),
-        pose_detected=any(sample.pose_detected for sample in samples),
+        face_detected=True,
+        pose_detected=True,
+        face_count=1,
     )
 
 
@@ -294,6 +298,12 @@ class VisionWorker:
                 self._finalize_calibration(engine, distance_cm, sample_count, request_id)
 
     def _collect_calibration_sample(self, sample: VisionSample) -> None:
+        if sample.face_count > 1:
+            # A second person invalidates the current calibration window. Do
+            # not let later averaging hide that contamination.
+            self._calib_samples = []
+            self._last_usable_sample = None
+            return
         if sample_is_usable(sample):
             self._last_usable_sample = sample
             self._calib_samples.append(sample)
