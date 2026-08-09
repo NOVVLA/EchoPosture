@@ -613,7 +613,7 @@
 ## 2026-08-09 - Phase 1 Calibration Safety and Multi-user Debounce
 
 - Source: user request to implement the first priority from `docs/plans/EchoPosture_vision_identity_upgrade_plan.md`.
-- Git: implementation commit `7c8cca6`, branch `codex/pr2-phase1-calibration-safety`, tag `none`.
+- Git: implementation commit `329c537`, branch `codex/pr2-phase1-calibration-safety`, tag `none`.
 - Scope:
   - `vision_test.py`: require a single person, both face and pose observations, and complete core posture metrics before automatic calibration; debounce multi-user state for 0.3 seconds.
   - `vision_worker.py`: reuse the shared calibration predicate, filter averaged samples, and reset the calibration window when a second person appears.
