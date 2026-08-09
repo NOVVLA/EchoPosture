@@ -618,7 +618,7 @@
   - `vision_test.py`: require a single person, both face and pose observations, and complete core posture metrics before automatic calibration; debounce multi-user state for 0.3 seconds.
   - `vision_worker.py`: reuse the shared calibration predicate, filter averaged samples, and reset the calibration window when a second person appears.
   - `test_feature_toggles.py`, `test_vision_worker.py`: add deterministic coverage for incomplete/multi-person calibration samples, calibration-window reset, and multi-user debounce.
-  - `docs/plans/EchoPosture_vision_identity_upgrade_plan.md`: move the locally untracked copy to the canonical repository path; its Git blob was verified identical to `origin/main` before the move.
+  - Plan reference: `docs/plans/EchoPosture_vision_identity_upgrade_plan.md` was already present at the canonical path in the PR base (`origin/main`, commit `3691e8d`); no plan-file move is included in this PR.
 - Risk: stricter calibration may reject short-lived partial camera observations and require the user to remain visible with complete face and pose metrics; multi-user status now waits 0.3 seconds before suppression.
 - Verification:
   - Command: `runtime\\python311\\python.exe -m py_compile vision_test.py vision_worker.py test_feature_toggles.py test_vision_worker.py` with `PYTHONDONTWRITEBYTECODE=1`.
@@ -644,6 +644,7 @@
   - Derive averaged observation flags from eligible samples instead of force-stamping them.
   - Use `calibration_sample_is_complete` as the single canonical calibration predicate across `vision_test.py`, `vision_worker.py`, and `tray_app.py`.
   - Add regression coverage for an ineligible fallback and the presence-toggle debounce path.
+  - Surface missing calibration conditions when no complete sample is available, so calibration failure is diagnosable from the tray message.
 - Risk: the same-frame completeness invariant remains intentionally conservative; real-camera co-occurrence of face and pose metrics is still unverified and must be checked before merge.
 - Verification:
   - `runtime\\python311\\python.exe test_feature_toggles.py`: passed, `ALL TESTS PASSED`.

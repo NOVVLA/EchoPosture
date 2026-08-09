@@ -65,12 +65,21 @@ from vision_test import (
     PostureDecision,
     VisionEngine,
     calibration_sample_is_complete,
+    calibration_sample_missing_fields,
 )
 from vision_worker import (
     CalibrationResult,
     VisionWorker,
     average_calibration_sample,
 )
+
+
+def _calibration_failure_details(result: CalibrationResult) -> str:
+    if not result.missing_fields:
+        return _t("calib_missing_unknown")
+    return ", ".join(
+        _t(f"calib_missing_{field}") for field in result.missing_fields
+    )
 
 
 class _EngineProxy:
@@ -385,6 +394,7 @@ class TrayMonitor:
         self._awaiting_calibration: Optional[tuple] = None
         self._stopping = False
         self._calibrated = False
+        self._last_calibration_missing_fields: tuple[str, ...] = ()
         self._monitoring_started = False
         self._intervention_candidate_started_at: Optional[datetime] = None
         self._manual_effect_until: Optional[datetime] = None
@@ -471,6 +481,7 @@ class TrayMonitor:
                 self._show_camera_permission_warning(str(exc))
                 raise
             samples = []
+            missing_fields: set[str] = set()
             for _ in range(8):
                 try:
                     sample = engine.read_sample()
@@ -479,9 +490,13 @@ class TrayMonitor:
                 if calibration_sample_is_complete(sample):
                     samples.append(sample)
                     break
+                missing_fields.update(calibration_sample_missing_fields(sample))
             averaged = average_calibration_sample(samples)
             self._calibrated = averaged is not None and self.analyzer.set_baseline_from_sample(
                 averaged, self.calibrated_distance_cm
+            )
+            self._last_calibration_missing_fields = (
+                tuple(sorted(missing_fields)) if not self._calibrated else ()
             )
             if self._calibrated:
                 try:
@@ -565,7 +580,10 @@ class TrayMonitor:
                 return
             self.tray.showMessage(
                 "EchoPosture",
-                _t("tm_calib_fail_startup"),
+                _t(
+                    "tm_calib_fail_startup",
+                    details=_calibration_failure_details(result),
+                ),
                 QSystemTrayIcon.Warning,
                 5000,
             )
@@ -595,7 +613,7 @@ class TrayMonitor:
             self.worker.resume()
         self.tray.showMessage(
             "EchoPosture",
-            _t("tm_recal_fail"),
+            _t("tm_recal_fail", details=_calibration_failure_details(result)),
             QSystemTrayIcon.Warning,
             4000,
         )
@@ -877,6 +895,11 @@ def main() -> int:
             print(f"tray_icon_visible={monitor.tray.isVisible()}")
             print(f"startup_calibrated={monitor._calibrated}")
             print(f"baseline={monitor.analyzer.baseline is not None}")
+            if monitor._last_calibration_missing_fields:
+                print(
+                    "startup_calibration_missing="
+                    + ",".join(monitor._last_calibration_missing_fields)
+                )
             monitor.stop()
             return 0 if monitor._calibrated else 1
         return app.exec_()

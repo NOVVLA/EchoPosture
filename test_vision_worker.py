@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import threading
 import time
+from dataclasses import replace
 from datetime import datetime
 
 from vision_test import (
@@ -16,6 +17,7 @@ from vision_test import (
     HighPrecisionPostureAnalyzer,
     VisionSample,
     calibration_sample_is_complete,
+    calibration_sample_missing_fields,
 )
 from vision_worker import (
     MODE_MONITORING,
@@ -71,6 +73,13 @@ class FakeEngine:
     def close(self) -> None:
         self.thread_idents["close"] = threading.get_ident()
         self.closed.set()
+
+
+class IncompleteEngine(FakeEngine):
+    def read_sample(self) -> VisionSample:
+        self.thread_idents.setdefault("read", threading.get_ident())
+        self.read_count += 1
+        return replace(make_sample(), pose_detected=False, trunk_lean_deg=None)
 
 
 def wait_until(predicate, timeout=5.0, interval=0.02) -> bool:
@@ -136,6 +145,7 @@ def test_average_matches_legacy_semantics():
     assert average_calibration_sample([], fallback) is fallback
     assert calibration_sample_is_complete(make_sample())
     assert not calibration_sample_is_complete(make_sample(face_count=2))
+    assert calibration_sample_missing_fields(make_sample(face_count=2)) == ("single_person",)
     assert average_calibration_sample(
         [make_sample(60.0), make_sample(80.0, face_count=2)]
     ) is not None
@@ -178,6 +188,30 @@ def test_calibration_failure_and_error_propagation():
     assert analyzer.baseline is None
     worker.stop()
     print("test_calibration_failure_and_error_propagation OK")
+
+
+def test_calibration_failure_reports_missing_fields():
+    engine = IncompleteEngine()
+    worker, analyzer = build_worker(engine)
+    worker.start(timeout=5.0)
+    worker.begin_calibration_sampling()
+    worker.finalize_calibration(60.0, sample_count=2)
+
+    result_box = {}
+
+    def got_result():
+        result = worker.take_calibration_result()
+        if result is not None:
+            result_box["result"] = result
+            return True
+        return False
+
+    assert wait_until(got_result), "应收到校准回执"
+    assert result_box["result"].ok is False
+    assert result_box["result"].missing_fields == ("pose_detected", "trunk_lean_deg")
+    assert analyzer.baseline is None
+    worker.stop()
+    print("test_calibration_failure_reports_missing_fields OK")
 
 
 def test_monitoring_error_pauses_worker():
@@ -227,6 +261,7 @@ if __name__ == "__main__":
     test_multi_person_resets_calibration_window()
     test_thread_affinity_and_mailbox()
     test_calibration_failure_and_error_propagation()
+    test_calibration_failure_reports_missing_fields()
     test_monitoring_error_pauses_worker()
     test_start_failure_propagates_to_caller()
     test_set_capture_fps_roundtrip()

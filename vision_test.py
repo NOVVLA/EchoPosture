@@ -72,21 +72,33 @@ class VisionSample:
     torso_height_px: Optional[float] = None
 
 
+def calibration_sample_missing_fields(sample: VisionSample) -> tuple[str, ...]:
+    """Return completeness conditions missing from one calibration sample."""
+    missing: list[str] = []
+    if sample.face_count != 1:
+        missing.append("single_person")
+    if not sample.face_detected:
+        missing.append("face_detected")
+    if not sample.pose_detected:
+        missing.append("pose_detected")
+    for field in (
+        "interpupillary_px",
+        "signed_shoulder_diff_px",
+        "shoulder_width_px",
+        "trunk_lean_deg",
+    ):
+        if getattr(sample, field) is None:
+            missing.append(field)
+    return tuple(missing)
+
+
 def calibration_sample_is_complete(sample: VisionSample) -> bool:
     """Return whether a sample is safe to use for a posture baseline.
 
     Requiring all core metrics from one observation prevents combining face
     and pose data from different people or unrelated moments.
     """
-    return (
-        sample.face_count == 1
-        and sample.face_detected
-        and sample.pose_detected
-        and sample.interpupillary_px is not None
-        and sample.signed_shoulder_diff_px is not None
-        and sample.shoulder_width_px is not None
-        and sample.trunk_lean_deg is not None
-    )
+    return not calibration_sample_missing_fields(sample)
 
 
 @dataclass(frozen=True)
