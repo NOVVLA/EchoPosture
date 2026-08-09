@@ -638,7 +638,7 @@
 ## 2026-08-09 - PR22 AI Review Follow-up
 
 - Source: GitHub Actions AI review comment `5231950418` on PR #22.
-- Git: commit `pending`, branch `codex/pr2-phase1-calibration-safety`, tag `none`.
+- Git: implementation commit `30906d6`, branch `codex/pr2-phase1-calibration-safety`, tag `none`.
 - Scope:
   - Clear the multi-user debounce anchor when presence checking is disabled, preventing stale timestamps from bypassing the confirmation window after re-enabling the feature.
   - Derive averaged observation flags from eligible samples instead of force-stamping them.
