@@ -145,6 +145,23 @@ def test_presence_toggle():
     print("test_presence_toggle OK")
 
 
+def test_presence_toggle_resets_multi_debounce_anchor():
+    analyzer = calibrated_analyzer()
+
+    first_multi = make_sample(T0 + timedelta(seconds=1), face_count=2)
+    assert analyzer.evaluate(first_multi).status == "UNKNOWN"
+
+    analyzer.presence_check_enabled = False
+    analyzer.evaluate(make_sample(T0 + timedelta(seconds=2), face_count=2))
+
+    analyzer.presence_check_enabled = True
+    decision = analyzer.evaluate(make_sample(T0 + timedelta(seconds=2.1), face_count=2))
+    assert decision.status == "UNKNOWN", decision
+    decision = analyzer.evaluate(make_sample(T0 + timedelta(seconds=2.5), face_count=2))
+    assert decision.status == "MULTI_USER", decision
+    print("test_presence_toggle_resets_multi_debounce_anchor OK")
+
+
 def test_identity_toggle():
     analyzer = calibrated_analyzer()
 
@@ -175,5 +192,6 @@ if __name__ == "__main__":
     test_auto_calibration_requires_complete_single_person_sample()
     test_precision_toggle()
     test_presence_toggle()
+    test_presence_toggle_resets_multi_debounce_anchor()
     test_identity_toggle()
     print("ALL TESTS PASSED")

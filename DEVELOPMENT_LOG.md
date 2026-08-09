@@ -634,3 +634,23 @@
 - Gaps: Ruff was not run because the `ruff` command is unavailable in the current environment; no real-camera or packaged Windows self-test was run; the PR and remote merge were not yet completed at log-entry creation time.
 - Artifacts: no release or binary artifacts.
 - Conclusion: local implementation validated for logic tests; ready for PR review after commit and push.
+
+## 2026-08-09 - PR22 AI Review Follow-up
+
+- Source: GitHub Actions AI review comment `5231950418` on PR #22.
+- Git: commit `pending`, branch `codex/pr2-phase1-calibration-safety`, tag `none`.
+- Scope:
+  - Clear the multi-user debounce anchor when presence checking is disabled, preventing stale timestamps from bypassing the confirmation window after re-enabling the feature.
+  - Derive averaged observation flags from eligible samples instead of force-stamping them.
+  - Use `calibration_sample_is_complete` as the single canonical calibration predicate across `vision_test.py`, `vision_worker.py`, and `tray_app.py`.
+  - Add regression coverage for an ineligible fallback and the presence-toggle debounce path.
+- Risk: the same-frame completeness invariant remains intentionally conservative; real-camera co-occurrence of face and pose metrics is still unverified and must be checked before merge.
+- Verification:
+  - `runtime\\python311\\python.exe test_feature_toggles.py`: passed, `ALL TESTS PASSED`.
+  - `runtime\\python311\\python.exe test_vision_worker.py`: passed, `ALL TESTS PASSED`.
+  - `runtime\\python311\\python.exe test_startup_guards.py`: passed, 8 tests.
+  - `runtime\\python311\\python.exe test_tray_flyout.py`: passed, `ALL TESTS PASSED`.
+  - `runtime\\python311\\python.exe -m py_compile tray_app.py vision_test.py vision_worker.py test_feature_toggles.py test_vision_worker.py`: passed.
+- Gaps: Ruff remains unavailable in the environment; no real-camera or packaged Windows self-test was run.
+- Artifacts: no release or binary artifacts.
+- Conclusion: AI review findings addressed where confirmed; PR requires CI rerun and real-camera review of the conservative calibration condition.

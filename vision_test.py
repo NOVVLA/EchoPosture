@@ -73,7 +73,11 @@ class VisionSample:
 
 
 def calibration_sample_is_complete(sample: VisionSample) -> bool:
-    """Return whether a sample is safe to use for a posture baseline."""
+    """Return whether a sample is safe to use for a posture baseline.
+
+    Requiring all core metrics from one observation prevents combining face
+    and pose data from different people or unrelated moments.
+    """
     return (
         sample.face_count == 1
         and sample.face_detected
@@ -477,6 +481,8 @@ class HighPrecisionPostureAnalyzer(PostureAnalyzer):
             self._requires_profile_check = True
             self._away_started_at = None
             if self.presence_check_enabled:
+                # The timestamp is based on capture timestamps, so the
+                # confirmation window is time-based rather than frame-based.
                 if self._multi_started_at is None:
                     self._multi_started_at = sample.timestamp
                 multi_seconds = max(
@@ -491,6 +497,7 @@ class HighPrecisionPostureAnalyzer(PostureAnalyzer):
                         True,
                     )
                 return PostureDecision("MULTI_USER", "multiple_faces_detected", True)
+            self._multi_started_at = None
         elif not sample.face_detected and not sample.pose_detected:
             self._multi_started_at = None
             if self._away_started_at is None:

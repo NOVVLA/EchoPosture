@@ -39,24 +39,18 @@ MODE_MONITORING = "monitoring"
 MODE_CALIBRATING = "calibrating"
 
 
-def sample_is_usable(sample: VisionSample) -> bool:
-    """Return whether a sample is safe to use for a posture baseline.
-
-    Calibration must never combine multiple people or partial observations.
-    The monitoring path can still produce partial samples; this stricter
-    predicate is only for baseline construction.
-    """
-    return calibration_sample_is_complete(sample)
-
-
 def average_calibration_sample(
     samples: List[VisionSample],
     fallback: Optional[VisionSample] = None,
 ) -> Optional[VisionSample]:
     """Average only single-person, complete calibration samples."""
-    eligible_samples = [sample for sample in samples if sample_is_usable(sample)]
+    eligible_samples = [sample for sample in samples if calibration_sample_is_complete(sample)]
     if not eligible_samples:
-        return fallback if fallback is not None and sample_is_usable(fallback) else None
+        return (
+            fallback
+            if fallback is not None and calibration_sample_is_complete(fallback)
+            else None
+        )
 
     def avg(name: str) -> Optional[float]:
         values = [getattr(sample, name) for sample in eligible_samples]
@@ -76,9 +70,9 @@ def average_calibration_sample(
         trunk_lean_deg=avg("trunk_lean_deg"),
         head_turn_ratio=avg("head_turn_ratio"),
         torso_height_px=avg("torso_height_px"),
-        face_detected=True,
-        pose_detected=True,
-        face_count=1,
+        face_detected=all(sample.face_detected for sample in eligible_samples),
+        pose_detected=all(sample.pose_detected for sample in eligible_samples),
+        face_count=max(sample.face_count for sample in eligible_samples),
     )
 
 
@@ -304,7 +298,7 @@ class VisionWorker:
             self._calib_samples = []
             self._last_usable_sample = None
             return
-        if sample_is_usable(sample):
+        if calibration_sample_is_complete(sample):
             self._last_usable_sample = sample
             self._calib_samples.append(sample)
             if len(self._calib_samples) > self.SAMPLE_CAP:

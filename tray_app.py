@@ -64,12 +64,12 @@ from vision_test import (
     HighPrecisionPostureAnalyzer,
     PostureDecision,
     VisionEngine,
+    calibration_sample_is_complete,
 )
 from vision_worker import (
     CalibrationResult,
     VisionWorker,
     average_calibration_sample,
-    sample_is_usable,
 )
 
 
@@ -476,7 +476,7 @@ class TrayMonitor:
                     sample = engine.read_sample()
                 except Exception:
                     continue
-                if sample_is_usable(sample):
+                if calibration_sample_is_complete(sample):
                     samples.append(sample)
                     break
             averaged = average_calibration_sample(samples)

@@ -15,13 +15,13 @@ from vision_test import (
     CameraBlackFrameError,
     HighPrecisionPostureAnalyzer,
     VisionSample,
+    calibration_sample_is_complete,
 )
 from vision_worker import (
     MODE_MONITORING,
     MODE_PAUSED,
     VisionWorker,
     average_calibration_sample,
-    sample_is_usable,
 )
 
 
@@ -134,10 +134,13 @@ def test_average_matches_legacy_semantics():
     assert average_calibration_sample([]) is None
     fallback = make_sample(50.0)
     assert average_calibration_sample([], fallback) is fallback
-    assert sample_is_usable(make_sample())
-    assert not sample_is_usable(make_sample(face_count=2))
-    assert average_calibration_sample([make_sample(60.0), make_sample(80.0, face_count=2)]) is not None
+    assert calibration_sample_is_complete(make_sample())
+    assert not calibration_sample_is_complete(make_sample(face_count=2))
+    assert average_calibration_sample(
+        [make_sample(60.0), make_sample(80.0, face_count=2)]
+    ) is not None
     assert average_calibration_sample([make_sample(face_count=2)]) is None
+    assert average_calibration_sample([], fallback=make_sample(face_count=2)) is None
     print("test_average_matches_legacy_semantics OK")
 
 
