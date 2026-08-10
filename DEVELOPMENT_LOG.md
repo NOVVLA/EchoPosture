@@ -659,7 +659,7 @@
 ## 2026-08-10 - Vision Plan Priority Handoff Register
 
 - Source: user request to record the remaining 2.0 implementation priorities for handoff and later audit.
-- Git: commit pending, branch `codex/pr2-phase1-calibration-safety`, tag `none`.
+- Git: implementation commit `98bc4ba`, branch `codex/pr2-phase1-calibration-safety`, tag `none`.
 - Scope: added an execution register to `docs/plans/EchoPosture_vision_identity_upgrade_plan.md` covering P1 review gates and the ordered P2-P8 work, with task IDs, dependencies, status definitions, and completion evidence.
 - Current state: P1 remains in review in PR #22; P2 is the next executable priority after P1 approval and evidence completion. No P2-P8 implementation has started.
 - Verification: `git diff --check` passed; no source or runtime behavior changed.
