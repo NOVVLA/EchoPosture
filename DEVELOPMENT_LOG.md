@@ -668,7 +668,7 @@
 ## 2026-08-11 - AI PR Review Timeout Recovery
 
 - Source: repeated GitHub Actions failures in `ai-pr-review` runs #69 and #70; both ended with an uncaught `TimeoutError` after the 60-second client deadline.
-- Git: implementation commit `pending`, branch `fix/ai-review-timeout-recovery`, tag `none`.
+- Git: implementation commit `97c34a1`, branch `fix/ai-review-timeout-recovery`, tag `none`.
 - Scope:
   - `.github/ai-flows/common_ai_client.py`: classify socket/read timeouts as `AIClientTimeoutError`, keeping them inside the existing safe AI error contract.
   - `.github/ai-flows/pr_review.py`: use a configurable `AI_PR_REVIEW_TIMEOUT_SECONDS` value with a 300-second default for primary and secondary review calls, while tolerating invalid or non-positive configuration.
