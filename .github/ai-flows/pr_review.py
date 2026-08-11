@@ -23,10 +23,19 @@ from github_ops import env_flag, load_prompt, write_step_summary
 from json_guard import guard_result, safe_fallback
 
 
+def _positive_int_env(name: str, default: int) -> int:
+    try:
+        value = int(os.environ.get(name, ""))
+    except (TypeError, ValueError):
+        return default
+    return value if value > 0 else default
+
+
 MAX_DIFF_CHARS = int(os.environ.get("AI_PR_REVIEW_MAX_DIFF_CHARS", "70000"))
 MAX_COMMENT_CHARS = 60000
 RECENT_COMMENT_LIMIT = 20
 AI_REVIEW_TRIGGER = "@ai-review"
+PRIMARY_REVIEW_TIMEOUT_SECONDS = _positive_int_env("AI_PR_REVIEW_TIMEOUT_SECONDS", 300)
 PRIMARY_REVIEW_REASONING_EFFORT = (
     os.environ.get("AI_PR_REVIEW_REASONING_EFFORT", "high").strip().lower() or "high"
 )
@@ -263,7 +272,7 @@ def ai_review(messages: list[dict[str, str]]) -> dict[str, Any]:
     }
 
     try:
-        raw = chat_completion_raw(request_body=request_body)
+        raw = chat_completion_raw(request_body=request_body, timeout=PRIMARY_REVIEW_TIMEOUT_SECONDS)
     except AIClientAccessBlockedError as exc:
         return {
             "decision": {
@@ -293,7 +302,7 @@ def ai_review(messages: list[dict[str, str]]) -> dict[str, Any]:
         error_text = str(exc).lower()
         if "http 400" in error_text and "reasoning_effort" in error_text:
             try:
-                raw = chat_completion_raw(messages)
+                raw = chat_completion_raw(messages, timeout=PRIMARY_REVIEW_TIMEOUT_SECONDS)
             except AIClientAccessBlockedError as retry_exc:
                 return {
                     "decision": {
@@ -388,7 +397,7 @@ def review_model_allows_close(
     ]
 
     try:
-        raw = chat_completion_raw(messages, model=review_model)
+        raw = chat_completion_raw(messages, model=review_model, timeout=PRIMARY_REVIEW_TIMEOUT_SECONDS)
         parsed = json.loads(raw)
     except (AIClientError, json.JSONDecodeError, TypeError):
         return False
