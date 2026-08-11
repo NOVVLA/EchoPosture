@@ -1,0 +1,13 @@
+# Optional P5 model environment. Keep separate from the desktop runtime.
+# CVLFace official README documents Python 3.10 with torch 2.1.2/torchvision
+# 0.16.2; install the platform-appropriate CPU or CUDA wheel before use.
+torch==2.1.2
+torchvision==0.16.2
+timm==0.9.12
+numpy<2
+transformers==4.33.0
+huggingface-hub>=0.23,<1
+safetensors>=0.4,<1
+Pillow>=10,<12
+omegaconf>=2.3,<3
+PyYAML>=6,<7

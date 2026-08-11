@@ -12,7 +12,8 @@ import ctypes
 import os
 import sys
 import time
-from typing import Dict, Optional
+from dataclasses import replace
+from typing import Callable, Dict, Optional
 
 import cv2
 
@@ -61,6 +62,8 @@ from vision_test import (
     format_baseline,
     format_value,
 )
+from vision_backend import CompatibilityBackend, PostureFeatureExtractor
+from vision_tracking import TargetManager, TargetUpdate
 
 from i18n import _t, add_listener, remove_listener
 
@@ -74,6 +77,13 @@ STATUS_TEXT: Dict[str, str] = {
     "CRITICAL": "status.CRITICAL",
     "AWAY": "status.AWAY",
     "MULTI_USER": "status.MULTI_USER",
+    "ACQUIRING": "status.ACQUIRING",
+    "TARGET_LOCKED": "status.TARGET_LOCKED",
+    "MULTI_PRESENT": "status.MULTI_PRESENT",
+    "TARGET_OCCLUDED": "status.TARGET_OCCLUDED",
+    "TARGET_REACQUIRING": "status.TARGET_REACQUIRING",
+    "IDENTITY_UNCERTAIN": "status.IDENTITY_UNCERTAIN",
+    "TARGET_AMBIGUOUS": "status.TARGET_AMBIGUOUS",
     "PROFILE_MISMATCH": "status.PROFILE_MISMATCH",
     "UNKNOWN": "status.UNKNOWN",
     "CALIBRATING": "status.CALIBRATING",
@@ -115,6 +125,23 @@ REASON_TEXT: Dict[str, str] = {
     "smoothed_risk_score": "reason.smoothed_risk_score",
     "risk_score": "reason.risk_score",
     "risk_observing": "reason.risk_observing",
+    "target_not_locked": "reason.target_not_locked",
+    "target_observed": "reason.target_observed",
+    "target_occluded": "reason.target_occluded",
+    "target_reacquiring": "reason.target_reacquiring",
+    "target_missing_observing_s": "reason.target_missing_observing_s",
+    "target_missing_candidate_present": "reason.target_missing_candidate_present",
+    "target_missing_s": "reason.target_missing_s",
+    "target_away_s": "reason.target_away_s",
+    "ambiguous_face_body_association": "reason.ambiguous_face_body_association",
+    "target_face_body_association_ambiguous": "reason.target_face_body_association_ambiguous",
+    "target_geometry_association_ambiguous": "reason.target_geometry_association_ambiguous",
+    "reacquired_candidate_needs_identity_confirmation": "reason.reacquired_candidate_needs_identity_confirmation",
+    "reacquired_candidate_profile_mismatch": "reason.reacquired_candidate_profile_mismatch",
+    "other_track_present": "reason.other_track_present",
+    "multi_present_observing": "reason.multi_present_observing",
+    "multi_exit_stabilizing_s": "reason.multi_exit_stabilizing_s",
+    "target_presence_check_disabled": "reason.target_presence_check_disabled",
 }
 
 
@@ -335,14 +362,25 @@ class DebugWindow(QMainWindow):
         width: int,
         height: int,
         intervention_enabled: bool = True,
+        target_panel: bool = True,
+        backend_factory: Optional[Callable[[], object]] = None,
     ) -> None:
         super().__init__()
         self.setWindowTitle("EchoPosture Debug Monitor")
-        self.resize(980, 580)
+        self.resize(1020, 700)
 
-        self.engine = VisionEngine(camera_id=camera_id, width=width, height=height)
+        self.engine = (
+            backend_factory()
+            if backend_factory is not None
+            else CompatibilityBackend(
+                lambda: VisionEngine(camera_id=camera_id, width=width, height=height)
+            )
+        )
+        self.target_manager = TargetManager() if target_panel else None
         self.analyzer = PostureAnalyzer(auto_calibrate=False)
         self.current_sample: Optional[VisionSample] = None
+        self.current_raw_sample: Optional[VisionSample] = None
+        self.current_target_update: Optional[TargetUpdate] = None
         self.normal_fps = fps
         self.high_performance_fps = 72.0
         self.high_precision_enabled = False
@@ -371,6 +409,13 @@ class DebugWindow(QMainWindow):
         self.baseline_label = QLabel("--")
         self.calibration_label = QLabel(_t("debug_calib_init"))
         self.calibration_label.setWordWrap(True)
+
+        self.target_state_label = QLabel("--")
+        self.target_track_label = QLabel("--")
+        self.target_count_label = QLabel("--")
+        self.target_score_label = QLabel("--")
+        self.target_reason_label = QLabel("--")
+        self.target_reason_label.setWordWrap(True)
 
         self.calibrate_button = QPushButton(_t("debug_calibrate_btn"))
         self.calibrate_button.clicked.connect(self.calibrate_current_sample)
@@ -438,11 +483,35 @@ class DebugWindow(QMainWindow):
         metric_grid.addWidget(self.baseline_metric_label, 5, 0)
         metric_grid.addWidget(self.baseline_label, 5, 1)
 
+        target_title = QLabel(_t("debug_target_title"))
+        target_title.setFont(QFont("Microsoft YaHei", 12, QFont.Bold))
+        target_grid = QGridLayout()
+        target_grid.setHorizontalSpacing(10)
+        target_grid.setVerticalSpacing(6)
+        self.target_state_metric_label = QLabel(_t("debug_target_state"))
+        target_grid.addWidget(self.target_state_metric_label, 0, 0)
+        target_grid.addWidget(self.target_state_label, 0, 1)
+        self.target_track_metric_label = QLabel(_t("debug_target_track"))
+        target_grid.addWidget(self.target_track_metric_label, 1, 0)
+        target_grid.addWidget(self.target_track_label, 1, 1)
+        self.target_count_metric_label = QLabel(_t("debug_target_count"))
+        target_grid.addWidget(self.target_count_metric_label, 2, 0)
+        target_grid.addWidget(self.target_count_label, 2, 1)
+        self.target_score_metric_label = QLabel(_t("debug_target_score"))
+        target_grid.addWidget(self.target_score_metric_label, 3, 0)
+        target_grid.addWidget(self.target_score_label, 3, 1)
+        self.target_reason_metric_label = QLabel(_t("debug_target_reason"))
+        target_grid.addWidget(self.target_reason_metric_label, 4, 0, Qt.AlignTop)
+        target_grid.addWidget(self.target_reason_label, 4, 1)
+
         panel_layout.addWidget(title)
         panel_layout.addWidget(self.status_label)
         panel_layout.addWidget(self.reason_label)
         panel_layout.addSpacing(8)
         panel_layout.addLayout(metric_grid)
+        panel_layout.addSpacing(8)
+        panel_layout.addWidget(target_title)
+        panel_layout.addLayout(target_grid)
         panel_layout.addWidget(self.calibration_label)
         panel_layout.addWidget(self.precision_checkbox)
         panel_layout.addWidget(self.distance_input)
@@ -450,6 +519,7 @@ class DebugWindow(QMainWindow):
         panel_layout.addStretch(1)
         panel_layout.addWidget(self.calibrate_button)
         self.title_label = title
+        self.target_title_label = target_title
 
         layout.addWidget(self.video_label, 1)
         layout.addWidget(panel)
@@ -476,7 +546,7 @@ class DebugWindow(QMainWindow):
 
     def update_frame(self) -> None:
         try:
-            frame, sample = self.engine.read_frame_sample()
+            frame, raw_sample = self.engine.read_frame_sample()
         except CameraPermissionError as exc:
             self.timer.stop()
             self._show_camera_permission_warning(str(exc))
@@ -490,10 +560,21 @@ class DebugWindow(QMainWindow):
             QMessageBox.critical(self, "Camera error", str(exc))
             return
 
+        self.current_raw_sample = raw_sample
+        target_update = None
+        if self.target_manager is not None:
+            target_update = self.target_manager.update(
+                self.engine.observations_for_last_sample(),
+                timestamp=raw_sample.timestamp,
+            )
+        sample = self._sample_for_target(raw_sample, target_update)
         self.current_sample = sample
+        self.current_target_update = target_update
         decision = self.analyzer.evaluate(sample)
-        self._show_frame(frame, sample)
+        self._show_frame(frame, raw_sample)
         self._show_metrics(sample, decision)
+        if target_update is not None:
+            self._show_target_metrics(target_update)
         self._update_intervention(decision)
 
     def calibrate_current_sample(self) -> None:
@@ -501,8 +582,24 @@ class DebugWindow(QMainWindow):
             self.calibration_label.setText(_t("debug_calib_no_sample"))
             return
 
+        if self.target_manager is not None and not self.target_manager.lock_calibration_target():
+            self.calibration_label.setText(_t("debug_target_calib_fail"))
+            return
+
+        if self.target_manager is not None and self.current_raw_sample is not None:
+            self.current_target_update = self.target_manager.update(
+                self.engine.observations_for_last_sample(),
+                timestamp=self.current_raw_sample.timestamp,
+            )
+            self.current_sample = self._sample_for_target(
+                self.current_raw_sample,
+                self.current_target_update,
+            )
+
         distance_cm = float(self.distance_input.value()) if self.high_precision_enabled else None
         if not self.analyzer.set_baseline_from_sample(self.current_sample, distance_cm):
+            if self.target_manager is not None:
+                self.target_manager.reset()
             self.calibration_label.setText(_t("debug_calib_fail"))
             return
 
@@ -510,6 +607,8 @@ class DebugWindow(QMainWindow):
         self.baseline_label.setText(format_baseline(self.analyzer.baseline))
         decision = self.analyzer.evaluate(self.current_sample)
         self._show_metrics(self.current_sample, decision)
+        if self.current_target_update is not None:
+            self._show_target_metrics(self.current_target_update)
         self._update_intervention(decision)
 
     def toggle_high_performance(self, enabled: bool) -> None:
@@ -673,6 +772,40 @@ class DebugWindow(QMainWindow):
         self.risk_label.setText(risk_text)
         self.baseline_label.setText(format_baseline(self.analyzer.baseline))
 
+    @staticmethod
+    def _sample_for_target(
+        raw_sample: VisionSample,
+        target_update: Optional[TargetUpdate],
+    ) -> VisionSample:
+        if target_update is None:
+            return raw_sample
+        sample = raw_sample
+        if target_update.target_observation is not None:
+            sample = PostureFeatureExtractor.to_sample(target_update.target_observation)
+        return replace(
+            sample,
+            target_track_id=target_update.target_track_id,
+            target_state=target_update.state,
+            target_observed=target_update.target_observation is not None,
+            person_count=target_update.person_count,
+            target_reason=target_update.reason,
+        )
+
+    def _show_target_metrics(self, update: TargetUpdate) -> None:
+        state = _t(STATUS_TEXT.get(update.state, update.state))
+        self.target_state_label.setText(state)
+        self.target_track_label.setText(
+            str(update.target_track_id) if update.target_track_id is not None else "--"
+        )
+        self.target_count_label.setText(str(update.person_count))
+        target_track = next(
+            (track for track in update.tracks if track.track_id == update.target_track_id),
+            None,
+        )
+        score = target_track.target_match_score if target_track is not None else None
+        self.target_score_label.setText("--" if score is None else f"{score:.2f}")
+        self.target_reason_label.setText(self._human_reason(update.reason))
+
     def _update_intervention(self, decision: PostureDecision) -> None:
         if self.intervention_overlay is None:
             return
@@ -717,6 +850,12 @@ class DebugWindow(QMainWindow):
         self.trunk_metric_label.setText(_t("debug_metric_trunk"))
         self.risk_metric_label.setText(_t("debug_metric_risk"))
         self.baseline_metric_label.setText(_t("debug_metric_baseline"))
+        self.target_title_label.setText(_t("debug_target_title"))
+        self.target_state_metric_label.setText(_t("debug_target_state"))
+        self.target_track_metric_label.setText(_t("debug_target_track"))
+        self.target_count_metric_label.setText(_t("debug_target_count"))
+        self.target_score_metric_label.setText(_t("debug_target_score"))
+        self.target_reason_metric_label.setText(_t("debug_target_reason"))
 
     def _human_reason(self, reason: str) -> str:
         if not reason:
@@ -741,7 +880,16 @@ class DebugWindow(QMainWindow):
     def _status_style(status: str) -> str:
         if status in {"BAD", "CRITICAL"}:
             return "color: #b42318;"
-        if status in {"AWAY", "MULTI_USER", "PROFILE_MISMATCH"}:
+        if status in {
+            "AWAY",
+            "MULTI_USER",
+            "MULTI_PRESENT",
+            "TARGET_OCCLUDED",
+            "TARGET_REACQUIRING",
+            "IDENTITY_UNCERTAIN",
+            "TARGET_AMBIGUOUS",
+            "PROFILE_MISMATCH",
+        }:
             return "color: #6b7280;"
         if status == "WATCH":
             return "color: #b7791f;"
@@ -775,6 +923,19 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Disable gradual dimming and blur intervention overlay.",
     )
+    parser.add_argument(
+        "--target-panel",
+        dest="target_panel",
+        action="store_true",
+        default=True,
+        help="Show live P3/P4 target tracking details (default).",
+    )
+    parser.add_argument(
+        "--no-target-panel",
+        dest="target_panel",
+        action="store_false",
+        help="Use the legacy single-sample debug path for comparison.",
+    )
     return parser.parse_args()
 
 
@@ -791,6 +952,7 @@ def main() -> int:
             args.width,
             args.height,
             intervention_enabled=not args.self_test and not args.disable_intervention,
+            target_panel=args.target_panel,
         )
     except CameraPermissionError as exc:
         QMessageBox.warning(
@@ -811,6 +973,11 @@ def main() -> int:
         print(f"shoulder={window.shoulder_label.text()}")
         print(f"baseline={window.baseline_label.text()}")
         print(f"calibration={window.calibration_label.text()}")
+        print(f"target_state={window.target_state_label.text()}")
+        print(f"target_track={window.target_track_label.text()}")
+        print(f"target_count={window.target_count_label.text()}")
+        print(f"target_score={window.target_score_label.text()}")
+        print(f"target_reason={window.target_reason_label.text()}")
         print(f"high_precision={window.precision_checkbox.isChecked()}")
         print(f"high_performance={window.performance_checkbox.isChecked()}")
         window.close()

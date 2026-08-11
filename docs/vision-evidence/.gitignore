@@ -1,0 +1,27 @@
+# Consent-controlled evidence stays outside Git. Keep only metadata and aggregate metrics here.
+*.mp4
+*.avi
+*.mov
+*.mkv
+*.webm
+*.jpg
+*.jpeg
+*.png
+*.webp
+*.npy
+*.pt
+*.pth
+*.onnx
+*.engine
+*.safetensors
+*
+!README.md
+!recording_manifest.csv
+!deletion_log.csv
+!metrics-baseline.md
+!license-audit.md
+!metrics*.csv
+!metrics*.json
+!benchmark*.md
+!benchmark*.jsonl
+!.gitignore

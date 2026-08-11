@@ -664,3 +664,184 @@
 - Current state: P1 remains in review in PR #22; P2 is the next executable priority after P1 approval and evidence completion. No P2-P8 implementation has started.
 - Verification: `git diff --check` passed; no source or runtime behavior changed.
 - Gaps: the register intentionally preserves the known real-camera, packaged self-test, licensing, and release-validation gates.
+
+## 2026-08-10 - Phase 2 Evidence Assets and Architecture Decision
+
+- Source: user instruction to begin P2 after the P1 implementation work.
+- Git: local branch `codex/pr2-phase1-calibration-safety`; PR #22 was checked through the GitHub API and remains open and unmerged (`merged: false`, `state: open`).
+- Scope:
+  - Added `docs/decisions/ADR-0001-vision-modes-and-fallback.md` to freeze the three mode responsibilities, fallback order, safety semantics, and evidence gates.
+  - Added `docs/vision-evidence/README.md`, empty `recording_manifest.csv`, and empty `deletion_log.csv` with consent, retention, deletion, and no-media-in-Git rules.
+  - Added `docs/vision-evidence/metrics-baseline.md` with timing boundaries, P50/P95 metrics, scenario matrix, and initial performance gates.
+  - Added `docs/vision-evidence/license-audit.md` with source-linked, field-separated audits for Ultralytics YOLO26 candidates, CVLFace AdaFace ViT, AdaFace IR101, and CAFace.
+  - Linked the new evidence documents from `docs/README.md` and marked P2 `IN_PROGRESS` in the plan register.
+- Verification:
+  - Playwright extension session opened the official Ultralytics license page, CVLFace model/repository, AdaFace repository, and CAFace repository; observed source text and repository license metadata.
+  - GitHub API returned repository license metadata: Ultralytics `AGPL-3.0`; CVLFace, AdaFace, and CAFace `MIT`.
+  - No candidate weights were downloaded; exact weight license, revision, SHA-256, and training-data redistribution terms remain explicitly unverified.
+- Gaps: no consented recordings or benchmark values exist yet; P1 remote merge, real-camera evidence, and packaged self-test remain open. P2 does not authorize model integration or P3-P8 implementation.
+- Conclusion: P2 evidence framework and architecture decision are in progress; release-facing license approval is blocked until exact artifacts and data terms are audited.
+
+## 2026-08-10 - Phase 3/4 Unified Backend and Target State Machine
+
+- Source: user instruction to implement P3 and P4 together after the P2 evidence documents.
+- Git: local branch `codex/pr2-phase1-calibration-safety`; no commit or remote push was requested in this turn.
+- Scope:
+  - Added `vision_backend.py` with `PersonObservation`, `Keypoint`, `VisionCapabilities`, `VisionBackend`, and `CompatibilityBackend`.
+  - Added `vision_tracking.py` with deterministic bounding-box/velocity association, track lifecycle, calibration target lock, occlusion, away, reacquisition, identity-uncertain, multi-present, and target-ambiguous states.
+  - Wired `TrayMonitor` and `VisionWorker` through the compatibility backend and target manager while preserving the existing synchronous packaged self-test path.
+  - Extended immutable samples/snapshots with target state and track metadata; `MULTI_PRESENT` continues posture scoring when the target observation remains separate, while ambiguous face/body association is safety-suppressed.
+  - Added target-specific `PostureFeatures` extraction so the analyzer consumes the locked target observation instead of an arbitrary frame-level sample from a multi-person backend.
+  - Added localized labels for new target states and `test_vision_tracking.py` covering backend conversion, crossing, multi-person continuation, occlusion/reacquisition, no silent promotion, ambiguity, analyzer gating, and worker integration.
+  - Added `vision_replay.py`, `test_vision_replay.py`, and the metrics-only `benchmark-synthetic-p3-p4.jsonl` replay matrix covering multi-person entry/exit, target departure/return, crossing, and away transitions.
+  - Updated `docs/ARCHITECTURE.md` and the vision plan checklist/status for EP-VISION-010/011 and EP-TRACK-001 through EP-TRACK-005.
+- Verification:
+  - `runtime\\python311\\python.exe -m py_compile vision_backend.py vision_tracking.py vision_test.py vision_worker.py tray_app.py debug_ui.py i18n.py test_vision_tracking.py`: passed.
+  - `ruff check vision_backend.py vision_tracking.py vision_test.py vision_worker.py tray_app.py debug_ui.py i18n.py test_vision_tracking.py`: passed.
+  - `runtime\\python311\\python.exe test_vision_tracking.py`: passed; all P3/P4 deterministic tests.
+  - `runtime\\python311\\python.exe vision_replay.py docs\\vision-evidence\\benchmark-synthetic-p3-p4.jsonl`: passed; 18 frames.
+  - `runtime\\python311\\python.exe test_vision_replay.py`: passed.
+  - `runtime\\python311\\python.exe test_feature_toggles.py`: passed.
+  - `runtime\\python311\\python.exe test_vision_worker.py`: passed.
+  - `runtime\\python311\\python.exe test_startup_guards.py`: passed; 8 tests.
+  - `runtime\\python311\\python.exe test_tray_flyout.py`: passed.
+  - `git diff --check`: passed; only the repository's existing LF/CRLF conversion warnings were reported.
+- Gaps: no real-camera run, consented recording replay, packaged Windows self-test, or multi-person pose backend was executed in this environment. Compatibility mode intentionally emits `TARGET_AMBIGUOUS` when its single pose cannot be paired with one of multiple faces; full `MULTI_PRESENT` continuation requires a backend that emits separate person observations.
+- Conclusion: P3/P4 implementation and deterministic integration are complete locally; hardware/replay/package evidence remains required before changing their priority status to release-complete.
+
+## 2026-08-10 - Phase 3/4 Completion Audit Hardening
+
+- Scope:
+  - Added `PostureFeatures` and `PostureFeatureExtractor`; the worker now scores the locked target's observation, not a frame-level bystander sample.
+  - Limited ambiguous-face suppression to ambiguous target association; a clear target remains scoreable while an ambiguous bystander is tracked separately.
+  - Added one-second multi-person exit stabilization, timestamp-scaled velocity prediction, non-target pruning coverage, numeric timestamp support, and presence/identity toggle coverage.
+  - Added the metrics-only JSONL replay CLI and synthetic 18-frame matrix; no camera frames or identity data are stored.
+- Verification:
+  - `runtime\\python311\\python.exe vision_replay.py docs\\vision-evidence\\benchmark-synthetic-p3-p4.jsonl`: passed; 18 expected state frames.
+  - `runtime\\python311\\python.exe test_vision_tracking.py`: passed; target-specific scoring, ambiguous bystander, exit stabilization, numeric timestamp, and all prior P3/P4 cases.
+  - Ruff and startup guard checks passed after the hardening changes.
+- Remaining external evidence is unchanged: real camera, consented recording replay, and packaged Windows self-test are not run in this environment.
+
+## 2026-08-10 - P4 Cross-frame Association Hardening
+
+- Source: deterministic regression exposed a silent target swap when two people crossed and the backend supplied no stable detection IDs.
+- Scope:
+  - `vision_tracking.py`: replaced observation-order greedy association with global one-to-one frame matching; motion prediction now carries more weight than stale-frame IoU, exact detection IDs remain authoritative, and near-tied geometry enters `TARGET_AMBIGUOUS`.
+  - `test_vision_tracking.py`: added regression coverage for the no-ID crossing case and a symmetric geometry tie that must not silently switch the locked target.
+- Verification:
+  - `runtime\\python311\\python.exe test_vision_tracking.py`: passed; all tracking, worker integration, target-specific scoring, crossing, occlusion, and ambiguity tests.
+  - `runtime\\python311\\python.exe vision_replay.py docs\\vision-evidence\\benchmark-synthetic-p3-p4.jsonl`: passed; 18 frames.
+  - `runtime\\python311\\python.exe test_vision_replay.py`: passed.
+  - `runtime\\python311\\python.exe test_feature_toggles.py`: passed; `ALL TESTS PASSED`.
+  - `runtime\\python311\\python.exe test_vision_worker.py`: passed; `ALL TESTS PASSED`.
+  - `runtime\\python311\\python.exe test_startup_guards.py`: passed; 8 tests.
+  - `runtime\\python311\\python.exe test_tray_flyout.py`: passed; `ALL TESTS PASSED`.
+  - `ruff check vision_backend.py vision_tracking.py vision_test.py vision_worker.py tray_app.py debug_ui.py i18n.py test_vision_tracking.py test_vision_replay.py vision_replay.py`: passed.
+  - `runtime\\python311\\python.exe -m py_compile vision_backend.py vision_tracking.py vision_test.py vision_worker.py tray_app.py debug_ui.py i18n.py test_vision_tracking.py test_vision_replay.py vision_replay.py`: passed.
+  - `git diff --check`: passed; only existing LF/CRLF conversion warnings were reported.
+- Gaps: P2 evidence assets still have no consented recordings, measured camera baselines, or exact candidate-weight license/SHA-256 audit; real-camera, packaged self-test, and remote P1 merge remain unverified. P3/P4 therefore remain `IN_PROGRESS` in the plan register.
+- Conclusion: deterministic association safety is hardened locally; this does not close the external P2/P4 evidence gates.
+
+## 2026-08-10 - P3/P4 Local Implementation Completion Audit
+
+- Source: user instruction to proceed with P3 and P4 together after the P2 architecture/evidence work.
+- Scope:
+  - P3: completed the model-independent observation/capability contract, compatibility MediaPipe adapter, target-specific posture feature extraction, and Worker integration while preserving the legacy sample path.
+  - P4: completed target lock, global one-to-one association, velocity prediction, track lifecycle, multi-person continuation, occlusion/away/reacquisition states, face-body ambiguity handling, and no-silent-promotion safeguards.
+  - Hardened compatibility association so a missing face anchor is ambiguous, and hardened calibration completeness so normalized target samples still reject `person_count != 1`, `MULTI_PRESENT`, and `TARGET_AMBIGUOUS` frames.
+  - Extended `benchmark-synthetic-p3-p4.jsonl` to 24 metrics-only frames covering stable-ID crossing, no-ID crossing, geometry ties, multi-person entry/exit, target departure/return, and away transitions.
+- Verification:
+  - `runtime\\python311\\python.exe test_vision_tracking.py`: passed; all P3/P4 state, association, target-specific scoring, and Worker integration tests.
+  - `runtime\\python311\\python.exe vision_replay.py docs\\vision-evidence\\benchmark-synthetic-p3-p4.jsonl`: passed; 24 frames.
+  - `runtime\\python311\\python.exe test_vision_replay.py`: passed; `ALL TESTS PASSED`.
+  - `runtime\\python311\\python.exe test_feature_toggles.py`: passed; `ALL TESTS PASSED`.
+  - `runtime\\python311\\python.exe test_vision_worker.py`: passed; `ALL TESTS PASSED`, including target-manager presence calibration reset.
+  - `runtime\\python311\\python.exe test_startup_guards.py`: passed; 8 tests.
+  - `runtime\\python311\\python.exe test_tray_flyout.py`: passed; `ALL TESTS PASSED`.
+  - `ruff check vision_backend.py vision_tracking.py vision_test.py vision_worker.py tray_app.py debug_ui.py i18n.py test_vision_tracking.py test_vision_worker.py test_vision_replay.py vision_replay.py`: passed.
+  - `runtime\\python311\\python.exe -m py_compile vision_backend.py vision_tracking.py vision_test.py vision_worker.py tray_app.py debug_ui.py i18n.py test_vision_tracking.py test_vision_worker.py test_vision_replay.py vision_replay.py`: passed.
+  - `git diff --check`: passed; only existing LF/CRLF conversion warnings were reported.
+- Remaining gates: real camera and consented recording replay, packaged Windows self-test, P1 remote merge, measured P2 baselines, and exact candidate-weight/data-license evidence remain unverified. The plan register therefore keeps P2/P3/P4 at `IN_PROGRESS` rather than release-complete.
+- Conclusion: P3/P4 implementation and deterministic evidence are complete locally; external validation is still required before release sign-off.
+
+## 2026-08-10 - Debug UI Target Panel Verification
+
+- Source: user request to make the existing CMD test panel show the latest P2/P3/P4 changes in a directly verifiable page.
+- Scope:
+  - `debug_ui.py`: added an injectable backend factory for deterministic panel tests; the production path remains `CompatibilityBackend + TargetManager`.
+  - `test_debug_ui.py`: added an offscreen, camera-free test using a fixed frame plus the real target manager and posture analyzer. It verifies `ACQUIRING`, calibration, `TARGET_LOCKED`, track `1`, and people count `1`.
+  - `run_debug_ui.cmd`: keeps `--target-panel` enabled and forwards caller arguments such as `--camera 1`.
+  - `docs/README.md` and `docs/TROUBLESHOOTING.md`: documented live-panel and camera-free verification commands, expected states, and evidence limits.
+- Verification:
+  - `runtime\python311\python.exe -m py_compile debug_ui.py vision_backend.py test_debug_ui.py`: passed.
+  - `ruff check debug_ui.py vision_backend.py i18n.py test_debug_ui.py`: passed.
+  - `runtime\python311\python.exe test_debug_ui.py`: passed; `ACQUIRING` -> `TARGET_LOCKED`, track `1`, people `1`.
+  - `runtime\python311\python.exe test_vision_tracking.py`: passed; all tests.
+  - `runtime\python311\python.exe test_vision_worker.py`: passed; all tests.
+  - `runtime\python311\python.exe test_startup_guards.py`: passed; 8 tests.
+  - `runtime\python311\python.exe vision_replay.py docs\vision-evidence\benchmark-synthetic-p3-p4.jsonl`: passed; 24 frames.
+- Evidence limits: this validates panel wiring and state presentation without hardware. Real camera landmark quality, display behavior, and packaged self-test still need user-side execution.
+
+## 2026-08-10 - P5 Model-independent identity verifier foundation
+
+- Scope:
+  - Added `identity_verifier.py` with the `IdentityVerifier` contract, three-state results (`IDENTITY_CONFIRMED`, `IDENTITY_UNCERTAIN`, `IDENTITY_MISMATCH`), quality scoring, normalized landmark alignment, configurable 8-20 frame aggregation, and debounced decisions.
+  - Added asynchronous submit/request APIs with reacquisition and heartbeat trigger gates.
+  - Kept raw frames, face crops, and temporary bystander vectors outside the data model; `clear_template()` and `close()` release the in-memory template, score window, and trigger state.
+  - Added `test_identity_verifier.py` covering quality rejection, enrollment, aggregation, mismatch safety, async trigger throttling, and cleanup.
+- Verification:
+  - `runtime\\python311\\python.exe test_identity_verifier.py`: passed; `ALL TESTS PASSED`.
+  - `ruff check identity_verifier.py test_identity_verifier.py vision_backend.py vision_worker.py`: passed.
+  - `runtime\\python311\\python.exe -m py_compile identity_verifier.py test_identity_verifier.py vision_backend.py vision_worker.py`: passed.
+  - `runtime\\python311\\python.exe test_vision_worker.py`: passed; `ALL TESTS PASSED`.
+  - `runtime\\python311\\python.exe test_vision_tracking.py`: passed; `ALL TESTS PASSED`.
+- Remaining gates:
+  - CVLFace AdaFace ViT-Base KP-RPE and AdaFace IR101 adapters are not integrated because exact weights, SHA-256, training-data terms, and distribution permissions remain blocked in `docs/vision-evidence/license-audit.md`.
+  - No real-camera, consented-recording, false-accept/false-reject, or packaged privacy audit has been run.
+- Conclusion: P5 model-independent foundation is implemented locally; P5 is not release-complete.
+
+## 2026-08-10 - P5 pinned CVLFace adapters and offline cache preparation
+
+- Scope:
+  - Added `identity_model_adapters.py` with pinned CVLFace specs for ViT-Base KP-RPE/WebFace4M revision `6530d73fb0af4d1d8287f31d559780c648ebd22a` and IR101/WebFace4M revision `f2b38d9e24bfe301490d8dd081d8924b102333dd`.
+  - Added `requirements-p5-models.txt` as a separate optional environment definition (`torch`, `torchvision`, `transformers`, `huggingface-hub`, `safetensors`, `Pillow`); the desktop runtime was not modified.
+  - Added `tools/download_p5_models.ps1`, which downloads only the pinned files and writes a SHA-256 manifest outside Git.
+- Official sources checked:
+  - CVLFace model card quick start: `https://huggingface.co/minchul/cvlface_adaface_vit_base_kprpe_webface4m`.
+  - CVLFace model download guidance: `https://github.com/mk-minchul/CVLface/blob/main/README_MODELS.md`.
+- Verification:
+  - `ruff check identity_model_adapters.py test_identity_model_adapters.py identity_verifier.py test_identity_verifier.py vision_backend.py vision_worker.py`: passed.
+  - `runtime\\python311\\python.exe -m py_compile identity_model_adapters.py test_identity_model_adapters.py identity_verifier.py test_identity_verifier.py vision_backend.py vision_worker.py`: passed.
+  - `runtime\\python311\\python.exe test_identity_model_adapters.py`: passed; `ALL TESTS PASSED`.
+  - Identity, Worker, and target-tracking tests all passed.
+- Download status:
+  - PowerShell direct download failed with `无法连接到远程服务器`.
+  - Edge downloaded ViT `model.safetensors` (460344344 bytes, SHA-256 `3c6d37ea874c2f38ffc9a7f0e9247efc994c3fb5c12d044759ac294e19d127f7`) and IR101 `model.safetensors` (260980552 bytes, SHA-256 `21adb6220e8799a0e658f16946df9649c7269f432fe9810a7b9c4ad1241080a8`) into `D:\\Download\\EchoPosture-P5\\models`.
+  - Edge downloaded ViT `pretrained_model/model.pt` (460381841 bytes, SHA-256 `b8d5adde0a00f6482b5e866b6e37eeaa947302a40d9af31c211af72f34d38afb`) and IR101 `pretrained_model/model.pt` (261111273 bytes, SHA-256 `7a3341c3afc507fd6f50345638d2f3ef2f0e931d5b4f5aba60e15709853fcf5e`).
+  - Official CVLFace custom code, config, wrapper, and model YAML files were hydrated from the GitHub repository into both caches; `missing_model_files()` now returns empty tuples for both specs.
+- Conclusion: both pinned model caches are locally complete for the adapter's core file gate; Torch/Transformers installation and actual model inference remain unverified, and no weight is licensed for distribution.
+
+## 2026-08-10 - P5 isolated model environment
+
+- Created `D:\\Download\\EchoPosture-P5\\venv` with `uv` and Python 3.11.9.
+- Installed the optional model stack from `requirements-p5-models.txt`: Torch 2.1.2, torchvision 0.16.2, Transformers 4.33.0, huggingface-hub, safetensors, Pillow, OmegaConf, PyYAML, and their dependencies.
+- The first local ViT load reached Transformers custom-code loading and exposed two issues: NumPy 2.x is incompatible with the Torch 2.1.2 wheel, and the local model directory must be temporarily added to `sys.path`. The adapter now handles the latter and the requirements pin `numpy<2` for the former.
+- The follow-up NumPy install and smoke command were blocked by the execution approval service overload; no successful model inference result is claimed.
+- `tools\\hydrate_p5_model_code.ps1` now pins CVLFace GitHub commit `308142aa50adf2e187711354f7524635d3414f1e`; rerunning that pinned refresh was also blocked by the same transient approval-service overload.
+- Final `ruff check identity_model_adapters.py test_identity_model_adapters.py` and `git diff --check`: passed (only existing LF/CRLF conversion warnings remain).
+
+## 2026-08-10 - P5 repository-bundled weights and startup wiring
+
+- Copied the complete pinned ViT-KP-RPE and IR101 CVLFace model directories,
+  including custom model code and configuration, into `models/p5/`.
+- Added `.gitattributes` rules so `.safetensors` and `.pt` files use Git LFS.
+- Changed `identity_model_adapters.default_model_root()` to prefer the
+  repository-bundled `models/p5/` path; the D-drive cache remains a fallback.
+- Updated `TrayMonitor` to load the bundled ViT adapter during normal startup,
+  create an `IdentityVerifier`, inject it into `VisionWorker`, and release both
+  verifier and model on shutdown. Missing dependencies or a damaged cache
+  disable only the identity gate and leave posture monitoring running.
+- No-camera inference smoke test and license/distribution approval remain open.
+- The smoke test reached the bundled CVLFace custom code and exposed a missing
+  `timm` dependency; `requirements-p5-models.txt` now pins `timm==0.9.12`, but
+  installation timed out before a second load attempt.

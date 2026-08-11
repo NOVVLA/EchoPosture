@@ -1,0 +1,2 @@
+models/p5/**/*.safetensors filter=lfs diff=lfs merge=lfs -text
+models/p5/**/*.pt filter=lfs diff=lfs merge=lfs -text

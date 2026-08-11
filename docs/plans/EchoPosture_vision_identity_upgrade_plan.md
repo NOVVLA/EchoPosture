@@ -94,6 +94,8 @@ class PersonObservation:
     face_bbox_xyxy: tuple[float, float, float, float] | None
     face_landmarks: tuple[Point, ...] | None
     face_quality: float | None
+    association_ambiguous: bool
+    posture_features: PostureFeatures | None
 
 @dataclass(frozen=True)
 class TrackedPerson:
@@ -104,6 +106,8 @@ class TrackedPerson:
     continuity_score: float
     target_match_score: float | None
 ```
+
+`PostureFeatures` 是后端到旧姿态分析器的过渡结构，包含单个观测的脸部/肩部/躯干指标。工作线程必须从锁定目标的观测重新提取这些指标，不得把包含旁人的整帧样本直接交给 `PostureAnalyzer`。
 
 建议同时定义：
 
@@ -379,26 +383,26 @@ SFace 保留为许可清晰、部署轻便的应急回退，不作为追求最�
 
 ### Phase 0：决策记录与测试资产
 
-- [ ] **EP-VISION-001**：新增架构决策记录，冻结三档模式名称、职责和回退顺序。
+- [x] **EP-VISION-001**：新增架构决策记录，冻结三档模式名称、职责和回退顺序（原型规划已冻结，发行采用仍需证据门槛）。
 - [ ] **EP-VISION-002**：建立获得参与者同意的本地测试录像集，覆盖单人、多人、遮挡、交叉和换人。
-- [ ] **EP-VISION-003**：建立统一指标：FPS、P50/P95 延迟、目标 ID 切换数、重新捕获时间、误接受率和误拒绝率。
+- [x] **EP-VISION-003**：建立统一指标协议：FPS、P50/P95 延迟、目标 ID 切换数、重新捕获时间、误接受率和误拒绝率（数值待采集）。
 - [ ] **EP-LICENSE-001**：审计 YOLO26 代码/权重及 GPLv3/AGPLv3 组合发行要求。
 - [ ] **EP-LICENSE-002**：审计 CVLFace、AdaFace、CAFace 每个候选权重及训练数据限制。
 
 ### Phase 1：后端抽象与当前逻辑加固
 
-- [ ] **EP-VISION-010**：实现 `VisionBackend`、`VisionCapabilities` 和统一 `PersonObservation`。
-- [ ] **EP-VISION-011**：将当前 MediaPipe 实现封装为 `CompatibilityBackend`，行为先保持不变。
+- [x] **EP-VISION-010**：实现 `VisionBackend`、`VisionCapabilities` 和统一 `PersonObservation`。
+- [x] **EP-VISION-011**：将当前 MediaPipe 实现封装为 `CompatibilityBackend`，行为先保持不变。
 - [ ] **EP-VISION-012**：修复校准多人污染：校准必须要求唯一、稳定且指标完整的目标。
 - [ ] **EP-VISION-013**：为现有多人、离开和换人逻辑补充确定性单元测试。
 
 ### Phase 2：目标管理器
 
-- [ ] **EP-TRACK-001**：实现轨迹关联、速度预测、人体框重叠和轨迹生命周期。
-- [ ] **EP-TRACK-002**：实现 `TargetManager` 和主用户锁定。
-- [ ] **EP-TRACK-003**：实现遮挡、离开、重新捕获和多人状态机。
-- [ ] **EP-TRACK-004**：兼容模式增加脸-身体空间关联；不明确时输出 `TARGET_AMBIGUOUS`。
-- [ ] **EP-TRACK-005**：保证第二人进入时原用户监测继续，不再把 `MULTI_PRESENT` 等同于全面抑制。
+- [x] **EP-TRACK-001**：实现轨迹关联、速度预测、人体框重叠和轨迹生命周期。
+- [x] **EP-TRACK-002**：实现 `TargetManager` 和主用户锁定。
+- [x] **EP-TRACK-003**：实现遮挡、离开、重新捕获和多人状态机。
+- [x] **EP-TRACK-004**：兼容模式增加脸-身体空间关联；不明确时输出 `TARGET_AMBIGUOUS`。
+- [x] **EP-TRACK-005**：保证第二人进入时原用户监测继续，不再把 `MULTI_PRESENT` 等同于全面抑制。
 
 ### Phase 3：高精度本地人脸验证
 
@@ -447,20 +451,22 @@ SFace 保留为许可清晰、部署轻便的应急回退，不作为追求最�
 
 本节是对上面任务清单的执行顺序补充，不替代各 Phase 的详细验收条目。每个优先级应使用独立、可审查的提交或 PR；完成不得只以“代码存在”为依据，必须同时记录测试、运行证据和未验证项。
 
-状态定义：`REVIEW` 表示实现已提交但仍等待审核或合并；`NEXT` 表示前置条件满足后优先启动；`BLOCKED` 表示存在明确的外部依赖；`LATER` 表示依赖前序架构或证据。
+状态定义：`REVIEW` 表示实现已提交但仍等待审核或合并；`NEXT` 表示前置条件满足后优先启动；`IN_PROGRESS` 表示已按交接授权开始，但仍有证据门槛未关闭；`BLOCKED` 表示存在明确的外部依赖；`LATER` 表示依赖前序架构或证据。
 
 | 优先级 | 状态 | 交接范围 | 关联任务 | 启动条件 | 完成证据 |
 | --- | --- | --- | --- | --- | --- |
 | P1：校准与多人安全基线 | `REVIEW` | 单人完整同帧校准、多人污染重置、多人状态防抖、失败原因诊断 | `EP-VISION-012`、`EP-VISION-013` | PR #22 `97c7b86` 已提交；等待人工批准；真实摄像头和打包自检仍需补证 | PR 合并、确定性测试、真实摄像头结果、Windows 自检结果 |
-| P2：证据资产与架构决策 | `NEXT` | 冻结模式/回退顺序，建立获同意的场景录像集和统一指标，完成候选模型许可证审计 | `EP-VISION-001`、`EP-VISION-002`、`EP-VISION-003`、`EP-LICENSE-001`、`EP-LICENSE-002` | P1 通过审核；录像参与者同意和测试保存规则明确 | ADR、数据清单与删除记录、指标基线、代码/权重/数据许可证表 |
-| P3：统一观测与兼容后端 | `LATER` | 定义统一人物观测/能力接口，并封装现有 MediaPipe 为兼容后端 | `EP-VISION-010`、`EP-VISION-011` | P2 的接口决策和基线指标完成 | 接口契约、兼容后端回归、旧功能行为对照 |
-| P4：目标管理与当前模型状态机 | `LATER` | 轨迹关联、主用户锁定、遮挡/离开/重捕获、脸身关联和目标歧义安全状态 | `EP-TRACK-001` 至 `EP-TRACK-005` | P3 可输出统一人物观测；先使用当前 MediaPipe 验证状态机 | 录制回放矩阵、状态转移测试、无静默换人证据 |
-| P5：本地人脸验证 | `LATER` | 三态异步验证、质量过滤、多帧聚合、事件触发和内存数据清理 | `EP-ID-001` 至 `EP-ID-007` | P2 许可证通过；P4 已稳定提供目标候选；隐私边界确认 | 同一测试集 A/B、误接受/误拒绝数据、线程/隐私审计 |
+| P2：证据资产与架构决策 | `IN_PROGRESS` | 冻结模式/回退顺序，建立获同意的场景录像集和统一指标，完成候选模型许可证审计 | `EP-VISION-001`、`EP-VISION-002`、`EP-VISION-003`、`EP-LICENSE-001`、`EP-LICENSE-002` | P1 通过审核；录像参与者同意和测试保存规则明确 | ADR、数据清单与删除记录、指标基线、代码/权重/数据许可证表 |
+| P3：统一观测与兼容后端 | `IN_PROGRESS` | 定义统一人物观测/能力接口，并封装现有 MediaPipe 为兼容后端 | `EP-VISION-010`、`EP-VISION-011` | P2 的接口决策和基线指标完成 | 接口契约、兼容后端回归、旧功能行为对照 |
+| P4：目标管理与当前模型状态机 | `IN_PROGRESS` | 轨迹关联、主用户锁定、遮挡/离开/重捕获、脸身关联和目标歧义安全状态 | `EP-TRACK-001` 至 `EP-TRACK-005` | P3 可输出统一人物观测；先使用当前 MediaPipe 验证状态机 | 录制回放矩阵、状态转移测试、无静默换人证据 |
+| P5：本地人脸验证 | `IN_PROGRESS` | 三态异步验证、质量过滤、多帧聚合、事件触发和内存数据清理 | `EP-ID-001` 至 `EP-ID-007` | P2 许可证通过；P4 已稳定提供目标候选；隐私边界确认 | 同一测试集 A/B、误接受/误拒绝数据、线程/隐私审计 |
 | P6：标准模式 | `LATER` | YOLO26n-pose ONNX 原型、统一输出转换、目标脸裁剪和兼容回退 | `EP-STANDARD-001` 至 `EP-STANDARD-006` | P3/P4 契约稳定；模型和权重许可通过；P5 接口可替换 | PyTorch/ONNX 一致性、CPU 性能 P50/P95、回退测试 |
 | P7：专业模式 Beta | `LATER` | YOLO26l/x TensorRT、双模型共识、专业诊断和性能回退 | `EP-PRO-001` 至 `EP-PRO-005` | P6 标准模式可用；目标硬件和许可证已确认 | GPU 性能报告、Beta 标识、OOM/初始化失败回退证据 |
 | P8：设置、隐私、发布验收 | `LATER` | 模式设置、身份模板控制、隐私/致谢文档、跨硬件 QA 和发行扫描 | `EP-UI-001` 至 `EP-UI-005`、`EP-QA-001` 至 `EP-QA-005` | P5–P7 完成；所有高风险问题关闭或有明确阻断记录 | UI 流程测试、隐私删除验证、依赖清单、发行包扫描和最终验收记录 |
 
-移交规则：当前只能继续审核或补证 P1；未完成 P1 前不得开始 P2 的模型集成或进入 P3–P8。每次交接必须在 `DEVELOPMENT_LOG.md` 记录提交号、验证命令、远端检查状态和剩余风险；`REVIEW`、`BLOCKED` 或未验证项不得被写成“已完成”。
+截至 2026-08-10，P3/P4 的本地实现任务和确定性证据已完成：统一观测契约、兼容后端、目标状态机、无稳定 ID 交叉回放、歧义保护和 Worker 校准门控均有代码与测试覆盖。P5 已获授权进入模型无关基础实现，但模型权重集成、许可、真实录像和性能证据仍保持未完成状态。
+
+移交规则：P1/P2 的模型和硬件证据门槛仍不得被跳过；本次 P5 仅推进不依赖具体权重的接口、质量、聚合、触发和内存清理基础。具体 CVLFace/AdaFace 集成和发行验收仍须在许可证与测试资产补齐后进行。每次交接必须在 `DEVELOPMENT_LOG.md` 记录提交号、验证命令、远端检查状态和剩余风险；`REVIEW`、`BLOCKED` 或未验证项不得被写成“已完成”。
 
 ## 13. 核心验收场景
 

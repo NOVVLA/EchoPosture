@@ -70,12 +70,21 @@ class VisionSample:
     face_nose_point: Optional[Point] = None
     head_turn_ratio: Optional[float] = None
     torso_height_px: Optional[float] = None
+    target_track_id: Optional[int] = None
+    target_state: Optional[str] = None
+    target_observed: Optional[bool] = None
+    person_count: Optional[int] = None
+    target_reason: Optional[str] = None
 
 
 def calibration_sample_missing_fields(sample: VisionSample) -> tuple[str, ...]:
     """Return completeness conditions missing from one calibration sample."""
     missing: list[str] = []
-    if sample.face_count != 1:
+    if (
+        sample.face_count != 1
+        or (sample.person_count is not None and sample.person_count != 1)
+        or sample.target_state in {"MULTI_PRESENT", "TARGET_AMBIGUOUS"}
+    ):
         missing.append("single_person")
     if not sample.face_detected:
         missing.append("face_detected")
@@ -108,6 +117,8 @@ class PostureDecision:
     calibrated: bool
     risk_score: float = 0.0
     sustained_seconds: float = 0.0
+    environment_state: Optional[str] = None
+    target_track_id: Optional[int] = None
 
 
 @dataclass(frozen=True)
@@ -487,6 +498,9 @@ class HighPrecisionPostureAnalyzer(PostureAnalyzer):
         self,
         sample: VisionSample,
     ) -> Optional[PostureDecision]:
+        if sample.target_state is not None:
+            return self._tracked_presence_decision(sample)
+
         # 离开/换人的内部状态始终跟踪（两项功能互相独立），
         # presence_check_enabled 只决定是否产出 AWAY/MULTI_USER 抑制决策。
         if sample.face_count > 1:
@@ -542,6 +556,64 @@ class HighPrecisionPostureAnalyzer(PostureAnalyzer):
                 self._reset_risk_state()
                 return profile_decision
             self._requires_profile_check = False
+        return None
+
+    def _tracked_presence_decision(self, sample: VisionSample) -> Optional[PostureDecision]:
+        state = sample.target_state
+        if state in {"TARGET_LOCKED", "MULTI_PRESENT"} and sample.target_observed:
+            self._away_started_at = None
+            self._multi_started_at = None
+            self._requires_profile_check = False
+            return None
+        if (
+            not self.presence_check_enabled
+            and state in {"ACQUIRING", "TARGET_OCCLUDED", "TARGET_REACQUIRING", "AWAY"}
+        ):
+            self._reset_risk_state()
+            return PostureDecision("UNKNOWN", "target_presence_check_disabled", True)
+        if state == "TARGET_AMBIGUOUS":
+            self._reset_risk_state()
+            return PostureDecision(
+                "TARGET_AMBIGUOUS",
+                sample.target_reason or "ambiguous_face_body_association",
+                True,
+            )
+        if state == "TARGET_OCCLUDED":
+            self._reset_risk_state()
+            return PostureDecision("TARGET_OCCLUDED", sample.target_reason or "target_occluded", True)
+        if state == "TARGET_REACQUIRING":
+            self._reset_risk_state()
+            return PostureDecision(
+                "TARGET_REACQUIRING",
+                sample.target_reason or "target_reacquiring",
+                True,
+            )
+        if state == "IDENTITY_UNCERTAIN":
+            if not self.identity_check_enabled:
+                self._requires_profile_check = False
+                return None
+            self._requires_profile_check = True
+            profile_decision = self._profile_check_decision(sample)
+            self._reset_risk_state()
+            if profile_decision is None:
+                self._requires_profile_check = False
+                return None
+            if profile_decision.status == "PROFILE_MISMATCH":
+                return profile_decision
+            return PostureDecision(
+                "IDENTITY_UNCERTAIN",
+                profile_decision.reason,
+                True,
+            )
+        if state == "PROFILE_MISMATCH":
+            self._reset_risk_state()
+            return PostureDecision("PROFILE_MISMATCH", sample.target_reason or "profile_mismatch", True)
+        if state == "AWAY":
+            self._reset_risk_state()
+            return PostureDecision("AWAY", sample.target_reason or "target_away", True)
+        if state == "ACQUIRING":
+            self._reset_risk_state()
+            return PostureDecision("ACQUIRING", sample.target_reason or "target_not_locked", True)
         return None
 
     def _profile_check_decision(self, sample: VisionSample) -> Optional[PostureDecision]:

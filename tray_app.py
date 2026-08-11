@@ -8,6 +8,7 @@ startup calibration, camera monitoring, and reversible visual intervention.
 from __future__ import annotations
 
 import argparse
+import os
 import signal
 import sys
 from datetime import datetime, timedelta
@@ -47,6 +48,14 @@ from PyQt5.QtWidgets import (
 
 from gpu_blur_overlay import GpuBlurOverlayController
 from debug_ui import STATUS_TEXT
+from identity_model_adapters import (
+    CvlFaceAutoModelAdapter,
+    IR101_WEBFACE4M,
+    ModelCacheError,
+    ModelDependencyError,
+    VIT_KPRPE_WEBFACE4M,
+)
+from identity_verifier import IdentityVerifier
 from i18n import _t, add_listener, remove_listener
 from onboarding_toast import (
     RED_SOFT,
@@ -58,6 +67,8 @@ from onboarding_toast import (
 )
 from posture_console import PostureConsoleWindow
 from tray_flyout import TrayFlyout
+from vision_backend import CompatibilityBackend
+from vision_tracking import TargetManager
 from vision_test import (
     CameraBlackFrameError,
     CameraPermissionError,
@@ -375,15 +386,22 @@ class TrayMonitor:
             auto_calibrate=False,
             calibrated_distance_cm=calibrated_distance_cm,
         )
+        self.target_manager = TargetManager()
+        requested_identity_model = os.environ.get("ECHOPOSTURE_P5_IDENTITY_MODEL", "vit").lower()
+        identity_spec = IR101_WEBFACE4M if requested_identity_model == "ir101" else VIT_KPRPE_WEBFACE4M
+        self.identity_model = CvlFaceAutoModelAdapter(identity_spec)
+        self.identity_verifier: Optional[IdentityVerifier] = None
+        self.identity_model_error: Optional[str] = None
         # 摄像头 + MediaPipe + 评分全部活在 VisionWorker 工作线程；
         # 主线程只低频取信箱快照，UI 不再被推理阻塞。
-        engine_factory = lambda: VisionEngine(
-            camera_id=camera_id, width=width, height=height
+        engine_factory = lambda: CompatibilityBackend(
+            lambda: VisionEngine(camera_id=camera_id, width=width, height=height)
         )
         self.worker = VisionWorker(
             engine_factory=engine_factory,
             analyzer=self.analyzer,
             target_fps=fps,
+            target_manager=self.target_manager,
         )
         self.engine = _EngineProxy(self.worker)
         self._shown_warning_keys: set[str] = set()
@@ -420,6 +438,7 @@ class TrayMonitor:
         self.countdown_timer.setInterval(1000)
 
     def start(self, show_calibration: bool = True) -> None:
+        self._prepare_identity_verifier()
         if not show_calibration:
             # --self-test：完全同步的本地路径，不启动工作线程
             self.tray.show()
@@ -436,6 +455,24 @@ class TrayMonitor:
         self._show_pending_screen_capture_warning()
         self.timer.start()
         self._start_onboarding_prompt()
+
+    def _prepare_identity_verifier(self) -> None:
+        """Load the repository-bundled model before the first camera sample.
+
+        Identity verification is deliberately fail-open for posture capture:
+        a missing optional runtime dependency or damaged cache disables only
+        the identity gate and records a diagnostic reason.
+        """
+        if self.identity_verifier is not None or self.identity_model_error is not None:
+            return
+        try:
+            self.identity_model.load()
+        except (ModelCacheError, ModelDependencyError, OSError, RuntimeError) as exc:
+            self.identity_model_error = str(exc)
+            print(f"P5 identity verification unavailable: {exc}", file=sys.stderr)
+            return
+        self.identity_verifier = IdentityVerifier(self.identity_model)
+        self.worker.identity_verifier = self.identity_verifier
 
     def stop(self) -> None:
         if self._stopping:
@@ -461,6 +498,10 @@ class TrayMonitor:
         self.overlay.force_clear()
         self.overlay.close()
         self.worker.stop(join_timeout=2.0)
+        if self.identity_verifier is not None:
+            self.identity_verifier.close()
+            self.identity_verifier = None
+        self.identity_model.close()
         self.tray.hide()
         self.app.quit()
 

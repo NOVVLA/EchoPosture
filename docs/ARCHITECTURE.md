@@ -15,7 +15,9 @@ flowchart LR
     Tray --> Flyout[tray_flyout.py]
     Tray --> Console[posture_console.py]
     Tray --> Worker[vision_worker.py / worker thread]
-    Worker --> Engine[VisionEngine / OpenCV + MediaPipe]
+    Worker --> Backend[CompatibilityBackend / unified observations]
+    Backend --> Engine[VisionEngine / OpenCV + MediaPipe]
+    Worker --> Target[TargetManager / tracks + target state]
     Worker --> Analyzer[HighPrecisionPostureAnalyzer]
     Analyzer --> Snapshot[latest immutable decision snapshot]
     Snapshot --> Tray
@@ -105,6 +107,25 @@ freshness is more important than processing every captured frame.
 The analyzer produces states such as `GOOD`, `WATCH`, `BAD`, `CRITICAL`, `UNKNOWN`, `AWAY`, `MULTI_USER`, and
 `PROFILE_MISMATCH`. These are ergonomic application states, not medical diagnoses or identity recognition.
 
+### Unified backend and target management
+
+`vision_backend.py` defines model-independent `PersonObservation`, `VisionCapabilities`, `VisionBackend`, and
+`PostureFeatureExtractor` contracts. `CompatibilityBackend` wraps the current MediaPipe engine, preserves
+`VisionSample` output for the posture analyzer, and publishes a unified observation for target management. The worker
+reconstructs the analyzer sample from the selected target observation, so a future multi-person backend cannot score a
+bystander's posture just because it was returned in the same frame. Because MediaPipe Pose is single-person, a frame
+with multiple faces cannot prove which face belongs to its one body; the adapter marks that observation ambiguous
+instead of combining the first face with the pose. Even with one face, the adapter requires a face anchor inside the
+expanded body envelope; a missing or out-of-envelope anchor is marked ambiguous rather than guessed.
+
+`vision_tracking.py` owns `TargetManager`. It associates observations using stable detection IDs when available,
+predicted motion, center distance, and bounding-box overlap; maintains track lifetimes; locks the calibration target;
+and emits `TARGET_LOCKED`, `MULTI_PRESENT`, `TARGET_OCCLUDED`, `TARGET_REACQUIRING`, `IDENTITY_UNCERTAIN`, `AWAY`, or
+`TARGET_AMBIGUOUS`. Frame association is global one-to-one: predicted motion is scored with box overlap and area
+continuity, while near-tied candidates enter `TARGET_AMBIGUOUS`; immutable track output carries the last match score.
+A non-target track is never promoted automatically. When a backend can keep the target observation
+separate, `MULTI_PRESENT` is attached to the immutable worker snapshot while posture scoring continues for the target.
+
 ### Overlay controller and native host
 
 `gpu_blur_overlay.py` is the process boundary between the Python runtime and `BlurOverlayHost.exe`:
@@ -174,12 +195,18 @@ Preserve these rules unless an intentional architecture change is documented and
 7. User-facing text belongs in `i18n.py`; language listeners must be added and removed with widget lifetime.
 8. `ui/index.html` remains a frozen reference unless the task explicitly targets the reference itself.
 9. Release code and package metadata must use the same version, ASCII bridge label, tag, asset name, and checksum.
+10. Target tracking may retain or suspend the calibrated target, but it must never promote another active track without
+    explicit identity confirmation.
+11. Compatibility mode must emit `TARGET_AMBIGUOUS` whenever its single pose cannot be associated with exactly one
+    face; ambiguous observations must not reach normal posture scoring.
 
 ## Change Map and Test Map
 
 | Change area | Primary files | Minimum focused verification |
 | --- | --- | --- |
 | Camera extraction or scoring | `vision_test.py` | `python -m py_compile ...`, `test_vision_worker.py`, relevant camera diagnostic |
+| Vision backend contract | `vision_backend.py`, `vision_worker.py` | `test_vision_tracking.py`, `test_vision_worker.py` |
+| Target association or state | `vision_tracking.py`, `vision_test.py` | `test_vision_tracking.py`, `test_feature_toggles.py` |
 | Worker lifecycle or calibration | `vision_worker.py`, `tray_app.py` | `test_vision_worker.py`, `test_startup_guards.py` |
 | Tray flyout | `tray_flyout.py`, `i18n.py` | `test_tray_flyout.py`, `test_startup_guards.py` |
 | Console switches | `posture_console.py`, `vision_test.py`, `gpu_blur_overlay.py` | `test_feature_toggles.py` plus focused manual console check |

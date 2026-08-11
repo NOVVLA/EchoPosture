@@ -146,6 +146,12 @@ def test_average_matches_legacy_semantics():
     assert calibration_sample_is_complete(make_sample())
     assert not calibration_sample_is_complete(make_sample(face_count=2))
     assert calibration_sample_missing_fields(make_sample(face_count=2)) == ("single_person",)
+    assert not calibration_sample_is_complete(
+        replace(make_sample(), person_count=2, target_state="TARGET_LOCKED")
+    )
+    assert calibration_sample_missing_fields(
+        replace(make_sample(), target_state="TARGET_AMBIGUOUS")
+    ) == ("single_person",)
     assert average_calibration_sample(
         [make_sample(60.0), make_sample(80.0, face_count=2)]
     ) is not None
@@ -162,6 +168,20 @@ def test_multi_person_resets_calibration_window():
     assert worker._calib_samples == []
     assert worker._last_usable_sample is None
     print("test_multi_person_resets_calibration_window OK")
+
+
+def test_target_manager_presence_resets_calibration_window():
+    engine = FakeEngine()
+    worker, _ = build_worker(engine)
+    worker._collect_calibration_sample(
+        replace(make_sample(), person_count=1, target_state="ACQUIRING")
+    )
+    worker._collect_calibration_sample(
+        replace(make_sample(), person_count=2, target_state="TARGET_LOCKED")
+    )
+    assert worker._calib_samples == []
+    assert worker._last_usable_sample is None
+    print("test_target_manager_presence_resets_calibration_window OK")
 
 
 def test_calibration_failure_and_error_propagation():
@@ -259,6 +279,7 @@ def test_set_capture_fps_roundtrip():
 if __name__ == "__main__":
     test_average_matches_legacy_semantics()
     test_multi_person_resets_calibration_window()
+    test_target_manager_presence_resets_calibration_window()
     test_thread_affinity_and_mailbox()
     test_calibration_failure_and_error_propagation()
     test_calibration_failure_reports_missing_fields()

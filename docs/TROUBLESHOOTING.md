@@ -175,6 +175,26 @@ Use these only from a trusted source checkout with its local embedded runtime or
 .\BlurOverlayHost.exe --self-test
 ```
 
+`run_debug_ui.cmd` opens the live P3/P4 target-tracking panel. Use
+`.\run_debug_ui.cmd --camera 1` when the default camera index is wrong. Keep
+one clear person in view during calibration. The panel should first show
+`ACQUIRING`; after calibration it should show `TARGET_LOCKED`, a numeric locked
+track, and `People present = 1`. `MULTI_PRESENT`, `TARGET_OCCLUDED`,
+`TARGET_REACQUIRING`, `IDENTITY_UNCERTAIN`, or `TARGET_AMBIGUOUS` are safety
+states, not posture scores; read the adjacent state reason before treating the
+posture result as valid.
+
+To prove the panel wiring without a camera or desktop display, run:
+
+```powershell
+runtime\python311\python.exe test_debug_ui.py
+```
+
+This uses a fixed frame and a real target manager/analyzer, then asserts the
+`ACQUIRING` -> `TARGET_LOCKED` transition, track `1`, and person count `1`.
+It does not prove camera permissions, MediaPipe landmark quality, or packaged
+Windows behavior; those still require the live CMD or the packaged self-test.
+
 `run_overlay_test.cmd` repeatedly fades a simple click-through dimming overlay and is separate from the production
 native blur host. Stop it with `Ctrl+C` in its terminal.
 

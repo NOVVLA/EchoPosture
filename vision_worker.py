@@ -34,6 +34,16 @@ from vision_test import (
     calibration_sample_is_complete,
     calibration_sample_missing_fields,
 )
+from vision_backend import VisionBackend, PostureFeatureExtractor, observation_from_sample
+from identity_verifier import (
+    FaceObservation,
+    IdentityVerifier,
+    IDENTITY_CONFIRMED,
+    IDENTITY_MISMATCH,
+    TRIGGER_HEARTBEAT,
+    TRIGGER_REACQUIRED,
+)
+from vision_tracking import TargetManager, TargetUpdate
 
 MODE_PAUSED = "paused"
 MODE_MONITORING = "monitoring"
@@ -86,6 +96,7 @@ class Snapshot:
     seq: int = 0
     decision: Optional[PostureDecision] = None
     sample: Optional[VisionSample] = None
+    target_update: Optional[TargetUpdate] = None
 
 
 @dataclass(frozen=True)
@@ -108,12 +119,16 @@ class VisionWorker:
 
     def __init__(
         self,
-        engine_factory: Callable[[], object],
+        engine_factory: Callable[[], VisionBackend],
         analyzer,
         target_fps: float = 30.0,
+        target_manager: Optional[TargetManager] = None,
+        identity_verifier: Optional[IdentityVerifier] = None,
     ) -> None:
         self._engine_factory = engine_factory
         self.analyzer = analyzer
+        self.target_manager = target_manager
+        self.identity_verifier = identity_verifier
         self._target_fps = max(1.0, float(target_fps))
 
         self._commands: "queue.Queue[tuple]" = queue.Queue()
@@ -137,6 +152,9 @@ class VisionWorker:
         self._last_usable_sample: Optional[VisionSample] = None
         self._calibration_missing_fields: set[str] = set()
         self._calib_request_seq = 0
+        self._identity_future = None
+        self._last_identity_state: Optional[str] = None
+        self._last_identity_track_id: Optional[int] = None
 
     # ============================================================
     # 主线程接口
@@ -255,17 +273,33 @@ class VisionWorker:
             if mode == MODE_MONITORING:
                 frame_started = time.monotonic()
                 try:
-                    sample = engine.read_sample()
+                    sample, target_update = self._read_sample(engine)
                     decision = self.analyzer.evaluate(sample)
+                    if target_update is not None:
+                        if target_update.state == "IDENTITY_UNCERTAIN":
+                            if decision.status == "PROFILE_MISMATCH":
+                                self.target_manager.resolve_identity(False)
+                            elif decision.status not in {
+                                "IDENTITY_UNCERTAIN",
+                                "TARGET_AMBIGUOUS",
+                                "TARGET_OCCLUDED",
+                                "TARGET_REACQUIRING",
+                            }:
+                                self.target_manager.resolve_identity(True)
+                        decision = replace(
+                            decision,
+                            environment_state=target_update.state,
+                            target_track_id=target_update.target_track_id,
+                        )
                 except Exception as exc:
                     self._publish_error(exc)
                     self._mode = MODE_PAUSED  # 停止产出，等主线程处置
                     continue
-                self._publish_snapshot(decision, sample)
+                self._publish_snapshot(decision, sample, target_update)
                 self._throttle(frame_started)
             elif mode == MODE_CALIBRATING:
                 try:
-                    sample = engine.read_sample()
+                    sample, _target_update = self._read_sample(engine)
                 except Exception as exc:
                     self._publish_error(exc)
                     self._mode = MODE_PAUSED
@@ -293,17 +327,22 @@ class VisionWorker:
                 self._calib_samples = []
                 self._last_usable_sample = None
                 self._calibration_missing_fields = set()
+                if self.target_manager is not None:
+                    self.target_manager.reset()
             elif kind == "finalize_calib":
                 _, distance_cm, sample_count, request_id = command
                 self._finalize_calibration(engine, distance_cm, sample_count, request_id)
 
     def _collect_calibration_sample(self, sample: VisionSample) -> None:
         missing_fields = calibration_sample_missing_fields(sample)
-        if sample.face_count > 1:
+        multiple_people = sample.person_count is not None and sample.person_count != 1
+        ambiguous_target = sample.target_state in {"MULTI_PRESENT", "TARGET_AMBIGUOUS"}
+        if sample.face_count > 1 or multiple_people or ambiguous_target:
             # A second person invalidates the current calibration window. Do
             # not let later averaging hide that contamination.
             self._calib_samples = []
             self._last_usable_sample = None
+            missing_fields = tuple(sorted(set(missing_fields) | {"single_person"}))
         self._calibration_missing_fields.update(missing_fields)
         if not missing_fields:
             self._last_usable_sample = sample
@@ -321,7 +360,7 @@ class VisionWorker:
                and not self._stop_event.is_set()):
             attempts_left -= 1
             try:
-                sample = engine.read_sample()
+                sample, _target_update = self._read_sample(engine)
             except Exception as exc:
                 self._publish_error(exc)
                 self._mode = MODE_PAUSED
@@ -335,10 +374,16 @@ class VisionWorker:
         )
         ok = False
         if averaged is not None:
-            try:
-                ok = bool(self.analyzer.set_baseline_from_sample(averaged, distance_cm))
-            except Exception:
-                ok = False
+            target_ok = (
+                self.target_manager.lock_calibration_target()
+                if self.target_manager is not None
+                else True
+            )
+            if target_ok:
+                try:
+                    ok = bool(self.analyzer.set_baseline_from_sample(averaged, distance_cm))
+                except Exception:
+                    ok = False
 
         self._calib_samples = []
         self._mode = MODE_PAUSED  # 主线程拿到回执后决定是否 resume
@@ -357,10 +402,89 @@ class VisionWorker:
             self._stop_event.wait(remaining)
 
     # ---- 信箱写入 ----
-    def _publish_snapshot(self, decision: PostureDecision, sample: VisionSample) -> None:
+    def _read_sample(self, engine) -> tuple[VisionSample, Optional[TargetUpdate]]:
+        sample = engine.read_sample()
+        if self.target_manager is None:
+            return sample, None
+        self._apply_identity_result()
+        provider = getattr(engine, "observations_for_last_sample", None)
+        observations = provider() if provider is not None else observation_from_sample(sample)
+        target_update = self.target_manager.update(observations, timestamp=sample.timestamp)
+        self._request_identity_check(target_update)
+        if target_update.target_observation is not None:
+            sample = PostureFeatureExtractor.to_sample(target_update.target_observation)
+        sample = replace(
+            sample,
+            target_track_id=target_update.target_track_id,
+            target_state=target_update.state,
+            target_observed=target_update.target_observation is not None,
+            person_count=target_update.person_count,
+            target_reason=target_update.reason,
+        )
+        return sample, target_update
+
+    def _request_identity_check(self, target_update: TargetUpdate) -> None:
+        verifier = self.identity_verifier
+        observation = target_update.target_observation
+        if verifier is None or observation is None or observation.face_bbox_xyxy is None:
+            self._last_identity_state = target_update.state
+            self._last_identity_track_id = target_update.target_track_id
+            return
+        face_observation = FaceObservation(
+            timestamp=observation.timestamp,
+            bbox_xyxy=observation.face_bbox_xyxy,
+            landmarks=observation.face_landmarks or (),
+            detector_quality=observation.face_quality or 0.0,
+            embedding=observation.face_embedding,
+        )
+        reacquired = (
+            self._last_identity_track_id != target_update.target_track_id
+            or self._last_identity_state in {"TARGET_REACQUIRING", "AWAY", "TARGET_OCCLUDED"}
+        )
+        trigger = TRIGGER_REACQUIRED if reacquired else TRIGGER_HEARTBEAT
+        future = verifier.request(
+            face_observation,
+            trigger=trigger,
+            track_id=target_update.target_track_id,
+        )
+        if future is not None:
+            self._identity_future = future
+        self._last_identity_state = target_update.state
+        self._last_identity_track_id = target_update.target_track_id
+
+    def _apply_identity_result(self) -> None:
+        if self.identity_verifier is None or self.target_manager is None:
+            return
+        future = self._identity_future
+        if future is None or not future.done():
+            return
+        self._identity_future = None
+        try:
+            result = future.result()
+        except Exception:
+            self.target_manager.resolve_identity(None)
+            return
+        if result.state == IDENTITY_CONFIRMED:
+            self.target_manager.resolve_identity(True)
+        elif result.state == IDENTITY_MISMATCH:
+            self.target_manager.resolve_identity(False)
+        else:
+            self.target_manager.resolve_identity(None)
+
+    def _publish_snapshot(
+        self,
+        decision: PostureDecision,
+        sample: VisionSample,
+        target_update: Optional[TargetUpdate] = None,
+    ) -> None:
         with self._lock:
             self._seq += 1
-            self._snapshot = Snapshot(seq=self._seq, decision=decision, sample=sample)
+            self._snapshot = Snapshot(
+                seq=self._seq,
+                decision=decision,
+                sample=sample,
+                target_update=target_update,
+            )
 
     def _publish_error(self, exc: Exception) -> None:
         with self._lock:
