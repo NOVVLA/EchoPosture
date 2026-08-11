@@ -880,7 +880,7 @@
 ## 2026-08-11 - AI review findings routed into the vision plan
 
 - Source: user request after manual audit of the AI review posted on PR #23.
-- Git: commit `pending`, branch `codex/pr2-phase1-calibration-safety`, tag `none`.
+- Git: plan commit `5e8953626609ed4ea50ec4cfc1fbad2f5cecc0a6`, branch `codex/pr2-phase1-calibration-safety`, tag `none`.
 - Facts corrected:
   - PR #23 changes `.gitattributes`, model adapter code, and local download/hydration tooling, but its 42 changed files and remote head tree contain no tracked `models/p5/` weight files.
   - The earlier "repository-bundled weights" entry described a local, untracked worktree copy. It did not establish that weights were committed, uploaded, or distributed through the PR.
@@ -894,5 +894,8 @@
   - `git diff --check`: passed.
   - Targeted `rg` review confirmed `EP-TRACK-006` and `EP-ID-008` appear in their phase lists, priority rows, and handoff status text.
   - GitHub API confirmed PR #23 remote head `bcd4bfb17d39916055439462a89058fd1f725307`; changed files matching `models/p5/*`: `0`; head-tree paths matching `models/p5/*`: `0`.
+  - Pushed plan commit `5e8953626609ed4ea50ec4cfc1fbad2f5cecc0a6` to the PR branch; GitHub then reported the same SHA as PR #23 head and still reported `0` changed files matching `models/p5/*`.
+  - Posted the corrective `@ai-review` request at `https://github.com/NOVVLA/EchoPosture/pull/23#issuecomment-5255309355`.
+  - AI review run `31507828605` completed successfully, but the model output failed JSON parsing and the workflow safely downgraded to a confidence-0 comment at `https://github.com/NOVVLA/EchoPosture/pull/23#issuecomment-5255324440`; it did not issue a substantive corrected review.
 - Gaps: implementation, unit tests, real-camera behavior, latency measurements, privacy audit, and license approval remain open under the new and existing plan tasks.
-- Conclusion: plan update verified locally; remote delivery and the corrective `@ai-review` comment remain pending.
+- Conclusion: plan update and corrective comment delivered; the AI route executed safely but did not produce a substantive correction, so the earlier `CHANGES_REQUESTED` review remains for manual handling.
