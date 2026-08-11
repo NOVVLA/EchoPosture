@@ -876,3 +876,23 @@
 - Not run: real camera reliability collection, `--output` report generation, SEM/MDC cross-device repeatability,
   external clinical validity, user comfort feedback, package build, and GUI/manual overlay observation.
 - Conclusion: local implementation ready for static verification; real-camera and external-validity evidence remain open.
+
+## 2026-08-11 - AI review findings routed into the vision plan
+
+- Source: user request after manual audit of the AI review posted on PR #23.
+- Git: commit `pending`, branch `codex/pr2-phase1-calibration-safety`, tag `none`.
+- Facts corrected:
+  - PR #23 changes `.gitattributes`, model adapter code, and local download/hydration tooling, but its 42 changed files and remote head tree contain no tracked `models/p5/` weight files.
+  - The earlier "repository-bundled weights" entry described a local, untracked worktree copy. It did not establish that weights were committed, uploaded, or distributed through the PR.
+  - Exact weight and training-data license approval remains a future integration/release gate; it is not evidence that this PR currently redistributes weights.
+- Scope:
+  - Added `EP-TRACK-006` to bound global association work and require a safe ambiguity fallback plus adversarial-count latency evidence before a real multi-person backend is connected.
+  - Added `EP-ID-008` so disabling identity verification prevents model loading, verifier injection, verification requests, and embedding processing, then clears in-memory state.
+  - Linked `EP-UI-002` to the runtime gate and updated the P4/P5 priority register and completion evidence.
+- Risk: this change records follow-up work only; the current recursive matcher and identity runtime behavior are not fixed by this documentation commit.
+- Verification:
+  - `git diff --check`: passed.
+  - Targeted `rg` review confirmed `EP-TRACK-006` and `EP-ID-008` appear in their phase lists, priority rows, and handoff status text.
+  - GitHub API confirmed PR #23 remote head `bcd4bfb17d39916055439462a89058fd1f725307`; changed files matching `models/p5/*`: `0`; head-tree paths matching `models/p5/*`: `0`.
+- Gaps: implementation, unit tests, real-camera behavior, latency measurements, privacy audit, and license approval remain open under the new and existing plan tasks.
+- Conclusion: plan update verified locally; remote delivery and the corrective `@ai-review` comment remain pending.
