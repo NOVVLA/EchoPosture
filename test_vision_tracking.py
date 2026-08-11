@@ -550,6 +550,29 @@ def test_worker_scores_locked_target_observation_not_global_sample():
     print("test_worker_scores_locked_target_observation_not_global_sample OK")
 
 
+def test_target_motion_and_activity_state_are_time_normalized():
+    manager = TargetManager()
+    first = manager.update((observation(1, T0, 100.0),), timestamp=T0)
+    assert first.target_motion is None
+    assert first.activity_state == "UNKNOWN"
+    assert manager.lock_target(1)
+
+    static = manager.update(
+        (observation(1, T0 + timedelta(seconds=1), 100.0),),
+        timestamp=T0 + timedelta(seconds=1),
+    )
+    assert static.target_motion == 0.0
+    assert static.activity_state == "STATIC"
+
+    moving = manager.update(
+        (observation(1, T0 + timedelta(seconds=2), 220.0),),
+        timestamp=T0 + timedelta(seconds=2),
+    )
+    assert moving.target_motion is not None and moving.target_motion > 0.20
+    assert moving.activity_state == "MOVING"
+    print("test_target_motion_and_activity_state_are_time_normalized OK")
+
+
 if __name__ == "__main__":
     test_compatibility_observation_contract()
     test_target_lock_and_multi_person_continuation()
@@ -566,4 +589,5 @@ if __name__ == "__main__":
     test_tracking_states_respect_presence_and_identity_toggles()
     test_worker_compatibility_backend_publishes_target_update()
     test_worker_scores_locked_target_observation_not_global_sample()
+    test_target_motion_and_activity_state_are_time_normalized()
     print("ALL TESTS PASSED")

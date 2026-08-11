@@ -1,6 +1,6 @@
 # EchoPosture
 
-EchoPosture is a Windows desktop posture-monitoring prototype. It uses a webcam with MediaPipe/OpenCV-based posture signals, runs quietly from the system tray, performs startup calibration, and applies gradual screen dimming or blur when posture risk remains high.
+EchoPosture is a Windows desktop posture-change and static-exposure reminder. It uses a webcam with MediaPipe/OpenCV-based numeric posture signals, runs quietly from the system tray, performs personal two-anchor calibration, and can apply gradual screen dimming or blur after sustained static exposure.
 
 It is intended as an ergonomics aid, not a medical diagnostic tool.
 
@@ -21,7 +21,7 @@ The release package is a portable folder for Windows x64. It includes the embedd
 3. Open the extracted folder.
 4. Double-click `EchoPosture.exe`.
 5. Allow camera access if Windows asks.
-6. When the 5-second startup prompt appears, sit upright in a comfortable posture and stay still until calibration finishes.
+6. During the 5-second prompt, hold the comfortable posture you want to use for the first 2 seconds, then relax naturally for 3 seconds. Face the camera, stay reasonably still, and keep only one person in frame.
 
 After calibration, EchoPosture continues running from the Windows notification area.
 
@@ -30,7 +30,7 @@ Windows SmartScreen may warn about unsigned builds. Only run the package if it c
 ## Tray Controls
 
 - Right-click the tray icon to open the menu.
-- `立即重新校准` starts a new posture baseline calibration.
+- `立即重新校准` starts the same 5-second preferred/relaxed two-anchor calibration.
 - `立即测试最深效果` previews the strongest visual intervention.
 - `停止` clears the visual overlay, releases the camera, and exits the app.
 - Double-click the tray icon to open the console window.
@@ -39,8 +39,8 @@ The console shows an eye icon (overall monitoring state) and seven feature switc
 
 The seven feature switches:
 
-- `启动校准` (CALIBRATION) — trigger a new baseline calibration.
-- `高精度评分` (PRECISION) — toggle the full risk-scoring model; when off, EchoPosture falls back to simple threshold checks.
+- `启动校准` (CALIBRATION) — trigger a new two-anchor calibration.
+- `个人姿态偏离` (PRECISION) — toggle the within-person posture-change model; when off, EchoPosture falls back to legacy threshold checks.
 - `72FPS 采集` (PERFORMANCE) — toggle capture between 72 FPS and a lower power-saving rate.
 - `压暗干预` (DIMMING) — toggle the screen-dimming part of visual intervention.
 - `GPU 模糊` (BLUR) — toggle the screen-blur part of visual intervention.
@@ -88,7 +88,7 @@ All user-facing text is localized across five UI modules:
 
 ## Self Test
 
-Run `EchoPostureSelfTest.exe` from the release package when startup or camera behavior is unclear. It checks the packaged runtime, debug UI, vision path, tray monitor path, and GPU blur helper.
+Run `EchoPostureSelfTest.exe` from the release package when startup or camera behavior is unclear. It checks the packaged runtime, debug UI, camera/vision path, tray monitor path, and GPU blur helper. A successful self-test is a camera and runtime-chain result; its legacy single-frame baseline is not a successful scientific calibration.
 
 Use the self test first if:
 
@@ -104,28 +104,29 @@ Emergency clear for the native blur host:
 
 ## What It Does
 
-EchoPosture monitors posture signals from the webcam:
+EchoPosture monitors within-person posture changes and static exposure from the webcam:
 
 - face presence and approximate face distance;
 - shoulder position and asymmetry;
 - torso direction from shoulder and hip landmarks;
 - user-away, multi-user, and profile-mismatch states;
-- sustained `BAD` or `CRITICAL` posture risk.
+- current personal posture deviation, current measurement confidence, and equivalent high-deviation exposure seconds.
 
-Face-distance/shoulder scoring, user-away/multi-user detection, and profile-mismatch detection can each be turned off independently from the console window; all default to on.
+The posture model groups face/torso/ear-to-shoulder evidence as forward change and shoulder/trunk evidence as lateral change, using only the strongest evidence in each group. Raw shoulder width and estimated distance remain environment prompts and do not directly increase posture deviation. Low-quality, moving, ambiguous, turned-head, or camera-drift observations abstain from intervention.
 
-Visual intervention is intentionally delayed. It requires a confirmed `BAD` or `CRITICAL` state, risk score `>= 45`, sustained risk for at least `12` seconds, and an extra `3` seconds of continuous confirmation.
+Visual intervention is intentionally delayed. Product policy enters alert observation at deviation `0.70`, requires at least `12` equivalent high-deviation seconds, then adds `3` seconds of confirmation. Severe exposure uses deviation `0.85` and `30` equivalent seconds. Recovery decays exposure instead of clearing it instantly, and completed intervention episodes have a `60`-second cooldown. These are adjustable interaction parameters, not medical limits or physiological doses.
 
 When intervention starts, EchoPosture does not change system brightness. It uses a full-screen, topmost, click-through overlay and gradually applies dimming and blur. The native GPU blur host is preferred; if desktop capture is unavailable, the app falls back to Windows compositor blur behavior.
 
 ## Privacy
 
-The current app is a local Windows desktop prototype. It uses the camera for posture analysis and does not require an account or cloud service to run the released package.
+The current app is a local Windows desktop prototype. It uses the camera for posture analysis and does not require an account or cloud service to run the released package. Production monitoring does not continuously save feedback, frames, face crops, video, identity templates, or vectors. The explicit reliability command may save a numeric JSON report only when the user supplies `--output`.
 
 ## Limitations
 
 - EchoPosture is not a medical device and does not diagnose spinal, vision, or ergonomic conditions.
-- A single webcam cannot precisely measure real neck or spine angles.
+- It reports personal posture change and static exposure; it does not measure clinical CVA, Cobb angle, or an absolute neck/spine angle.
+- Real-camera repeatability, SEM/MDC across devices, external validity, and user comfort outcomes require separate evidence and are not established by the included logic tests.
 - Lighting, camera position, occlusion, chair position, and monitor layout can affect detection quality.
 - Windows camera permissions and desktop-capture restrictions can affect startup, self-test, or GPU blur behavior.
 - Long-running real desktop behavior should still be validated by the user on their own machine.

@@ -31,6 +31,7 @@ class TargetManagerConfig:
     min_bbox_iou: float = 0.05
     max_center_distance_ratio: float = 1.35
     association_ambiguity_margin: float = 0.08
+    moving_speed_ratio_per_second: float = 0.20
 
 
 @dataclass(frozen=True)
@@ -52,6 +53,8 @@ class TargetUpdate:
     tracks: Tuple[TrackedPerson, ...]
     person_count: int
     reason: str
+    target_motion: Optional[float] = None
+    activity_state: str = "UNKNOWN"
 
 
 @dataclass
@@ -279,6 +282,15 @@ class TargetManager:
                 self.state = TARGET_REACQUIRING
                 reason = f"target_missing_s={missing_seconds:.1f}"
 
+        target_motion = self._normalized_motion(target) if target_observation is not None else None
+        activity_state = "UNKNOWN"
+        if target_motion is not None:
+            activity_state = (
+                "MOVING"
+                if target_motion > self.config.moving_speed_ratio_per_second
+                else "STATIC"
+            )
+
         return TargetUpdate(
             state=self.state,
             target_track_id=self.target_track_id,
@@ -286,7 +298,17 @@ class TargetManager:
             tracks=tuple(self._freeze_track(track) for track in self._tracks.values()),
             person_count=len(active_tracks),
             reason=reason,
+            target_motion=target_motion,
+            activity_state=activity_state,
         )
+
+    @staticmethod
+    def _normalized_motion(track: _Track) -> float:
+        diagonal = math.hypot(
+            track.observation.bbox_xyxy[2] - track.observation.bbox_xyxy[0],
+            track.observation.bbox_xyxy[3] - track.observation.bbox_xyxy[1],
+        )
+        return math.hypot(*track.velocity) / max(1.0, diagonal)
 
     def _timestamp(self, observations: Tuple[PersonObservation, ...]) -> Timestamp:
         if observations:

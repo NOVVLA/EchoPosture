@@ -41,6 +41,20 @@ class PostureFeatures:
     face_nose_point: Optional[Point] = None
     head_turn_ratio: Optional[float] = None
     torso_height_px: Optional[float] = None
+    left_ear_point: Optional[Point] = None
+    right_ear_point: Optional[Point] = None
+    face_quality: Optional[float] = None
+    pose_quality: Optional[float] = None
+    nose_confidence: Optional[float] = None
+    left_ear_confidence: Optional[float] = None
+    right_ear_confidence: Optional[float] = None
+    left_shoulder_confidence: Optional[float] = None
+    right_shoulder_confidence: Optional[float] = None
+    left_hip_confidence: Optional[float] = None
+    right_hip_confidence: Optional[float] = None
+    target_motion: Optional[float] = None
+    activity_state: Optional[str] = None
+    camera_drift: bool = False
 
 
 @dataclass(frozen=True)
@@ -129,6 +143,20 @@ class PostureFeatureExtractor:
             face_nose_point=features.face_nose_point,
             head_turn_ratio=features.head_turn_ratio,
             torso_height_px=features.torso_height_px,
+            left_ear_point=features.left_ear_point,
+            right_ear_point=features.right_ear_point,
+            face_quality=features.face_quality,
+            pose_quality=features.pose_quality,
+            nose_confidence=features.nose_confidence,
+            left_ear_confidence=features.left_ear_confidence,
+            right_ear_confidence=features.right_ear_confidence,
+            left_shoulder_confidence=features.left_shoulder_confidence,
+            right_shoulder_confidence=features.right_shoulder_confidence,
+            left_hip_confidence=features.left_hip_confidence,
+            right_hip_confidence=features.right_hip_confidence,
+            target_motion=features.target_motion,
+            activity_state=features.activity_state,
+            camera_drift=features.camera_drift,
         )
 
 
@@ -166,6 +194,8 @@ def observation_from_sample(sample: VisionSample) -> Tuple[PersonObservation, ..
         point
         for point in (
             sample.nose_point,
+            sample.left_ear_point,
+            sample.right_ear_point,
             sample.left_shoulder_point,
             sample.right_shoulder_point,
             sample.left_hip_point,
@@ -193,7 +223,20 @@ def observation_from_sample(sample: VisionSample) -> Tuple[PersonObservation, ..
             or not _point_inside_expanded_bbox(sample.face_nose_point, body_bbox)
         )
 
-    keypoints = tuple(Keypoint(point[0], point[1]) for point in body_points)
+    keypoints = tuple(
+        Keypoint(point[0], point[1], confidence)
+        for point, confidence in (
+            (sample.nose_point, sample.nose_confidence),
+            (sample.left_ear_point, sample.left_ear_confidence),
+            (sample.right_ear_point, sample.right_ear_confidence),
+            (sample.left_shoulder_point, sample.left_shoulder_confidence),
+            (sample.right_shoulder_point, sample.right_shoulder_confidence),
+            (sample.left_hip_point, sample.left_hip_confidence),
+            (sample.right_hip_point, sample.right_hip_confidence),
+        )
+        if point is not None
+        for confidence in (confidence if confidence is not None else 1.0,)
+    )
     return (
         PersonObservation(
             timestamp=sample.timestamp,
@@ -202,10 +245,18 @@ def observation_from_sample(sample: VisionSample) -> Tuple[PersonObservation, ..
             detection_id=None,
             bbox_xyxy=body_bbox,
             body_keypoints=keypoints,
-            body_confidence=1.0 if sample.pose_detected and body_points else 0.0,
+            body_confidence=(
+                sample.pose_quality
+                if sample.pose_quality is not None
+                else (1.0 if sample.pose_detected and body_points else 0.0)
+            ),
             face_bbox_xyxy=None if sample.face_count > 1 else face_bbox,
             face_landmarks=None if sample.face_count > 1 else face_points or None,
-            face_quality=1.0 if sample.face_detected and sample.face_count == 1 else None,
+            face_quality=(
+                sample.face_quality
+                if sample.face_detected and sample.face_count == 1
+                else None
+            ),
             association_ambiguous=ambiguous,
             posture_features=PostureFeatures(
                 interpupillary_px=sample.interpupillary_px,
@@ -229,6 +280,20 @@ def observation_from_sample(sample: VisionSample) -> Tuple[PersonObservation, ..
                 face_nose_point=None if sample.face_count > 1 else sample.face_nose_point,
                 head_turn_ratio=None if sample.face_count > 1 else sample.head_turn_ratio,
                 torso_height_px=sample.torso_height_px,
+                left_ear_point=sample.left_ear_point,
+                right_ear_point=sample.right_ear_point,
+                face_quality=sample.face_quality,
+                pose_quality=sample.pose_quality,
+                nose_confidence=sample.nose_confidence,
+                left_ear_confidence=sample.left_ear_confidence,
+                right_ear_confidence=sample.right_ear_confidence,
+                left_shoulder_confidence=sample.left_shoulder_confidence,
+                right_shoulder_confidence=sample.right_shoulder_confidence,
+                left_hip_confidence=sample.left_hip_confidence,
+                right_hip_confidence=sample.right_hip_confidence,
+                target_motion=sample.target_motion,
+                activity_state=sample.activity_state,
+                camera_drift=sample.camera_drift,
             ),
         ),
     )

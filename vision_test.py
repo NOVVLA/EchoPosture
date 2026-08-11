@@ -23,6 +23,15 @@ from typing import Iterable, List, Optional, Tuple
 import cv2
 import mediapipe as mp
 
+from posture_science import (
+    CalibrationProfile,
+    ExposureAccumulator,
+    PosturePolicy,
+    aggregate_sample_quality,
+    measurement_values,
+    score_posture_deviation,
+)
+
 
 Point = Tuple[float, float]
 
@@ -39,6 +48,8 @@ LEFT_IRIS = (468, 469, 470, 471, 472)
 RIGHT_IRIS = (473, 474, 475, 476, 477)
 FACE_NOSE = 1
 NOSE = 0
+LEFT_EAR = 7
+RIGHT_EAR = 8
 LEFT_SHOULDER = 11
 RIGHT_SHOULDER = 12
 LEFT_HIP = 23
@@ -70,6 +81,20 @@ class VisionSample:
     face_nose_point: Optional[Point] = None
     head_turn_ratio: Optional[float] = None
     torso_height_px: Optional[float] = None
+    left_ear_point: Optional[Point] = None
+    right_ear_point: Optional[Point] = None
+    face_quality: Optional[float] = None
+    pose_quality: Optional[float] = None
+    nose_confidence: Optional[float] = None
+    left_ear_confidence: Optional[float] = None
+    right_ear_confidence: Optional[float] = None
+    left_shoulder_confidence: Optional[float] = None
+    right_shoulder_confidence: Optional[float] = None
+    left_hip_confidence: Optional[float] = None
+    right_hip_confidence: Optional[float] = None
+    target_motion: Optional[float] = None
+    activity_state: Optional[str] = None
+    camera_drift: bool = False
     target_track_id: Optional[int] = None
     target_state: Optional[str] = None
     target_observed: Optional[bool] = None
@@ -98,6 +123,12 @@ def calibration_sample_missing_fields(sample: VisionSample) -> tuple[str, ...]:
     ):
         if getattr(sample, field) is None:
             missing.append(field)
+    if sample.face_quality is not None and sample.face_quality < 0.65:
+        missing.append("face_quality_low")
+    if sample.pose_quality is not None and sample.pose_quality < 0.65:
+        missing.append("pose_quality_low")
+    if sample.target_motion is not None and sample.target_motion > 0.20:
+        missing.append("target_moving")
     return tuple(missing)
 
 
@@ -119,6 +150,11 @@ class PostureDecision:
     sustained_seconds: float = 0.0
     environment_state: Optional[str] = None
     target_track_id: Optional[int] = None
+    posture_deviation: float = 0.0
+    exposure_seconds: float = 0.0
+    confidence: float = 0.0
+    calibration_quality: float = 0.0
+    activity_state: str = "UNKNOWN"
 
 
 @dataclass(frozen=True)
@@ -366,6 +402,9 @@ class HighPrecisionPostureAnalyzer(PostureAnalyzer):
         risk_clear_seconds: float = 4.0,
         away_grace_seconds: float = 2.0,
         multi_present_confirm_seconds: float = 0.3,
+        require_dual_anchor: bool = False,
+        calibration_profile: Optional[CalibrationProfile] = None,
+        posture_policy: Optional[PosturePolicy] = None,
     ) -> None:
         super().__init__(
             calibration_samples=calibration_samples,
@@ -379,6 +418,12 @@ class HighPrecisionPostureAnalyzer(PostureAnalyzer):
         self.risk_start_score = 35.0
         self.away_grace_seconds = away_grace_seconds
         self.multi_present_confirm_seconds = max(0.0, multi_present_confirm_seconds)
+        self.require_dual_anchor = require_dual_anchor
+        self.calibration_profile: Optional[CalibrationProfile] = None
+        self.posture_policy = posture_policy or PosturePolicy()
+        self.exposure_accumulator = ExposureAccumulator(self.posture_policy)
+        self.legacy_calibration_used = False
+        self._camera_drifted = False
         # 运行时功能开关（UI 主线程写、工作线程读；GIL 下 bool 读写原子，
         # evaluate 每帧读取一次即可生效）。默认全开，与历史行为一致。
         self.precision_enabled = True        # False → 回退到基础阈值判定
@@ -390,10 +435,87 @@ class HighPrecisionPostureAnalyzer(PostureAnalyzer):
         self._away_started_at: Optional[datetime] = None
         self._multi_started_at: Optional[datetime] = None
         self._requires_profile_check = False
+        if calibration_profile is not None:
+            self.set_calibration_profile(calibration_profile, calibrated_distance_cm)
+
+    @property
+    def calibrated(self) -> bool:
+        if self.calibration_profile is not None:
+            return self.calibration_profile.scientific_ready
+        return super().calibrated
+
+    def set_baseline_from_sample(
+        self,
+        sample: VisionSample,
+        calibrated_distance_cm: Optional[float] = None,
+        legacy_debug: bool = False,
+    ) -> bool:
+        """Set a legacy single-sample baseline for explicit debug/self-test use.
+
+        Production constructs this analyzer with ``require_dual_anchor=True``;
+        that path refuses this compatibility entry point.
+        """
+        if self.require_dual_anchor and not legacy_debug:
+            return False
+        ok = super().set_baseline_from_sample(sample, calibrated_distance_cm)
+        self.legacy_calibration_used = ok
+        return ok
+
+    def set_calibration_profile(
+        self,
+        profile: CalibrationProfile,
+        calibrated_distance_cm: Optional[float] = None,
+    ) -> bool:
+        if not profile.scientific_ready:
+            return False
+
+        def mean(name: str) -> Optional[float]:
+            stats = profile.preferred.get(name)
+            return stats.mean if stats is not None else None
+
+        self.calibration_profile = profile
+        self.baseline = PostureBaseline(
+            interpupillary_px=mean("interpupillary_px"),
+            signed_shoulder_diff_px=mean("signed_shoulder_diff_px"),
+            shoulder_width_px=mean("shoulder_width_px"),
+            trunk_lean_deg=mean("trunk_lean_deg"),
+            head_turn_ratio=mean("head_turn_ratio"),
+            face_shoulder_ratio=mean("face_shoulder_ratio"),
+            torso_shoulder_ratio=mean("torso_shoulder_ratio"),
+            calibrated_distance_cm=(
+                calibrated_distance_cm
+                if calibrated_distance_cm is not None
+                else self.calibrated_distance_cm
+            ),
+        )
+        self.calibrated_distance_cm = self.baseline.calibrated_distance_cm
+        self.legacy_calibration_used = False
+        self._camera_drifted = False
+        self.exposure_accumulator.reset()
+        self._reset_risk_state()
+        return True
+
+    def reset_baseline(self) -> None:
+        super().reset_baseline()
+        self.calibration_profile = None
+        self.legacy_calibration_used = False
+        self._camera_drifted = False
+        self.exposure_accumulator.reset()
 
     def evaluate(self, sample: VisionSample) -> PostureDecision:
         if not self.precision_enabled:
             return self._basic_mode_evaluate(sample)
+
+        if self.calibration_profile is not None:
+            return self._scientific_mode_evaluate(sample)
+        if self.require_dual_anchor:
+            return PostureDecision(
+                "NEEDS_CALIB",
+                "dual_anchor_calibration_required",
+                False,
+                calibration_quality=0.0,
+                activity_state=sample.activity_state or "UNKNOWN",
+            )
 
         if self.auto_calibrate and calibration_sample_is_complete(sample):
             self._update_baseline(sample)
@@ -453,6 +575,167 @@ class HighPrecisionPostureAnalyzer(PostureAnalyzer):
             return PostureDecision("BAD", ",".join(reasons), True, final_score, sustained_seconds)
         reasons.append("risk_observing")
         return PostureDecision("WATCH", ",".join(reasons), True, final_score, sustained_seconds)
+
+    def _scientific_mode_evaluate(self, sample: VisionSample) -> PostureDecision:
+        profile = self.calibration_profile
+        assert profile is not None
+
+        activity_state = sample.activity_state or "UNKNOWN"
+        if sample.target_motion is not None:
+            activity_state = (
+                "MOVING"
+                if sample.target_motion > self.posture_policy.moving_threshold
+                else "STATIC"
+            )
+
+        suppressed = self._suppressed_presence_decision(sample)
+        if suppressed is not None:
+            exposure = self.exposure_accumulator.pause(sample.timestamp)
+            return PostureDecision(
+                suppressed.status,
+                suppressed.reason,
+                True,
+                risk_score=0.0,
+                sustained_seconds=exposure.exposure_seconds,
+                environment_state=sample.target_state,
+                target_track_id=sample.target_track_id,
+                posture_deviation=0.0,
+                exposure_seconds=exposure.exposure_seconds,
+                confidence=0.0,
+                calibration_quality=profile.calibration_quality,
+                activity_state=activity_state,
+            )
+
+        if activity_state == "MOVING":
+            exposure = self.exposure_accumulator.pause(sample.timestamp)
+            return PostureDecision(
+                "WATCH",
+                "activity_moving_exposure_paused",
+                True,
+                sustained_seconds=exposure.exposure_seconds,
+                posture_deviation=0.0,
+                exposure_seconds=exposure.exposure_seconds,
+                confidence=aggregate_sample_quality(sample),
+                calibration_quality=profile.calibration_quality,
+                activity_state=activity_state,
+            )
+
+        if sample.camera_drift:
+            self._camera_drifted = True
+        if self._camera_drifted:
+            exposure = self.exposure_accumulator.pause(sample.timestamp)
+            return PostureDecision(
+                "UNKNOWN",
+                "camera_drift_recalibration_required",
+                True,
+                sustained_seconds=exposure.exposure_seconds,
+                posture_deviation=0.0,
+                exposure_seconds=exposure.exposure_seconds,
+                confidence=0.0,
+                calibration_quality=profile.calibration_quality,
+                activity_state=activity_state,
+            )
+
+        values = measurement_values(sample)
+        score = score_posture_deviation(values, profile, self.posture_policy)
+        quality = aggregate_sample_quality(sample)
+        confidence = max(0.0, min(1.0, quality * score.coverage))
+
+        head_turned = False
+        preferred_head_turn = profile.preferred.get("head_turn_ratio")
+        if sample.head_turn_ratio is not None and preferred_head_turn is not None:
+            head_turned = abs(sample.head_turn_ratio - preferred_head_turn.mean) > 0.25
+        if self._eye_width_ratio(sample) is not None:
+            head_turned = head_turned or self._eye_width_ratio(sample) < 0.75
+
+        if head_turned:
+            exposure = self.exposure_accumulator.pause(sample.timestamp)
+            return PostureDecision(
+                "WATCH",
+                "head_turn_measurement_abstained",
+                True,
+                sustained_seconds=exposure.exposure_seconds,
+                posture_deviation=score.deviation,
+                exposure_seconds=exposure.exposure_seconds,
+                confidence=confidence,
+                calibration_quality=profile.calibration_quality,
+                activity_state=activity_state,
+            )
+
+        if not score.features:
+            exposure = self.exposure_accumulator.pause(sample.timestamp)
+            return PostureDecision(
+                "UNKNOWN",
+                "posture_features_unavailable",
+                True,
+                sustained_seconds=exposure.exposure_seconds,
+                posture_deviation=0.0,
+                exposure_seconds=exposure.exposure_seconds,
+                confidence=0.0,
+                calibration_quality=profile.calibration_quality,
+                activity_state=activity_state,
+            )
+
+        if confidence < self.posture_policy.quality_floor:
+            exposure = self.exposure_accumulator.pause(sample.timestamp)
+            status = "WATCH" if exposure.exposure_seconds > 0.0 else "UNKNOWN"
+            return PostureDecision(
+                status,
+                f"measurement_quality_low={confidence:.2f}",
+                True,
+                risk_score=score.deviation * 100.0,
+                sustained_seconds=exposure.exposure_seconds,
+                posture_deviation=score.deviation,
+                exposure_seconds=exposure.exposure_seconds,
+                confidence=confidence,
+                calibration_quality=profile.calibration_quality,
+                activity_state=activity_state,
+            )
+
+        exposure = self.exposure_accumulator.update(sample.timestamp, score.deviation)
+        reasons = [
+            f"posture_deviation={score.deviation:.2f}",
+            f"exposure_seconds={exposure.exposure_seconds:.1f}",
+            f"confidence={confidence:.2f}",
+        ]
+        if score.features:
+            primary = max(score.features, key=lambda item: item.deviation)
+            reasons.append(f"primary_feature={primary.feature}:{primary.deviation:.2f}")
+
+        estimated_distance = self.estimated_distance_cm(sample)
+        if estimated_distance is not None and estimated_distance < 40.0:
+            reasons.append(f"distance_environment_near_cm={estimated_distance:.0f}")
+        elif estimated_distance is not None and estimated_distance > 120.0:
+            reasons.append(f"distance_environment_far_cm={estimated_distance:.0f}")
+
+        if (
+            exposure.exposure_seconds >= self.posture_policy.critical_exposure_seconds
+            and score.deviation >= self.posture_policy.severe_deviation
+        ):
+            status = "CRITICAL"
+        elif (
+            exposure.exposure_seconds >= self.posture_policy.alert_exposure_seconds
+            and exposure.alert_active
+        ):
+            status = "BAD"
+        elif exposure.watch_active or exposure.exposure_seconds > 0.0:
+            status = "WATCH"
+        else:
+            status = "GOOD"
+            reasons = ["within_personal_posture_range"]
+
+        return PostureDecision(
+            status,
+            ",".join(reasons),
+            True,
+            risk_score=score.deviation * 100.0,
+            sustained_seconds=exposure.exposure_seconds,
+            posture_deviation=score.deviation,
+            exposure_seconds=exposure.exposure_seconds,
+            confidence=confidence,
+            calibration_quality=profile.calibration_quality,
+            activity_state=activity_state,
+        )
 
     def _basic_mode_evaluate(self, sample: VisionSample) -> PostureDecision:
         """PRECISION 关闭时的回退：沿用基础阈值判定（PostureAnalyzer），
@@ -982,6 +1265,16 @@ class VisionEngine:
         right_hip_point = None
         hip_center = None
         torso_height_px = None
+        left_ear_point = None
+        right_ear_point = None
+        nose_confidence = None
+        left_ear_confidence = None
+        right_ear_confidence = None
+        left_shoulder_confidence = None
+        right_shoulder_confidence = None
+        left_hip_confidence = None
+        right_hip_confidence = None
+        pose_quality = None
         if pose_values is not None:
             (
                 signed_shoulder_diff_px,
@@ -993,6 +1286,16 @@ class VisionEngine:
                 right_hip_point,
                 hip_center,
                 trunk_lean_deg,
+                left_ear_point,
+                right_ear_point,
+                nose_confidence,
+                left_ear_confidence,
+                right_ear_confidence,
+                left_shoulder_confidence,
+                right_shoulder_confidence,
+                left_hip_confidence,
+                right_hip_confidence,
+                pose_quality,
             ) = pose_values
             shoulder_diff_px = abs(signed_shoulder_diff_px)
             shoulder_width_px = math.dist(left_shoulder_point, right_shoulder_point)
@@ -1023,6 +1326,17 @@ class VisionEngine:
             face_nose_point=face_nose_point,
             head_turn_ratio=head_turn_ratio,
             torso_height_px=torso_height_px,
+            left_ear_point=left_ear_point,
+            right_ear_point=right_ear_point,
+            face_quality=(1.0 if interpupillary_px is not None and face_count == 1 else None),
+            pose_quality=pose_quality,
+            nose_confidence=nose_confidence,
+            left_ear_confidence=left_ear_confidence,
+            right_ear_confidence=right_ear_confidence,
+            left_shoulder_confidence=left_shoulder_confidence,
+            right_shoulder_confidence=right_shoulder_confidence,
+            left_hip_confidence=left_hip_confidence,
+            right_hip_confidence=right_hip_confidence,
         )
         return frame, sample
 
@@ -1108,6 +1422,16 @@ class VisionEngine:
             Optional[Point],
             Optional[Point],
             Optional[float],
+            Optional[Point],
+            Optional[Point],
+            float,
+            float,
+            float,
+            float,
+            float,
+            float,
+            float,
+            float,
         ]
     ]:
         if not pose_result.pose_landmarks:
@@ -1132,6 +1456,19 @@ class VisionEngine:
         nose_point = None
         if nose.visibility >= 0.5:
             nose_point = self._pose_point(nose, width, height)
+
+        left_ear = landmarks[LEFT_EAR]
+        right_ear = landmarks[RIGHT_EAR]
+        left_ear_point = (
+            self._pose_point(left_ear, width, height)
+            if left_ear.visibility >= 0.5
+            else None
+        )
+        right_ear_point = (
+            self._pose_point(right_ear, width, height)
+            if right_ear.visibility >= 0.5
+            else None
+        )
 
         left_hip = landmarks[LEFT_HIP]
         right_hip = landmarks[RIGHT_HIP]
@@ -1160,6 +1497,23 @@ class VisionEngine:
             right_hip_point,
             hip_center,
             trunk_lean_deg,
+            left_ear_point,
+            right_ear_point,
+            float(nose.visibility),
+            float(left_ear.visibility),
+            float(right_ear.visibility),
+            float(left.visibility),
+            float(right.visibility),
+            float(left_hip.visibility),
+            float(right_hip.visibility),
+            float(
+                min(
+                    left.visibility,
+                    right.visibility,
+                    left_hip.visibility,
+                    right_hip.visibility,
+                )
+            ),
         )
 
 
@@ -1204,6 +1558,27 @@ def format_baseline(baseline: Optional[PostureBaseline]) -> str:
         f"trunk={trunk}, "
         f"head={head}"
     )
+
+
+def format_calibration_profile(profile: Optional[CalibrationProfile]) -> str:
+    """Compact numeric anchor summary for diagnostics."""
+    if profile is None:
+        return "--"
+    parts = [
+        f"preferred_n={profile.stage_counts.get('preferred', 0)}",
+        f"relaxed_n={profile.stage_counts.get('relaxed', 0)}",
+        f"quality={profile.calibration_quality:.2f}",
+    ]
+    for name in profile.enabled_features:
+        preferred = profile.preferred.get(name)
+        relaxed = profile.relaxed.get(name)
+        if preferred is None or relaxed is None:
+            continue
+        parts.append(
+            f"{name}:p={preferred.mean:.3f},r={relaxed.mean:.3f},"
+            f"mdc={max(preferred.mdc, relaxed.mdc):.3f}"
+        )
+    return "; ".join(parts)
 
 
 def run(

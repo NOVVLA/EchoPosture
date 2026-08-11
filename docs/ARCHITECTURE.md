@@ -99,10 +99,13 @@ freshness is more important than processing every captured frame.
 `vision_test.py` contains the domain layer:
 
 - `VisionEngine` opens the camera and produces `VisionSample` values from face and pose landmarks;
-- `PostureAnalyzer` provides the basic baseline-threshold model;
-- `HighPrecisionPostureAnalyzer` adds risk scoring, sustained-risk tracking, presence checks, and profile-consistency
-  protection;
-- `PostureDecision` carries status, reason, calibration state, risk score, and sustained duration.
+- `PostureAnalyzer` provides the explicitly legacy baseline-threshold model for debug/self-test compatibility;
+- `posture_science.py` owns two-anchor statistics (mean/std/n/SEM/MDC/CV), continuous within-person deviation,
+  group de-duplication, and real-time exposure accumulation;
+- `HighPrecisionPostureAnalyzer` uses the scientific profile in production, while retaining the legacy path behind an
+  explicit compatibility flag; presence and profile-consistency protection remain independent;
+- `PostureDecision` carries posture deviation, equivalent exposure seconds, confidence, calibration quality, activity
+  state, and the old `risk_score` / `sustained_seconds` compatibility aliases.
 
 The analyzer produces states such as `GOOD`, `WATCH`, `BAD`, `CRITICAL`, `UNKNOWN`, `AWAY`, `MULTI_USER`, and
 `PROFILE_MISMATCH`. These are ergonomic application states, not medical diagnoses or identity recognition.
@@ -125,6 +128,21 @@ and emits `TARGET_LOCKED`, `MULTI_PRESENT`, `TARGET_OCCLUDED`, `TARGET_REACQUIRI
 continuity, while near-tied candidates enter `TARGET_AMBIGUOUS`; immutable track output carries the last match score.
 A non-target track is never promoted automatically. When a backend can keep the target observation
 separate, `MULTI_PRESENT` is attached to the immutable worker snapshot while posture scoring continues for the target.
+The locked target also publishes a time-normalized motion value and `STATIC` / `MOVING` activity state. Motion does not
+accumulate static exposure.
+
+### Scientific calibration and measurement abstention
+
+Production calibration is a fixed five-second page: the first two seconds are the preferred comfortable anchor and the
+final three seconds are the relaxed anchor. Each stage needs at least five complete, single-person, quality-gated
+samples. A multi-person, ambiguous, missing-keypoint, low-quality, or moving observation clears the current stage
+window. The worker applies the resulting `CalibrationProfile` only after the target manager locks one unambiguous
+track. `set_baseline_from_sample()` remains available only for explicit legacy debugging/self-test.
+
+The posture score uses scale-relative face/shoulder and torso/shoulder ratios, optional ear/shoulder position, shoulder
+asymmetry angle, and trunk lean. Raw shoulder width and distance remain separate environment prompts. If anchor
+separation is not above the feature's MDC, that feature is disabled. Turned-head, low-confidence, moving, ambiguous,
+and camera-drift observations produce `UNKNOWN`/`WATCH` and pause exposure instead of forcing a `BAD` result.
 
 ### Overlay controller and native host
 
@@ -160,18 +178,21 @@ that writes a report, under the package-local `logs` directory.
 1. The launcher prepares the run root and starts `tray_app.py`.
 2. `TrayMonitor` starts `VisionWorker` and waits up to 15 seconds for the camera handshake.
 3. The tray icon appears and the onboarding toast asks the user to enable monitoring.
-4. A five-second calibration dialog is shown while the worker samples at 180 ms intervals.
-5. The worker averages usable samples and asks the analyzer to set its baseline.
+4. A five-second calibration dialog is shown while the worker samples at 180 ms intervals; its fixed stages are 2s
+   preferred and 3s relaxed.
+5. `CalibrationAccumulator` builds per-feature repeatability statistics and `CalibrationProfile`; the analyzer accepts
+   it only when both stages meet the minimum and at least one posture feature separates above MDC.
 6. A successful result starts monitoring; a failed startup calibration shows a warning and stops the application.
 
 ### Monitoring and intervention
 
 1. The worker captures a frame, extracts a `VisionSample`, evaluates it, and replaces the mailbox snapshot.
 2. The GUI timer reads the newest snapshot without blocking the worker.
-3. Intervention is eligible only for `BAD` or `CRITICAL`, risk score at least `45`, sustained risk at least `12`
-   seconds, followed by another `3` seconds of continuous confirmation.
+3. Intervention is eligible only for a quality-valid `BAD`/`CRITICAL` scientific decision, deviation at least `0.70`,
+   equivalent exposure at least `12` seconds, followed by another `3` seconds of continuous confirmation. A completed
+   episode has a `60` second cooldown; these are product policy values, not medical thresholds.
 4. `GpuBlurOverlayController` activates the native host or the fallback overlay.
-5. Returning to a non-risk state clears the candidate timer and deactivates the overlay.
+5. Returning to a non-risk state ends the intervention episode; exposure decays gradually and the overlay deactivates.
 
 The manual max-effect command bypasses posture gating for an eight-second preview but uses the same overlay controller.
 

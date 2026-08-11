@@ -385,6 +385,7 @@ class TrayMonitor:
         self.analyzer = HighPrecisionPostureAnalyzer(
             auto_calibrate=False,
             calibrated_distance_cm=calibrated_distance_cm,
+            require_dual_anchor=True,
         )
         self.target_manager = TargetManager()
         requested_identity_model = os.environ.get("ECHOPOSTURE_P5_IDENTITY_MODEL", "vit").lower()
@@ -410,11 +411,14 @@ class TrayMonitor:
         self.last_decision: Optional[PostureDecision] = None
         # 进行中的校准请求：(用途 "startup"/"recal", 此前是否在监测)
         self._awaiting_calibration: Optional[tuple] = None
+        self._calibration_prompt_context: Optional[tuple] = None
         self._stopping = False
         self._calibrated = False
         self._last_calibration_missing_fields: tuple[str, ...] = ()
         self._monitoring_started = False
         self._intervention_candidate_started_at: Optional[datetime] = None
+        self._intervention_episode_active = False
+        self._last_intervention_ended_at: Optional[datetime] = None
         self._manual_effect_until: Optional[datetime] = None
         self.calibration_dialog: Optional[StartupCalibrationDialog] = None
         self.onboarding_toast: Optional[OnboardingToast] = None
@@ -506,9 +510,10 @@ class TrayMonitor:
         self.app.quit()
 
     def run_startup_self_test(self) -> bool:
-        """--self-test 专用：主线程同步完成 校准→单次评估。
+        """--self-test 专用：主线程同步完成 legacy 单帧校准→单次评估。
 
         MediaPipe/摄像头的构造、使用、释放都在本线程内完成，不经工作线程。
+        This is a camera/runtime-chain check, not production scientific calibration.
         """
         engine = VisionEngine(
             camera_id=self.camera_id,
@@ -534,7 +539,7 @@ class TrayMonitor:
                 missing_fields.update(calibration_sample_missing_fields(sample))
             averaged = average_calibration_sample(samples)
             self._calibrated = averaged is not None and self.analyzer.set_baseline_from_sample(
-                averaged, self.calibrated_distance_cm
+                averaged, self.calibrated_distance_cm, legacy_debug=True
             )
             self._last_calibration_missing_fields = (
                 tuple(sorted(missing_fields)) if not self._calibrated else ()
@@ -553,11 +558,8 @@ class TrayMonitor:
             return
         if self.onboarding_toast is not None or self.calibration_dialog is not None:
             return
-        # 后台重采 18 帧并定基线；UI 全程不阻塞，结果经 _tick 的回执分支处理
         was_monitoring = self.worker.is_monitoring_active()
-        self.worker.begin_calibration_sampling()
-        self._awaiting_calibration = ("recal", was_monitoring)
-        self.worker.finalize_calibration(self.calibrated_distance_cm, sample_count=18)
+        self._start_calibration_prompt("recal", was_monitoring)
 
     def _tick(self) -> None:
         if self._stopping:
@@ -635,6 +637,8 @@ class TrayMonitor:
         if result.ok:
             self._calibrated = True
             self._intervention_candidate_started_at = None
+            self._intervention_episode_active = False
+            self._last_intervention_ended_at = None
             self._manual_effect_until = None
             self.overlay.force_clear()
             if self._monitoring_started or was_monitoring:
@@ -689,7 +693,12 @@ class TrayMonitor:
             return
         self._start_calibration_prompt()
 
-    def _start_calibration_prompt(self) -> None:
+    def _start_calibration_prompt(
+        self,
+        purpose: str = "startup",
+        was_monitoring: bool = False,
+    ) -> None:
+        self._calibration_prompt_context = (purpose, was_monitoring)
         self.calibration_dialog = StartupCalibrationDialog(seconds=5)
         self.calibration_dialog.show()
         self.calibration_dialog.raise_()
@@ -708,9 +717,11 @@ class TrayMonitor:
         self.calibration_dialog.close()
         self.calibration_dialog = None
 
-        # 让工作线程平均样本并定基线；结果经 _tick 的回执分支处理
-        self._awaiting_calibration = ("startup", False)
-        self.worker.finalize_calibration(self.calibrated_distance_cm, sample_count=1)
+        # The worker preserves the fixed 2s/3s stages and requires at least
+        # five valid observations in each stage.
+        self._awaiting_calibration = self._calibration_prompt_context or ("startup", False)
+        self._calibration_prompt_context = None
+        self.worker.finalize_calibration(self.calibrated_distance_cm, sample_count=5)
 
     def _start_monitoring(self) -> None:
         if self._monitoring_started:
@@ -732,6 +743,7 @@ class TrayMonitor:
             return False
         self.worker.pause()
         self._intervention_candidate_started_at = None
+        self._intervention_episode_active = False
         self._manual_effect_until = None
         self.overlay.force_clear()
         return True
@@ -791,17 +803,41 @@ class TrayMonitor:
 
     def _should_intervene(self, decision: PostureDecision) -> bool:
         if decision.status not in {"BAD", "CRITICAL"}:
+            if getattr(self, "_intervention_episode_active", False):
+                self._last_intervention_ended_at = datetime.now()
+            self._intervention_episode_active = False
             self._intervention_candidate_started_at = None
             return False
-        if decision.risk_score < 45.0 or decision.sustained_seconds < 12.0:
+        scientific = decision.calibration_quality > 0.0
+        exposure_seconds = (
+            decision.exposure_seconds if scientific else decision.sustained_seconds
+        )
+        posture_deviation = (
+            decision.posture_deviation if scientific else decision.risk_score / 100.0
+        )
+        confidence_ok = not scientific or decision.confidence >= 0.65
+        if (
+            posture_deviation < 0.70
+            or exposure_seconds < 12.0
+            or not confidence_ok
+        ):
             self._intervention_candidate_started_at = None
             return False
 
         now = datetime.now()
+        if getattr(self, "_intervention_episode_active", False):
+            return True
+        last_ended = getattr(self, "_last_intervention_ended_at", None)
+        if last_ended is not None and (now - last_ended).total_seconds() < 60.0:
+            self._intervention_candidate_started_at = None
+            return False
         if self._intervention_candidate_started_at is None:
             self._intervention_candidate_started_at = now
             return False
-        return (now - self._intervention_candidate_started_at).total_seconds() >= 3.0
+        confirmed = (now - self._intervention_candidate_started_at).total_seconds() >= 3.0
+        if confirmed:
+            self._intervention_episode_active = True
+        return confirmed
 
     def _tray_activated(self, reason) -> None:
         if reason == QSystemTrayIcon.DoubleClick:

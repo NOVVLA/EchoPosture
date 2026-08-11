@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import unittest
+from datetime import datetime, timedelta
 from types import SimpleNamespace
 
 from tray_app import TrayMonitor
 from tray_flyout import TrayFlyout
+from vision_test import PostureDecision
 
 
 class _Worker:
@@ -116,6 +118,13 @@ class _FlyoutDouble:
         self.label_state = on
 
 
+class _InterventionDouble:
+    def __init__(self) -> None:
+        self._intervention_candidate_started_at = None
+        self._intervention_episode_active = False
+        self._last_intervention_ended_at = None
+
+
 class StartupGuardTests(unittest.TestCase):
     def test_resume_is_rejected_during_onboarding(self) -> None:
         monitor = _MonitorDouble()
@@ -197,6 +206,52 @@ class StartupGuardTests(unittest.TestCase):
         self.assertEqual(flyout.switch.set_calls, [])
         self.assertIs(flyout.label_state, True)
         self.assertEqual(flyout.monitor.is_monitoring_calls, 1)
+
+    def test_scientific_intervention_requires_confidence_and_exposure(self) -> None:
+        monitor = _InterventionDouble()
+        low_confidence = PostureDecision(
+            "BAD",
+            "test",
+            True,
+            posture_deviation=0.9,
+            exposure_seconds=20.0,
+            confidence=0.4,
+            calibration_quality=1.0,
+        )
+        self.assertFalse(TrayMonitor._should_intervene(monitor, low_confidence))
+
+        eligible = PostureDecision(
+            "BAD",
+            "test",
+            True,
+            posture_deviation=0.9,
+            exposure_seconds=20.0,
+            confidence=0.9,
+            calibration_quality=1.0,
+        )
+        self.assertFalse(TrayMonitor._should_intervene(monitor, eligible))
+        monitor._intervention_candidate_started_at = datetime.now() - timedelta(seconds=4)
+        self.assertTrue(TrayMonitor._should_intervene(monitor, eligible))
+        self.assertTrue(monitor._intervention_episode_active)
+
+    def test_intervention_episode_has_cooldown_after_it_ends(self) -> None:
+        monitor = _InterventionDouble()
+        monitor._intervention_episode_active = True
+        good = PostureDecision("GOOD", "test", True)
+        self.assertFalse(TrayMonitor._should_intervene(monitor, good))
+        self.assertIsNotNone(monitor._last_intervention_ended_at)
+
+        eligible = PostureDecision(
+            "BAD",
+            "test",
+            True,
+            posture_deviation=1.0,
+            exposure_seconds=30.0,
+            confidence=1.0,
+            calibration_quality=1.0,
+        )
+        monitor._intervention_candidate_started_at = datetime.now() - timedelta(seconds=4)
+        self.assertFalse(TrayMonitor._should_intervene(monitor, eligible))
 
 
 if __name__ == "__main__":

@@ -10,10 +10,13 @@ HighPrecisionPostureAnalyzer 功能开关测试（无 GUI、无摄像头）。
 
 from __future__ import annotations
 
+import math
+from dataclasses import replace
 from datetime import datetime, timedelta
 from typing import Optional
 
 from vision_test import HighPrecisionPostureAnalyzer, VisionSample
+from posture_science import CalibrationAccumulator, CalibrationPlan, measurement_values
 
 T0 = datetime(2026, 1, 1, 12, 0, 0)
 
@@ -49,6 +52,50 @@ def calibrated_analyzer() -> HighPrecisionPostureAnalyzer:
         auto_calibrate=False, calibrated_distance_cm=60.0
     )
     assert analyzer.set_baseline_from_sample(make_sample(T0), 60.0)
+    return analyzer
+
+
+def scientific_sample(ts: datetime, relaxed: float = 0.0, quality: float = 1.0) -> VisionSample:
+    width = 200.0
+    shoulder_deg = 1.0 + relaxed * 6.0
+    return VisionSample(
+        timestamp=ts,
+        interpupillary_px=60.0 + relaxed * 20.0,
+        shoulder_diff_px=abs(width * math.tan(math.radians(shoulder_deg))),
+        signed_shoulder_diff_px=width * math.tan(math.radians(shoulder_deg)),
+        shoulder_width_px=width,
+        trunk_lean_deg=1.0 + relaxed * 10.0,
+        face_detected=True,
+        pose_detected=True,
+        face_count=1,
+        head_turn_ratio=0.01,
+        torso_height_px=180.0 - relaxed * 40.0,
+        face_quality=quality,
+        pose_quality=quality,
+        target_motion=0.0,
+        activity_state="STATIC",
+    )
+
+
+def scientific_analyzer() -> HighPrecisionPostureAnalyzer:
+    accumulator = CalibrationAccumulator(CalibrationPlan())
+    for index in range(5):
+        sample = scientific_sample(T0 + timedelta(seconds=index * 0.2), 0.0)
+        accumulator.add(index * 0.2, measurement_values(sample))
+    for index in range(5):
+        sample = scientific_sample(T0 + timedelta(seconds=2.1 + index * 0.2), 1.0)
+        accumulator.add(2.1 + index * 0.2, measurement_values(sample))
+    analyzer = HighPrecisionPostureAnalyzer(
+        auto_calibrate=False,
+        calibrated_distance_cm=60.0,
+        require_dual_anchor=True,
+    )
+    assert not analyzer.set_baseline_from_sample(scientific_sample(T0), 60.0)
+    assert analyzer.set_baseline_from_sample(
+        scientific_sample(T0), 60.0, legacy_debug=True
+    )
+    analyzer.reset_baseline()
+    assert analyzer.set_calibration_profile(accumulator.finalize(), 60.0)
     return analyzer
 
 
@@ -187,6 +234,41 @@ def test_identity_toggle():
     print("test_identity_toggle OK")
 
 
+def test_scientific_continuous_scoring_exposure_and_abstention():
+    analyzer = scientific_analyzer()
+    preferred = analyzer.evaluate(scientific_sample(T0, 0.0))
+    assert preferred.status == "GOOD", preferred
+    assert preferred.posture_deviation == 0.0
+
+    midpoint = analyzer.evaluate(scientific_sample(T0 + timedelta(seconds=1), 0.5))
+    assert 0.45 <= midpoint.posture_deviation <= 0.65, midpoint
+    assert midpoint.status == "WATCH", midpoint
+
+    analyzer.evaluate(scientific_sample(T0 + timedelta(seconds=2), 1.0))
+    alert = analyzer.evaluate(scientific_sample(T0 + timedelta(seconds=14), 1.0))
+    assert alert.status == "BAD", alert
+    assert alert.exposure_seconds >= 12.0
+    assert alert.risk_score == alert.posture_deviation * 100.0
+    assert alert.sustained_seconds == alert.exposure_seconds
+
+    before = alert.exposure_seconds
+    low_quality = analyzer.evaluate(
+        scientific_sample(T0 + timedelta(seconds=20), 1.0, quality=0.40)
+    )
+    assert low_quality.status in {"UNKNOWN", "WATCH"}, low_quality
+    assert low_quality.exposure_seconds == before
+
+    moving = replace(
+        scientific_sample(T0 + timedelta(seconds=25), 1.0),
+        target_motion=0.5,
+        activity_state="MOVING",
+    )
+    moving_decision = analyzer.evaluate(moving)
+    assert moving_decision.status == "WATCH", moving_decision
+    assert moving_decision.exposure_seconds == before
+    print("test_scientific_continuous_scoring_exposure_and_abstention OK")
+
+
 if __name__ == "__main__":
     test_defaults_all_enabled()
     test_auto_calibration_requires_complete_single_person_sample()
@@ -194,4 +276,5 @@ if __name__ == "__main__":
     test_presence_toggle()
     test_presence_toggle_resets_multi_debounce_anchor()
     test_identity_toggle()
+    test_scientific_continuous_scoring_exposure_and_abstention()
     print("ALL TESTS PASSED")

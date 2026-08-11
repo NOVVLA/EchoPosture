@@ -101,14 +101,15 @@ python -m pip install -r requirements.txt -r requirements-dev.txt
 Run the CI-equivalent checks:
 
 ```powershell
-ruff check debug_ui.py gpu_blur_overlay.py onboarding_toast.py overlay_test.py posture_console.py `
+ruff check debug_ui.py gpu_blur_overlay.py onboarding_toast.py overlay_test.py posture_console.py posture_science.py `
   test_startup_guards.py test_tray_flyout.py test_vision_worker.py tray_app.py tray_flyout.py `
-  vision_test.py vision_worker.py
+  test_posture_science.py vision_test.py vision_worker.py
 
-python -m py_compile debug_ui.py gpu_blur_overlay.py onboarding_toast.py overlay_test.py posture_console.py `
+python -m py_compile debug_ui.py gpu_blur_overlay.py onboarding_toast.py overlay_test.py posture_console.py posture_science.py `
   test_startup_guards.py test_tray_flyout.py test_vision_worker.py tray_app.py tray_flyout.py `
-  vision_test.py vision_worker.py
+  test_posture_science.py vision_test.py vision_worker.py
 
+python test_posture_science.py
 python test_startup_guards.py
 python test_tray_flyout.py
 python test_vision_worker.py
@@ -139,6 +140,7 @@ gpu_blur_overlay.py
 i18n.py
 onboarding_toast.py
 posture_console.py
+posture_science.py
 tray_app.py
 tray_flyout.py
 vision_test.py

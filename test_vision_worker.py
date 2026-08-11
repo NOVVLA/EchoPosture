@@ -10,7 +10,7 @@ from __future__ import annotations
 import threading
 import time
 from dataclasses import replace
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from vision_test import (
     CameraBlackFrameError,
@@ -149,6 +149,20 @@ def test_average_matches_legacy_semantics():
     assert not calibration_sample_is_complete(
         replace(make_sample(), person_count=2, target_state="TARGET_LOCKED")
     )
+
+
+def make_dual_sample(ts: datetime, relaxed: float = 0.0, face_count: int = 1) -> VisionSample:
+    return replace(
+        make_sample(ipd=60.0 + relaxed * 20.0, face_count=face_count),
+        timestamp=ts,
+        shoulder_width_px=200.0,
+        torso_height_px=180.0 - relaxed * 40.0,
+        trunk_lean_deg=2.0 + relaxed * 10.0,
+        face_quality=1.0,
+        pose_quality=1.0,
+        target_motion=0.0,
+        activity_state="STATIC",
+    )
     assert calibration_sample_missing_fields(
         replace(make_sample(), target_state="TARGET_AMBIGUOUS")
     ) == ("single_person",)
@@ -234,6 +248,64 @@ def test_calibration_failure_reports_missing_fields():
     print("test_calibration_failure_reports_missing_fields OK")
 
 
+def test_dual_anchor_worker_calibration_and_stage_counts():
+    engine = FakeEngine()
+    analyzer = HighPrecisionPostureAnalyzer(
+        auto_calibrate=False,
+        require_dual_anchor=True,
+    )
+    worker = VisionWorker(engine_factory=lambda: engine, analyzer=analyzer)
+    worker._calibration_accumulator = None
+    for index in range(5):
+        worker._collect_calibration_sample(
+            make_dual_sample(datetime(2026, 1, 1, 12, 0, 0) + timedelta(seconds=index * 0.2))
+        )
+    for index in range(5):
+        worker._collect_calibration_sample(
+            make_dual_sample(datetime(2026, 1, 1, 12, 0, 2, 100000) + timedelta(seconds=index * 0.2), 1.0)
+        )
+    worker._finalize_dual_anchor_calibration(60.0, 1)
+    result = worker.take_calibration_result()
+    assert result is not None and result.ok, result
+    assert dict(result.stage_counts) == {"preferred": 5, "relaxed": 5}
+    assert analyzer.calibration_profile is not None
+    print("test_dual_anchor_worker_calibration_and_stage_counts OK")
+
+
+def test_dual_anchor_worker_rejects_multi_person_and_short_stage():
+    engine = FakeEngine()
+    analyzer = HighPrecisionPostureAnalyzer(auto_calibrate=False, require_dual_anchor=True)
+    worker = VisionWorker(engine_factory=lambda: engine, analyzer=analyzer)
+    start = datetime(2026, 1, 1, 12, 0, 0)
+    for index in range(3):
+        worker._collect_calibration_sample(make_dual_sample(start + timedelta(seconds=index * 0.2)))
+    worker._collect_calibration_sample(
+        make_dual_sample(start + timedelta(seconds=0.8), face_count=2)
+    )
+    assert worker._calibration_accumulator is not None
+    assert worker._calibration_accumulator.stage_counts["preferred"] == 0
+    worker._collect_calibration_sample(
+        replace(
+            make_dual_sample(start + timedelta(seconds=0.9)),
+            target_state="TARGET_OCCLUDED",
+        )
+    )
+    assert worker._calibration_accumulator.stage_counts["preferred"] == 0
+    for index in range(5):
+        worker._collect_calibration_sample(
+            make_dual_sample(start + timedelta(seconds=1.0 + index * 0.2))
+        )
+    for index in range(4):
+        worker._collect_calibration_sample(
+            make_dual_sample(start + timedelta(seconds=2.1 + index * 0.2), 1.0)
+        )
+    worker._finalize_dual_anchor_calibration(60.0, 2)
+    result = worker.take_calibration_result()
+    assert result is not None and not result.ok
+    assert any("relaxed_samples" in field for field in result.missing_fields)
+    print("test_dual_anchor_worker_rejects_multi_person_and_short_stage OK")
+
+
 def test_monitoring_error_pauses_worker():
     engine = FakeEngine()
     engine.fail_after = 5
@@ -283,6 +355,8 @@ if __name__ == "__main__":
     test_thread_affinity_and_mailbox()
     test_calibration_failure_and_error_propagation()
     test_calibration_failure_reports_missing_fields()
+    test_dual_anchor_worker_calibration_and_stage_counts()
+    test_dual_anchor_worker_rejects_multi_person_and_short_stage()
     test_monitoring_error_pauses_worker()
     test_start_failure_propagates_to_caller()
     test_set_capture_fps_roundtrip()

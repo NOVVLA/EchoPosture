@@ -44,6 +44,12 @@ from identity_verifier import (
     TRIGGER_REACQUIRED,
 )
 from vision_tracking import TargetManager, TargetUpdate
+from posture_science import (
+    CalibrationAccumulator,
+    CalibrationPlan,
+    calibration_rejection_reason,
+    measurement_values,
+)
 
 MODE_PAUSED = "paused"
 MODE_MONITORING = "monitoring"
@@ -83,6 +89,15 @@ def average_calibration_sample(
         trunk_lean_deg=avg("trunk_lean_deg"),
         head_turn_ratio=avg("head_turn_ratio"),
         torso_height_px=avg("torso_height_px"),
+        face_quality=avg("face_quality"),
+        pose_quality=avg("pose_quality"),
+        nose_confidence=avg("nose_confidence"),
+        left_ear_confidence=avg("left_ear_confidence"),
+        right_ear_confidence=avg("right_ear_confidence"),
+        left_shoulder_confidence=avg("left_shoulder_confidence"),
+        right_shoulder_confidence=avg("right_shoulder_confidence"),
+        left_hip_confidence=avg("left_hip_confidence"),
+        right_hip_confidence=avg("right_hip_confidence"),
         face_detected=all(sample.face_detected for sample in eligible_samples),
         pose_detected=all(sample.pose_detected for sample in eligible_samples),
         face_count=1,
@@ -104,6 +119,9 @@ class CalibrationResult:
     request_id: int
     ok: bool
     missing_fields: tuple[str, ...] = ()
+    stage_counts: tuple[tuple[str, int], ...] = ()
+    calibration_quality: float = 0.0
+    failure_reason: Optional[str] = None
 
 
 class VisionWorker:
@@ -151,6 +169,8 @@ class VisionWorker:
         self._calib_samples: List[VisionSample] = []
         self._last_usable_sample: Optional[VisionSample] = None
         self._calibration_missing_fields: set[str] = set()
+        self._calibration_plan = CalibrationPlan()
+        self._calibration_accumulator: Optional[CalibrationAccumulator] = None
         self._calib_request_seq = 0
         self._identity_future = None
         self._last_identity_state: Optional[str] = None
@@ -198,7 +218,7 @@ class VisionWorker:
         self._mode = MODE_PAUSED
 
     def begin_calibration_sampling(self) -> None:
-        """进入校准采样模式（清空旧样本，按 180ms 间隔在后台累积）。"""
+        """Enter the fixed 2s preferred + 3s relaxed calibration schedule."""
         self._mode = MODE_CALIBRATING
         self._commands.put(("begin_calib",))
         self._wake.set()
@@ -327,6 +347,7 @@ class VisionWorker:
                 self._calib_samples = []
                 self._last_usable_sample = None
                 self._calibration_missing_fields = set()
+                self._calibration_accumulator = CalibrationAccumulator(self._calibration_plan)
                 if self.target_manager is not None:
                     self.target_manager.reset()
             elif kind == "finalize_calib":
@@ -334,6 +355,25 @@ class VisionWorker:
                 self._finalize_calibration(engine, distance_cm, sample_count, request_id)
 
     def _collect_calibration_sample(self, sample: VisionSample) -> None:
+        if getattr(self.analyzer, "require_dual_anchor", False):
+            accumulator = self._calibration_accumulator
+            if accumulator is None:
+                accumulator = CalibrationAccumulator(self._calibration_plan)
+                self._calibration_accumulator = accumulator
+            rejection = calibration_rejection_reason(sample, self._calibration_plan)
+            if rejection is not None:
+                accumulator.reject(sample.timestamp, rejection)
+                self._calibration_missing_fields.add(rejection)
+                self._calib_samples = []
+                self._last_usable_sample = None
+                return
+            accumulator.add(sample.timestamp, measurement_values(sample))
+            self._last_usable_sample = sample
+            self._calib_samples.append(sample)
+            if len(self._calib_samples) > self.SAMPLE_CAP:
+                self._calib_samples = self._calib_samples[-self.SAMPLE_CAP:]
+            return
+
         missing_fields = calibration_sample_missing_fields(sample)
         multiple_people = sample.person_count is not None and sample.person_count != 1
         ambiguous_target = sample.target_state in {"MULTI_PRESENT", "TARGET_AMBIGUOUS"}
@@ -352,6 +392,10 @@ class VisionWorker:
 
     def _finalize_calibration(self, engine, distance_cm: float,
                               sample_count: int, request_id: int) -> None:
+        if getattr(self.analyzer, "require_dual_anchor", False):
+            self._finalize_dual_anchor_calibration(distance_cm, request_id)
+            return
+
         # 样本不足先补采（recalibrate=18 帧；启动校准最少 1 帧、最多再试 8 次，
         # 与旧 _calibrate_from_camera 的 fallback 行为对应）
         attempts_left = max(8, sample_count * 2)
@@ -394,6 +438,62 @@ class VisionWorker:
                 missing_fields = ("complete_sample",)
         self._publish_calibration(CalibrationResult(request_id, ok, missing_fields))
 
+    def _finalize_dual_anchor_calibration(
+        self,
+        distance_cm: float,
+        request_id: int,
+    ) -> None:
+        accumulator = self._calibration_accumulator
+        profile = None
+        failure_reason = None
+        if accumulator is None:
+            failure_reason = "calibration_not_started"
+        else:
+            try:
+                profile = accumulator.finalize()
+            except ValueError as exc:
+                failure_reason = str(exc)
+
+        target_ok = True
+        if profile is not None and self.target_manager is not None:
+            target_ok = self.target_manager.lock_calibration_target()
+            if not target_ok:
+                failure_reason = "target_lock_failed"
+
+        ok = False
+        if profile is not None and target_ok:
+            try:
+                ok = bool(self.analyzer.set_calibration_profile(profile, distance_cm))
+            except Exception as exc:
+                failure_reason = f"profile_apply_failed:{exc}"
+
+        stage_counts = tuple(
+            sorted((accumulator.stage_counts if accumulator is not None else {}).items())
+        )
+        missing_fields: tuple[str, ...] = ()
+        if not ok:
+            fields = set(self._calibration_missing_fields)
+            if accumulator is not None:
+                fields.update(accumulator.failure_fields())
+            if failure_reason:
+                fields.add(failure_reason)
+            missing_fields = tuple(sorted(fields or {"complete_sample"}))
+
+        self._calib_samples = []
+        self._last_usable_sample = None
+        self._calibration_accumulator = None
+        self._mode = MODE_PAUSED
+        self._publish_calibration(
+            CalibrationResult(
+                request_id=request_id,
+                ok=ok,
+                missing_fields=missing_fields,
+                stage_counts=stage_counts,
+                calibration_quality=(profile.calibration_quality if ok and profile else 0.0),
+                failure_reason=failure_reason,
+            )
+        )
+
     def _throttle(self, frame_started: float) -> None:
         interval = 1.0 / self._target_fps
         elapsed = time.monotonic() - frame_started
@@ -420,6 +520,8 @@ class VisionWorker:
             target_observed=target_update.target_observation is not None,
             person_count=target_update.person_count,
             target_reason=target_update.reason,
+            target_motion=target_update.target_motion,
+            activity_state=target_update.activity_state,
         )
         return sample, target_update
 

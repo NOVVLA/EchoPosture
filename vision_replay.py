@@ -11,6 +11,7 @@ from typing import Any, Iterable, Optional
 
 from vision_backend import PersonObservation
 from vision_tracking import TargetManager
+from posture_science import ExposureAccumulator
 
 
 REPLAY_EPOCH = datetime(2026, 1, 1)
@@ -26,6 +27,10 @@ class ReplayFrameResult:
     target_detection_id: Optional[int]
     person_count: int
     reason: str
+    posture_status: Optional[str] = None
+    posture_deviation: Optional[float] = None
+    exposure_seconds: Optional[float] = None
+    activity_state: Optional[str] = None
 
 
 def _observation(payload: dict[str, Any], timestamp: datetime) -> PersonObservation:
@@ -50,6 +55,7 @@ def _observation(payload: dict[str, Any], timestamp: datetime) -> PersonObservat
 
 def replay_lines(lines: Iterable[str]) -> tuple[ReplayFrameResult, ...]:
     manager = TargetManager()
+    exposure = ExposureAccumulator()
     results: list[ReplayFrameResult] = []
     last_timestamp_s: Optional[float] = None
     locked_track_id: Optional[int] = None
@@ -61,6 +67,7 @@ def replay_lines(lines: Iterable[str]) -> tuple[ReplayFrameResult, ...]:
         payload = json.loads(raw_line)
         if payload.get("reset"):
             manager.reset()
+            exposure.reset()
             last_timestamp_s = None
             locked_track_id = None
 
@@ -109,6 +116,50 @@ def replay_lines(lines: Iterable[str]) -> tuple[ReplayFrameResult, ...]:
                 f"got {target_detection_id!r}"
             )
 
+        posture_status = None
+        posture_deviation = None
+        exposure_seconds = None
+        activity_state = None
+        if "posture_deviation" in payload:
+            posture_deviation = float(payload["posture_deviation"])
+            activity_state = str(payload.get("activity_state", "STATIC"))
+            quality = float(payload.get("confidence", 1.0))
+            paused = (
+                activity_state == "MOVING"
+                or bool(payload.get("camera_drift", False))
+                or quality < exposure.policy.quality_floor
+            )
+            snapshot = exposure.update(
+                timestamp,
+                posture_deviation,
+                paused=paused,
+            )
+            exposure_seconds = snapshot.exposure_seconds
+            if payload.get("camera_drift"):
+                posture_status = "UNKNOWN"
+            elif activity_state == "MOVING":
+                posture_status = "WATCH"
+            elif quality < exposure.policy.quality_floor:
+                posture_status = "UNKNOWN" if exposure_seconds == 0.0 else "WATCH"
+            elif (
+                exposure_seconds >= exposure.policy.critical_exposure_seconds
+                and posture_deviation >= exposure.policy.severe_deviation
+            ):
+                posture_status = "CRITICAL"
+            elif exposure_seconds >= exposure.policy.alert_exposure_seconds and snapshot.alert_active:
+                posture_status = "BAD"
+            elif snapshot.watch_active or exposure_seconds > 0.0:
+                posture_status = "WATCH"
+            else:
+                posture_status = "GOOD"
+
+            expected_posture_status = payload.get("expected_posture_status")
+            if expected_posture_status is not None and posture_status != expected_posture_status:
+                raise AssertionError(
+                    f"line {line_number}: expected posture {expected_posture_status}, "
+                    f"got {posture_status}"
+                )
+
         results.append(
             ReplayFrameResult(
                 line=line_number,
@@ -119,6 +170,10 @@ def replay_lines(lines: Iterable[str]) -> tuple[ReplayFrameResult, ...]:
                 target_detection_id=target_detection_id,
                 person_count=update.person_count,
                 reason=update.reason,
+                posture_status=posture_status,
+                posture_deviation=posture_deviation,
+                exposure_seconds=exposure_seconds,
+                activity_state=activity_state,
             )
         )
     return tuple(results)

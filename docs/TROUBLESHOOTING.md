@@ -18,7 +18,7 @@ original report private until it has been checked for personal paths or other se
 | Application does not start | Extract the whole ZIP; confirm `runtime\python311\python.exe` and `tray_app.py` exist | Run the self-test and inspect its startup error |
 | Camera cannot open | Windows camera privacy settings; camera in use by another app; physical shutter | Close competing apps, grant desktop-app camera access, retry |
 | Camera opens but self-test reports dark or unusable frames | Lens cover, lighting, virtual camera, wrong device | Improve front lighting or select another camera index in source diagnostics |
-| Startup calibration fails | Face and shoulders visible; one person in frame; stable upright pose | Reposition camera, improve lighting, retry calibration |
+| Startup calibration fails | Face, shoulders, ears and upper torso visible; one person; stable preferred/relaxed stages | Reposition camera, improve lighting, remain still for both stages, retry calibration |
 | Tray icon is missing | Notification-area overflow; process exited; startup warning behind another window | Expand hidden tray icons, then run the self-test |
 | Console does not open | App finished onboarding and calibration; tray icon is active | Double-click the tray icon; review any tray warning |
 | Dimming works but blur does not | Native-host stage and `mode`/reason in diagnostics | Allow compositor fallback or use `--disable-gpu-blur` to isolate the host |
@@ -37,15 +37,16 @@ Expected stages:
 [4/4] Tray monitor self-test
 ```
 
-For a complete pass, all four stages exit `0`; the tray stage reports `startup_calibrated=True` and `baseline=True`.
+For a complete pass, all four stages exit `0`; the tray stage reports that the camera and runtime chain started. The
+self-test's legacy one-frame baseline is not evidence that the production two-anchor scientific calibration passed.
 Interpret failures by stage:
 
 - Stage 1 only: native overlay or desktop-capture problem. Monitoring may still run through the PyQt compositor
   fallback, but native blur is not verified.
 - Stage 2 only: PyQt platform plugin, display, or packaged module problem.
 - Stage 3 only: camera, OpenCV, MediaPipe resource, or one-frame landmark path problem.
-- Stage 4 only: camera sampling or startup calibration problem. This can fail when no usable face or shoulder sample is
-  visible even if the package files are intact.
+- Stage 4 only: camera sampling or startup runtime problem. Production calibration can still fail later if either the
+  preferred 2-second or relaxed 3-second stage has fewer than five quality-gated samples.
 - Several missing-file failures: incomplete extraction or an incorrectly assembled package.
 
 An environment-sensitive failure is still a failed check. Record the exact stage and observation instead of reporting
@@ -110,17 +111,34 @@ the default camera first.
 
 ## Dark Frames and Calibration Failure
 
-Camera-open success does not prove that usable landmarks are available. EchoPosture needs at least a visible face or
-usable shoulder/torso measurement to establish a baseline.
+Camera-open success does not prove that usable landmarks are available. EchoPosture's production path needs complete,
+single-person, quality-gated samples in both calibration stages; it does not silently promote one frame to a baseline.
 
 - Face the camera with even front lighting; avoid a bright window behind you.
 - Keep the face, both shoulders, and upper torso in frame.
 - Remove lens covers and verify that the preview is not black.
-- Keep one person in frame and remain still during the five-second countdown.
-- Recalibrate after moving the camera, chair, or monitor.
+- Keep one person in frame and remain still during both the preferred 2-second and relaxed 3-second stages.
+- A moving target, ambiguous face/body association, low visibility, turned head, or missing keypoint resets the current
+  stage window.
+- Recalibrate after moving the camera, chair, or monitor. A detected camera drift pauses exposure and reports that
+  recalibration is required.
 
-A successful debug preview with a failed tray calibration usually means the sample did not contain sufficient usable
-landmarks during the short calibration window, not that the tray icon itself is broken.
+A successful debug preview with a failed tray calibration usually means one of the two stages did not contain enough
+quality-gated samples, not that the tray icon itself is broken. The debug panel's one-frame button is an explicit legacy
+path and must not be used as proof of scientific calibration.
+
+## Numeric Reliability Report
+
+To collect repeatability evidence deliberately, run the command from the repository root:
+
+```text
+runtime\python311\python.exe tools\collect_posture_reliability.py --frames 200 --output report.json
+```
+
+The first 40 percent of samples are treated as the preferred anchor and the rest as relaxed. The report contains only
+numeric feature statistics, anchor separation versus MDC, hardware/resolution/backend/model metadata, sample counts,
+and an explicit unverified-items list. Without `--output`, the JSON is printed and no report is written. This command
+does not establish clinical validity or cross-device reliability by itself.
 
 ## Tray and Console
 

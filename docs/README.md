@@ -10,6 +10,8 @@ is the end-user landing page; the documents here are for contributors and mainta
 - [Troubleshooting](TROUBLESHOOTING.md): user and maintainer diagnosis for startup, camera, calibration, tray, and overlay failures.
 - [Vision plan](plans/EchoPosture_vision_identity_upgrade_plan.md): phased multi-mode vision and identity upgrade plan.
 - [Vision ADR](decisions/ADR-0001-vision-modes-and-fallback.md): P2 mode responsibilities, fallback order, and evidence gates.
+- [Posture science ADR](decisions/ADR-0002-posture-detection-scientific-improvements.md): accepted two-anchor calibration,
+  measurement-noise gates, exposure policy, and explicit validity limits.
 - [Vision evidence](vision-evidence/README.md): consent-controlled recording metadata, deletion records, metrics, and license audit.
 - [Contributing](../CONTRIBUTING.md): development setup, change workflow, test selection, and pull request expectations.
 
@@ -23,15 +25,25 @@ From the source checkout, start the live diagnostic panel with:
 
 The CMD always enables the P3/P4 target panel. The right-hand panel shows the
 current target state, locked track ID, people present, association score, and
-state reason alongside the posture metrics. Click `Calibrate Current Posture`
-only when one clear person is visible; a successful calibration changes the
-target state from `ACQUIRING` to `TARGET_LOCKED` and records the track ID.
+state reason alongside posture deviation, exposure seconds, confidence, and
+anchor metrics. Its `Legacy Single-frame Calibration (Debug Only)` button is
+kept for explicit compatibility checks; it is not the production scientific
+calibration path.
 
 For a camera-free proof of the panel wiring, run:
 
 ```powershell
 runtime\python311\python.exe test_debug_ui.py
 ```
+
+For an explicit metrics-only camera reliability report, run:
+
+```powershell
+runtime\python311\python.exe tools\collect_posture_reliability.py --frames 200 --output report.json
+```
+
+Omit `--output` to print the report without writing a file. The command never
+saves frames, video, face crops, identity templates, or vectors.
 
 For a packaged/offscreen smoke check, use `debug_ui.py --self-test`; this
 prints the same target fields (`target_state`, `target_track`,

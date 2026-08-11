@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from vision_replay import replay_file
+from vision_replay import replay_file, replay_lines
 
 
 def test_synthetic_replay_matrix():
@@ -26,6 +26,24 @@ def test_synthetic_replay_matrix():
     print("test_synthetic_replay_matrix OK")
 
 
+def test_numeric_posture_exposure_replay():
+    lines = [
+        '{"timestamp_s": 0, "posture_deviation": 1.0, "expected_posture_status": "WATCH"}',
+        '{"timestamp_s": 6, "posture_deviation": 1.0, "expected_posture_status": "WATCH"}',
+        '{"timestamp_s": 12, "posture_deviation": 1.0, "expected_posture_status": "BAD"}',
+        '{"timestamp_s": 13, "posture_deviation": 1.0, "activity_state": "MOVING", "expected_posture_status": "WATCH"}',
+        '{"timestamp_s": 20, "posture_deviation": 1.0, "camera_drift": true, "expected_posture_status": "UNKNOWN"}',
+        '{"timestamp_s": 30, "posture_deviation": 0.0, "expected_posture_status": "WATCH"}',
+    ]
+    results = replay_lines(lines)
+    assert results[2].exposure_seconds == 12.0
+    assert results[3].exposure_seconds == 12.0
+    assert results[4].exposure_seconds == 12.0
+    assert 0.0 < (results[5].exposure_seconds or 0.0) < 12.0
+    print("test_numeric_posture_exposure_replay OK")
+
+
 if __name__ == "__main__":
     test_synthetic_replay_matrix()
+    test_numeric_posture_exposure_replay()
     print("ALL TESTS PASSED")

@@ -60,6 +60,7 @@ from vision_test import (
     VisionEngine,
     VisionSample,
     format_baseline,
+    format_calibration_profile,
     format_value,
 )
 from vision_backend import CompatibilityBackend, PostureFeatureExtractor
@@ -142,6 +143,16 @@ REASON_TEXT: Dict[str, str] = {
     "multi_present_observing": "reason.multi_present_observing",
     "multi_exit_stabilizing_s": "reason.multi_exit_stabilizing_s",
     "target_presence_check_disabled": "reason.target_presence_check_disabled",
+    "dual_anchor_calibration_required": "reason.dual_anchor_calibration_required",
+    "activity_moving_exposure_paused": "reason.activity_moving_exposure_paused",
+    "camera_drift_recalibration_required": "reason.camera_drift_recalibration_required",
+    "head_turn_measurement_abstained": "reason.head_turn_measurement_abstained",
+    "posture_features_unavailable": "reason.posture_features_unavailable",
+    "measurement_quality_low": "reason.measurement_quality_low",
+    "within_personal_posture_range": "reason.within_personal_posture_range",
+    "posture_deviation": "reason.posture_deviation",
+    "exposure_seconds": "reason.exposure_seconds",
+    "confidence": "reason.confidence",
 }
 
 
@@ -407,6 +418,7 @@ class DebugWindow(QMainWindow):
         self.trunk_label = QLabel("--")
         self.risk_label = QLabel("--")
         self.baseline_label = QLabel("--")
+        self.baseline_label.setWordWrap(True)
         self.calibration_label = QLabel(_t("debug_calib_init"))
         self.calibration_label.setWordWrap(True)
 
@@ -712,6 +724,11 @@ class DebugWindow(QMainWindow):
         if face_nose:
             cv2.circle(frame, face_nose, 4, eye_color, -1, cv2.LINE_AA)
 
+        for ear in (sample.left_ear_point, sample.right_ear_point):
+            ear_point = self._point(ear)
+            if ear_point:
+                cv2.circle(frame, ear_point, 4, neck_color, -1, cv2.LINE_AA)
+
         if nose and shoulder_center:
             cv2.circle(frame, shoulder_center, 5, center_color, -1, cv2.LINE_AA)
             cv2.line(frame, nose, shoulder_center, neck_color, 2, cv2.LINE_AA)
@@ -760,17 +777,28 @@ class DebugWindow(QMainWindow):
             estimated_distance = self.analyzer.estimated_distance_cm(sample)
         distance_text = format_value(estimated_distance, "cm")
         trunk_text = format_value(sample.trunk_lean_deg, "deg")
-        risk_text = (
-            f"{decision.risk_score:.0f} / {decision.sustained_seconds:.1f}s"
-            if decision.risk_score
-            else "--"
-        )
+        if decision.calibration_quality > 0.0:
+            risk_text = (
+                f"{decision.posture_deviation:.2f} / "
+                f"{decision.exposure_seconds:.1f}s / {decision.confidence:.2f}"
+            )
+        else:
+            risk_text = (
+                f"{decision.risk_score:.0f} / {decision.sustained_seconds:.1f}s"
+                if decision.risk_score
+                else "--"
+            )
         self.face_label.setText(face_text)
         self.shoulder_label.setText(shoulder_text)
         self.distance_label.setText(distance_text)
         self.trunk_label.setText(trunk_text)
         self.risk_label.setText(risk_text)
-        self.baseline_label.setText(format_baseline(self.analyzer.baseline))
+        profile = getattr(self.analyzer, "calibration_profile", None)
+        self.baseline_label.setText(
+            format_calibration_profile(profile)
+            if profile is not None
+            else format_baseline(self.analyzer.baseline)
+        )
 
     @staticmethod
     def _sample_for_target(
@@ -789,6 +817,8 @@ class DebugWindow(QMainWindow):
             target_observed=target_update.target_observation is not None,
             person_count=target_update.person_count,
             target_reason=target_update.reason,
+            target_motion=target_update.target_motion,
+            activity_state=target_update.activity_state,
         )
 
     def _show_target_metrics(self, update: TargetUpdate) -> None:

@@ -845,3 +845,34 @@
 - The smoke test reached the bundled CVLFace custom code and exposed a missing
   `timm` dependency; `requirements-p5-models.txt` now pins `timm==0.9.12`, but
   installation timed out before a second load attempt.
+
+## 2026-08-11 - Posture science core refactor v1
+
+- Source: user-approved posture science refactor plan; implementation of the accepted ADR-0002 decision.
+- Git: commit `pending`, branch `codex/pr2-phase1-calibration-safety`, tag `none`.
+- Scope: added `posture_science.py` and metrics-only `tools/collect_posture_reliability.py`; extended
+  `VisionSample`, `PostureFeatures`, `Keypoint`, target motion/activity output, and `PostureDecision`; switched the
+  production tray analyzer and both startup/manual recalibration flows to a fixed 2s preferred + 3s relaxed dual-anchor
+  profile; retained `set_baseline_from_sample()` only for explicit legacy debug/self-test; updated tray intervention,
+  i18n, debug metrics, README/docs, ADR-0002, replay, and focused tests.
+- Product policy: watch enter/exit `0.50/0.40`, alert enter/exit `0.70/0.55`, severe deviation `0.85`, equivalent
+  exposure `12s/30s`, confirmation `3s`, cooldown `60s`. These values are interaction policy parameters, not medical
+  or physiological standards.
+- Data boundary: runtime monitoring does not save frames, video, face crops, identity templates, or vectors. The
+  reliability command writes a numeric JSON report only when `--output` is explicitly supplied.
+- Recovery: created `_backups/posture-science-v1-preedit-20260811-170304/` before edits; the worktree already contained
+  unrelated identity/model and documentation changes, which were preserved.
+- Verification passed:
+  - `runtime\\python311\\python.exe -m py_compile posture_science.py vision_test.py vision_backend.py vision_tracking.py vision_worker.py tray_app.py debug_ui.py i18n.py`
+  - `runtime\\python311\\python.exe test_posture_science.py`
+  - `runtime\\python311\\python.exe test_feature_toggles.py`
+  - `runtime\\python311\\python.exe test_vision_worker.py`
+  - `runtime\\python311\\python.exe test_vision_tracking.py`
+  - `runtime\\python311\\python.exe test_vision_replay.py`
+  - `runtime\\python311\\python.exe test_startup_guards.py`
+  - `runtime\\python311\\python.exe test_debug_ui.py` (offscreen; Qt emitted existing missing-font-directory warnings)
+  - `runtime\\python311\\python.exe tools\\collect_posture_reliability.py --help`
+- Additional verification passed: `ruff check .`; `git diff --check` (only existing LF/CRLF conversion warnings).
+- Not run: real camera reliability collection, `--output` report generation, SEM/MDC cross-device repeatability,
+  external clinical validity, user comfort feedback, package build, and GUI/manual overlay observation.
+- Conclusion: local implementation ready for static verification; real-camera and external-validity evidence remain open.
