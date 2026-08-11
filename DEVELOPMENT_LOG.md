@@ -609,3 +609,58 @@
 - Gaps: Dependabot's first scheduled job and generated pull request cannot be verified before the configuration reaches
   the default branch.
 - Conclusion: file-level validation passed; ready for remote pull-request verification.
+
+## 2026-08-09 - Phase 1 Calibration Safety and Multi-user Debounce
+
+- Source: user request to implement the first priority from `docs/plans/EchoPosture_vision_identity_upgrade_plan.md`.
+- Git: implementation commit `329c537`, branch `codex/pr2-phase1-calibration-safety`, tag `none`.
+- Scope:
+  - `vision_test.py`: require a single person, both face and pose observations, and complete core posture metrics before automatic calibration; debounce multi-user state for 0.3 seconds.
+  - `vision_worker.py`: reuse the shared calibration predicate, filter averaged samples, and reset the calibration window when a second person appears.
+  - `test_feature_toggles.py`, `test_vision_worker.py`: add deterministic coverage for incomplete/multi-person calibration samples, calibration-window reset, and multi-user debounce.
+  - Plan reference: `docs/plans/EchoPosture_vision_identity_upgrade_plan.md` was already present at the canonical path in the PR base (`origin/main`, commit `3691e8d`); no plan-file move is included in this PR.
+- Risk: stricter calibration may reject short-lived partial camera observations and require the user to remain visible with complete face and pose metrics; multi-user status now waits 0.3 seconds before suppression.
+- Verification:
+  - Command: `runtime\\python311\\python.exe -m py_compile vision_test.py vision_worker.py test_feature_toggles.py test_vision_worker.py` with `PYTHONDONTWRITEBYTECODE=1`.
+  - Result: passed, exit 0.
+  - Command: `runtime\\python311\\python.exe test_feature_toggles.py` with `PYTHONDONTWRITEBYTECODE=1`.
+  - Result: passed; `ALL TESTS PASSED`, exit 0.
+  - Command: `runtime\\python311\\python.exe test_vision_worker.py` with `PYTHONDONTWRITEBYTECODE=1`.
+  - Result: passed; `ALL TESTS PASSED`, exit 0.
+  - Command: `runtime\\python311\\python.exe test_startup_guards.py` with `PYTHONDONTWRITEBYTECODE=1`.
+  - Result: passed; 8 tests, exit 0.
+  - Command: `git diff --check`.
+  - Result: passed; only the repository's existing LF/CRLF conversion warnings were reported.
+- Gaps: Ruff was not run because the `ruff` command is unavailable in the current environment; no real-camera or packaged Windows self-test was run; the PR and remote merge were not yet completed at log-entry creation time.
+- Artifacts: no release or binary artifacts.
+- Conclusion: local implementation validated for logic tests; ready for PR review after commit and push.
+
+## 2026-08-09 - PR22 AI Review Follow-up
+
+- Source: GitHub Actions AI review comment `5231950418` on PR #22.
+- Git: implementation commit `30906d6`, branch `codex/pr2-phase1-calibration-safety`, tag `none`.
+- Scope:
+  - Clear the multi-user debounce anchor when presence checking is disabled, preventing stale timestamps from bypassing the confirmation window after re-enabling the feature.
+  - Derive averaged observation flags from eligible samples instead of force-stamping them.
+  - Use `calibration_sample_is_complete` as the single canonical calibration predicate across `vision_test.py`, `vision_worker.py`, and `tray_app.py`.
+  - Add regression coverage for an ineligible fallback and the presence-toggle debounce path.
+  - Surface missing calibration conditions when no complete sample is available, so calibration failure is diagnosable from the tray message.
+- Risk: the same-frame completeness invariant remains intentionally conservative; real-camera co-occurrence of face and pose metrics is still unverified and must be checked before merge.
+- Verification:
+  - `runtime\\python311\\python.exe test_feature_toggles.py`: passed, `ALL TESTS PASSED`.
+  - `runtime\\python311\\python.exe test_vision_worker.py`: passed, `ALL TESTS PASSED`.
+  - `runtime\\python311\\python.exe test_startup_guards.py`: passed, 8 tests.
+  - `runtime\\python311\\python.exe test_tray_flyout.py`: passed, `ALL TESTS PASSED`.
+  - `runtime\\python311\\python.exe -m py_compile tray_app.py vision_test.py vision_worker.py test_feature_toggles.py test_vision_worker.py`: passed.
+- Gaps: Ruff remains unavailable in the environment; no real-camera or packaged Windows self-test was run.
+- Artifacts: no release or binary artifacts.
+- Conclusion: AI review findings addressed where confirmed; PR requires CI rerun and real-camera review of the conservative calibration condition.
+
+## 2026-08-10 - Vision Plan Priority Handoff Register
+
+- Source: user request to record the remaining 2.0 implementation priorities for handoff and later audit.
+- Git: implementation commit `98bc4ba`, branch `codex/pr2-phase1-calibration-safety`, tag `none`.
+- Scope: added an execution register to `docs/plans/EchoPosture_vision_identity_upgrade_plan.md` covering P1 review gates and the ordered P2-P8 work, with task IDs, dependencies, status definitions, and completion evidence.
+- Current state: P1 remains in review in PR #22; P2 is the next executable priority after P1 approval and evidence completion. No P2-P8 implementation has started.
+- Verification: `git diff --check` passed; no source or runtime behavior changed.
+- Gaps: the register intentionally preserves the known real-camera, packaged self-test, licensing, and release-validation gates.

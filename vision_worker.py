@@ -31,6 +31,8 @@ from vision_test import (
     CameraPermissionError,
     PostureDecision,
     VisionSample,
+    calibration_sample_is_complete,
+    calibration_sample_missing_fields,
 )
 
 MODE_PAUSED = "paused"
@@ -38,31 +40,29 @@ MODE_MONITORING = "monitoring"
 MODE_CALIBRATING = "calibrating"
 
 
-def sample_is_usable(sample: VisionSample) -> bool:
-    """校准样本有效性条件（与旧 tray_app._capture_calibration_sample 一致）。"""
-    return (
-        sample.interpupillary_px is not None
-        or sample.signed_shoulder_diff_px is not None
-        or sample.trunk_lean_deg is not None
-    )
-
-
 def average_calibration_sample(
     samples: List[VisionSample],
     fallback: Optional[VisionSample] = None,
 ) -> Optional[VisionSample]:
-    """对一批校准样本逐字段求平均（迁移自旧 tray_app._average_calibration_sample）。"""
-    if not samples:
-        return fallback
+    """Average only single-person, complete calibration samples."""
+    eligible_samples = [sample for sample in samples if calibration_sample_is_complete(sample)]
+    if not eligible_samples:
+        return (
+            fallback
+            if fallback is not None and calibration_sample_is_complete(fallback)
+            else None
+        )
+    if any(sample.face_count != 1 for sample in eligible_samples):
+        return None
 
     def avg(name: str) -> Optional[float]:
-        values = [getattr(sample, name) for sample in samples]
+        values = [getattr(sample, name) for sample in eligible_samples]
         usable = [value for value in values if value is not None]
         if not usable:
             return None
         return sum(usable) / len(usable)
 
-    base = samples[-1]
+    base = eligible_samples[-1]
     return replace(
         base,
         timestamp=datetime.now(),
@@ -73,8 +73,9 @@ def average_calibration_sample(
         trunk_lean_deg=avg("trunk_lean_deg"),
         head_turn_ratio=avg("head_turn_ratio"),
         torso_height_px=avg("torso_height_px"),
-        face_detected=any(sample.face_detected for sample in samples),
-        pose_detected=any(sample.pose_detected for sample in samples),
+        face_detected=all(sample.face_detected for sample in eligible_samples),
+        pose_detected=all(sample.pose_detected for sample in eligible_samples),
+        face_count=1,
     )
 
 
@@ -91,6 +92,7 @@ class Snapshot:
 class CalibrationResult:
     request_id: int
     ok: bool
+    missing_fields: tuple[str, ...] = ()
 
 
 class VisionWorker:
@@ -133,6 +135,7 @@ class VisionWorker:
         # 仅工作线程触碰
         self._calib_samples: List[VisionSample] = []
         self._last_usable_sample: Optional[VisionSample] = None
+        self._calibration_missing_fields: set[str] = set()
         self._calib_request_seq = 0
 
     # ============================================================
@@ -289,12 +292,20 @@ class VisionWorker:
             elif kind == "begin_calib":
                 self._calib_samples = []
                 self._last_usable_sample = None
+                self._calibration_missing_fields = set()
             elif kind == "finalize_calib":
                 _, distance_cm, sample_count, request_id = command
                 self._finalize_calibration(engine, distance_cm, sample_count, request_id)
 
     def _collect_calibration_sample(self, sample: VisionSample) -> None:
-        if sample_is_usable(sample):
+        missing_fields = calibration_sample_missing_fields(sample)
+        if sample.face_count > 1:
+            # A second person invalidates the current calibration window. Do
+            # not let later averaging hide that contamination.
+            self._calib_samples = []
+            self._last_usable_sample = None
+        self._calibration_missing_fields.update(missing_fields)
+        if not missing_fields:
             self._last_usable_sample = sample
             self._calib_samples.append(sample)
             if len(self._calib_samples) > self.SAMPLE_CAP:
@@ -331,7 +342,12 @@ class VisionWorker:
 
         self._calib_samples = []
         self._mode = MODE_PAUSED  # 主线程拿到回执后决定是否 resume
-        self._publish_calibration(CalibrationResult(request_id, ok))
+        missing_fields: tuple[str, ...] = ()
+        if not ok:
+            missing_fields = tuple(sorted(self._calibration_missing_fields))
+            if not missing_fields:
+                missing_fields = ("complete_sample",)
+        self._publish_calibration(CalibrationResult(request_id, ok, missing_fields))
 
     def _throttle(self, frame_started: float) -> None:
         interval = 1.0 / self._target_fps

@@ -60,6 +60,23 @@ def test_defaults_all_enabled():
     print("test_defaults_all_enabled OK")
 
 
+def test_auto_calibration_requires_complete_single_person_sample():
+    analyzer = HighPrecisionPostureAnalyzer(calibration_samples=1)
+
+    multi = make_sample(T0, face_count=2)
+    analyzer.evaluate(multi)
+    assert analyzer.baseline is None
+
+    partial = make_sample(T0 + timedelta(seconds=1), pose=False)
+    analyzer.evaluate(partial)
+    assert analyzer.baseline is None
+
+    complete = make_sample(T0 + timedelta(seconds=2))
+    analyzer.evaluate(complete)
+    assert analyzer.baseline is not None
+    print("test_auto_calibration_requires_complete_single_person_sample OK")
+
+
 def test_precision_toggle():
     analyzer = calibrated_analyzer()
 
@@ -95,9 +112,11 @@ def test_precision_toggle():
 def test_presence_toggle():
     analyzer = calibrated_analyzer()
 
-    # 开：多人 → MULTI_USER
+    # 单帧多人不应立即切换状态；持续超过确认窗口后才进入 MULTI_USER。
     multi = make_sample(T0 + timedelta(seconds=1), face_count=2)
     decision = analyzer.evaluate(multi)
+    assert decision.status == "UNKNOWN", decision
+    decision = analyzer.evaluate(make_sample(T0 + timedelta(seconds=1.4), face_count=2))
     assert decision.status == "MULTI_USER", decision
 
     # 关：同样的多人画面不再抑制，正常评分
@@ -124,6 +143,23 @@ def test_presence_toggle():
     )
     assert decision.status == "UNKNOWN", decision
     print("test_presence_toggle OK")
+
+
+def test_presence_toggle_resets_multi_debounce_anchor():
+    analyzer = calibrated_analyzer()
+
+    first_multi = make_sample(T0 + timedelta(seconds=1), face_count=2)
+    assert analyzer.evaluate(first_multi).status == "UNKNOWN"
+
+    analyzer.presence_check_enabled = False
+    analyzer.evaluate(make_sample(T0 + timedelta(seconds=2), face_count=2))
+
+    analyzer.presence_check_enabled = True
+    decision = analyzer.evaluate(make_sample(T0 + timedelta(seconds=2.1), face_count=2))
+    assert decision.status == "UNKNOWN", decision
+    decision = analyzer.evaluate(make_sample(T0 + timedelta(seconds=2.5), face_count=2))
+    assert decision.status == "MULTI_USER", decision
+    print("test_presence_toggle_resets_multi_debounce_anchor OK")
 
 
 def test_identity_toggle():
@@ -153,7 +189,9 @@ def test_identity_toggle():
 
 if __name__ == "__main__":
     test_defaults_all_enabled()
+    test_auto_calibration_requires_complete_single_person_sample()
     test_precision_toggle()
     test_presence_toggle()
+    test_presence_toggle_resets_multi_debounce_anchor()
     test_identity_toggle()
     print("ALL TESTS PASSED")
