@@ -148,7 +148,7 @@ def replay_lines(lines: Iterable[str]) -> tuple[ReplayFrameResult, ...]:
                 posture_status = "CRITICAL"
             elif exposure_seconds >= exposure.policy.alert_exposure_seconds and snapshot.alert_active:
                 posture_status = "BAD"
-            elif snapshot.watch_active or exposure_seconds > 0.0:
+            elif snapshot.watch_active:
                 posture_status = "WATCH"
             else:
                 posture_status = "GOOD"

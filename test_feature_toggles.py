@@ -238,28 +238,25 @@ def test_identity_toggle():
 def test_scientific_continuous_scoring_exposure_and_abstention():
     analyzer = scientific_analyzer()
 
-    # Calibration ends at the relaxed anchor. Remaining there must never be
-    # reinterpreted as a fresh static-exposure episode, even after a minute.
+    # Both anchors are user-accepted posture. The relaxed anchor and every
+    # posture between the anchors must remain inside the personal normal band.
     ending_posture = analyzer.evaluate(scientific_sample(T0, 1.0))
-    assert ending_posture.status == "UNKNOWN", ending_posture
-    assert ending_posture.reason == "post_calibration_return_to_preferred"
+    assert ending_posture.status == "GOOD", ending_posture
+    assert ending_posture.posture_deviation == 0.0
     assert ending_posture.exposure_seconds == 0.0
     still_relaxed = analyzer.evaluate(scientific_sample(T0 + timedelta(seconds=60), 1.0))
-    assert still_relaxed.status == "UNKNOWN", still_relaxed
+    assert still_relaxed.status == "GOOD", still_relaxed
+    assert still_relaxed.posture_deviation == 0.0
     assert still_relaxed.exposure_seconds == 0.0
 
-    # Monitoring activates only after the preferred anchor is held stably.
-    returning = analyzer.evaluate(scientific_sample(T0 + timedelta(seconds=61), 0.0))
-    assert returning.status == "UNKNOWN", returning
-    activated = analyzer.evaluate(scientific_sample(T0 + timedelta(seconds=63.1), 0.0))
-    assert activated.status == "GOOD", activated
-    assert activated.reason == "preferred_posture_monitoring_activated"
-    assert activated.posture_deviation == 0.0
-    assert activated.exposure_seconds == 0.0
-
-    preferred = analyzer.evaluate(scientific_sample(T0 + timedelta(seconds=64), 0.0))
+    preferred = analyzer.evaluate(scientific_sample(T0 + timedelta(seconds=61), 0.0))
     assert preferred.status == "GOOD", preferred
     assert preferred.exposure_seconds == 0.0
+
+    midpoint = analyzer.evaluate(scientific_sample(T0 + timedelta(seconds=62), 0.5))
+    assert midpoint.status == "GOOD", midpoint
+    assert midpoint.posture_deviation == 0.0, midpoint
+    assert midpoint.exposure_seconds == 0.0
 
     # Remaining in the chosen preferred posture must stay safe over the same
     # multi-minute horizon reported in the field. Ordinary sub-noise jitter
@@ -271,12 +268,13 @@ def test_scientific_continuous_scoring_exposure_and_abstention():
         assert stable.status == "GOOD", stable
         assert stable.exposure_seconds == 0.0, stable
 
-    midpoint = analyzer.evaluate(scientific_sample(T0 + timedelta(seconds=301), 0.5))
-    assert 0.45 <= midpoint.posture_deviation <= 0.65, midpoint
-    assert midpoint.status == "WATCH", midpoint
+    beyond_relaxed = analyzer.evaluate(scientific_sample(T0 + timedelta(seconds=301), 1.6))
+    assert beyond_relaxed.posture_deviation >= 0.50, beyond_relaxed
+    assert beyond_relaxed.status == "WATCH", beyond_relaxed
 
-    analyzer.evaluate(scientific_sample(T0 + timedelta(seconds=302), 1.0))
-    alert = analyzer.evaluate(scientific_sample(T0 + timedelta(seconds=314), 1.0))
+    alert = beyond_relaxed
+    for seconds in range(302, 315):
+        alert = analyzer.evaluate(scientific_sample(T0 + timedelta(seconds=seconds), 2.0))
     assert alert.status == "BAD", alert
     assert alert.exposure_seconds >= 12.0
     assert alert.risk_score == alert.posture_deviation * 100.0
@@ -284,13 +282,13 @@ def test_scientific_continuous_scoring_exposure_and_abstention():
 
     before = alert.exposure_seconds
     low_quality = analyzer.evaluate(
-        scientific_sample(T0 + timedelta(seconds=320), 1.0, quality=0.40)
+        scientific_sample(T0 + timedelta(seconds=320), 2.0, quality=0.40)
     )
     assert low_quality.status in {"UNKNOWN", "WATCH"}, low_quality
     assert low_quality.exposure_seconds == before
 
     moving = replace(
-        scientific_sample(T0 + timedelta(seconds=325), 1.0),
+        scientific_sample(T0 + timedelta(seconds=325), 2.0),
         target_motion=0.5,
         activity_state="MOVING",
     )

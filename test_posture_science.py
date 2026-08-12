@@ -253,9 +253,14 @@ def test_mdc_normalization_and_group_deduplication() -> None:
         "face_shoulder_ratio", relaxed.mean, preferred, relaxed
     )
     assert at_preferred.deviation == 0.0
-    assert math.isclose(at_relaxed.deviation, 1.0)
+    assert at_relaxed.deviation == 0.0
 
-    score = score_posture_deviation(anchor_values(1.0), profile)
+    midpoint = score_posture_deviation(anchor_values(0.5), profile)
+    relaxed_score = score_posture_deviation(anchor_values(1.0), profile)
+    assert midpoint.deviation == 0.0
+    assert relaxed_score.deviation == 0.0
+
+    score = score_posture_deviation(anchor_values(2.0), profile)
     assert math.isclose(score.forward_deviation, 1.0)
     assert math.isclose(score.lateral_deviation, 1.0)
     assert math.isclose(score.deviation, 1.0)
@@ -357,8 +362,9 @@ def test_exposure_uses_timestamps_pauses_and_decays() -> None:
     exposure = ExposureAccumulator(policy)
     start = datetime(2026, 1, 1, 12, 0, 0)
 
-    exposure.update(start, 1.0)
-    snapshot = exposure.update(start + timedelta(seconds=12), 1.0)
+    snapshot = exposure.update(start, 1.0)
+    for seconds in range(1, 13):
+        snapshot = exposure.update(start + timedelta(seconds=seconds), 1.0)
     assert math.isclose(snapshot.exposure_seconds, 12.0)
     assert snapshot.alert_active
 
@@ -366,11 +372,24 @@ def test_exposure_uses_timestamps_pauses_and_decays() -> None:
     assert math.isclose(paused.exposure_seconds, 12.0)
     assert paused.paused
 
-    recovered = exposure.update(start + timedelta(seconds=122), 0.0)
+    recovered = paused
+    for seconds in range(113, 123):
+        recovered = exposure.update(start + timedelta(seconds=seconds), 0.0)
     assert math.isclose(recovered.exposure_seconds, 6.0, rel_tol=1e-6)
     assert not recovered.watch_active
     assert not recovered.alert_active
     print("test_exposure_uses_timestamps_pauses_and_decays OK")
+
+
+def test_long_observation_gap_does_not_backfill_exposure() -> None:
+    exposure = ExposureAccumulator()
+    exposure.update(0.0, 1.0)
+    after_gap = exposure.update(300.0, 1.0)
+    assert after_gap.paused
+    assert after_gap.exposure_seconds == 0.0
+    next_observed_second = exposure.update(301.0, 1.0)
+    assert next_observed_second.exposure_seconds == 1.0
+    print("test_long_observation_gap_does_not_backfill_exposure OK")
 
 
 def test_watch_only_deviation_does_not_preload_exposure() -> None:
@@ -429,6 +448,7 @@ if __name__ == "__main__":
     test_near_identical_smoothed_anchors_do_not_create_false_signal()
     test_narrow_credible_anchor_span_is_disabled()
     test_exposure_uses_timestamps_pauses_and_decays()
+    test_long_observation_gap_does_not_backfill_exposure()
     test_watch_only_deviation_does_not_preload_exposure()
     test_exposure_hysteresis()
     print("ALL TESTS PASSED")

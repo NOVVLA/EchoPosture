@@ -104,7 +104,7 @@ class CalibrationPlan:
 
     The visible countdown covers only ``preferred_seconds``.  The caller must
     explicitly end that stage after closing the countdown.  Samples are then
-    ignored for ``transition_seconds`` before the silent relaxed window starts.
+    ignored for ``transition_seconds`` before the background relaxed window starts.
     A short bounded extension lets a nearly-complete relaxed window recover
     from rejected samples without turning calibration into an unbounded wait.
     These durations are interaction policy, not physiological standards.
@@ -377,6 +377,10 @@ class PosturePolicy:
     alert_exposure_seconds: float = 12.0
     critical_exposure_seconds: float = 30.0
     recovery_half_life_seconds: float = 12.0
+    # A long gap means the camera/worker did not observe the user throughout
+    # that interval. Never backfill it as continuous exposure on the next
+    # frame. This is an acquisition reliability limit, not a medical value.
+    maximum_observation_gap_seconds: float = 2.0
     confirmation_seconds: float = 3.0
     cooldown_seconds: float = 60.0
     moving_threshold: float = 0.20
@@ -396,8 +400,6 @@ class PosturePolicy:
     # product reliability parameters, not physiological thresholds.
     runtime_ratio_noise_floor: float = 0.015
     runtime_angle_noise_floor_deg: float = 1.5
-    preferred_reentry_max_deviation: float = 0.40
-    preferred_reentry_seconds: float = 2.0
 
     def __post_init__(self) -> None:
         if not (0.0 <= self.watch_exit < self.watch_enter <= 1.0):
@@ -406,6 +408,8 @@ class PosturePolicy:
             raise ValueError("alert hysteresis must satisfy exit < enter")
         if self.recovery_half_life_seconds <= 0:
             raise ValueError("recovery_half_life_seconds must be positive")
+        if self.maximum_observation_gap_seconds <= 0:
+            raise ValueError("maximum_observation_gap_seconds must be positive")
         if self.runtime_noise_std_multiplier <= 0:
             raise ValueError("runtime_noise_std_multiplier must be positive")
         if self.runtime_min_signal_to_noise_ratio <= 1.0:
@@ -414,10 +418,6 @@ class PosturePolicy:
             raise ValueError("runtime_ratio_noise_floor cannot be negative")
         if self.runtime_angle_noise_floor_deg < 0.0:
             raise ValueError("runtime_angle_noise_floor_deg cannot be negative")
-        if not (0.0 <= self.preferred_reentry_max_deviation < self.watch_enter):
-            raise ValueError("preferred reentry must be below watch entry")
-        if self.preferred_reentry_seconds < 0.0:
-            raise ValueError("preferred_reentry_seconds cannot be negative")
 
 
 @dataclass(frozen=True)
@@ -449,7 +449,7 @@ def normalized_feature_deviation(
     policy: Optional[PosturePolicy] = None,
     runtime_noise_floor: Optional[float] = None,
 ) -> FeatureDeviation:
-    """Project one observation toward relaxed after repeatability filtering.
+    """Measure excursion beyond the user's two-anchor normal posture band.
 
     MDC is retained for reporting, but SEM-derived MDC is not a suitable
     single-observation tolerance because it shrinks as calibration sample count
@@ -457,6 +457,13 @@ def normalized_feature_deviation(
     standard deviation. Features whose anchor span is only marginally above
     that band are excluded at calibration time so a near-zero usable
     denominator cannot amplify ordinary frame jitter.
+
+    ``preferred`` and ``relaxed`` are both user-accepted calibration postures.
+    The interval between them is therefore a personal normal range, not a
+    zero-to-one risk axis. Deviation begins only after the observation passes
+    the relaxed boundary in the calibrated direction by more than the runtime
+    noise band. This prevents the posture explicitly requested in stage two
+    from being reclassified as high deviation immediately after calibration.
     """
 
     policy = policy or PosturePolicy()
@@ -482,8 +489,9 @@ def normalized_feature_deviation(
         deviation = 0.0
     else:
         projected_change = (float(current) - preferred.mean) * direction
-        credible_change = max(0.0, projected_change - noise_floor)
-        deviation = max(0.0, min(1.5, credible_change / credible_anchor_span))
+        beyond_relaxed = projected_change - anchor_span
+        credible_excursion = max(0.0, beyond_relaxed - noise_floor)
+        deviation = max(0.0, min(1.5, credible_excursion / credible_anchor_span))
     return FeatureDeviation(
         feature=feature,
         deviation=deviation,
@@ -646,6 +654,7 @@ class ExposureAccumulator:
             )
 
         deviation = max(0.0, min(1.0, float(deviation)))
+        observation_gap = elapsed > self.policy.maximum_observation_gap_seconds
         if self.watch_active:
             if deviation <= self.policy.watch_exit:
                 self.watch_active = False
@@ -660,6 +669,15 @@ class ExposureAccumulator:
 
         integrated = 0.0
         recovered = 0.0
+        if observation_gap:
+            return ExposureSnapshot(
+                exposure_seconds=self.exposure_seconds,
+                watch_active=self.watch_active,
+                alert_active=self.alert_active,
+                integrated_seconds=0.0,
+                recovery_seconds=0.0,
+                paused=True,
+            )
         if self.alert_active:
             integrated = elapsed * deviation
             self.exposure_seconds += integrated
