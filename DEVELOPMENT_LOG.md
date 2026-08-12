@@ -1,8 +1,56 @@
 # DEVELOPMENT_LOG（Development Log，开发日志）
 
+## 2026-08-13 - Abstain when a shared shoulder scale drifts and clarify calibration actions
+
+- Source: field report that an unchanged posture could remain in `WATCH` and later trigger static-exposure
+  intervention, plus a request to make the preferred, transition, and relaxed Debug UI stages unmistakable.
+- Git: commit `pending`, branch `codex/pr2-phase1-calibration-safety`, tag `none`; delivery target is the existing PR
+  `#23`, with no new PR.
+- Numeric root cause: a deterministic replay held face size, torso height, ear height, shoulder slope, and trunk lean
+  fixed while the detected `shoulder_width_px` drifted from 200 px to 160 px. Because face/shoulder,
+  torso/shoulder, and ear/shoulder all used that width as a denominator, the same detector drift moved three ratios
+  together. The old grouping counted those correlated changes as corroboration, reached deviation `1.0`, and reached
+  `CRITICAL` after about 300 equivalent high-deviation seconds even though the represented posture was unchanged.
+- Scoring fix: face/shoulder and ear/shoulder are now one head/shoulder evidence channel rather than two votes. The
+  head/shoulder channel needs independent torso support before the forward group can open `WATCH`; a face and ear
+  excursion alone remains numeric diagnostic evidence but abstains from intervention.
+- Reliability gate: runtime scoring compares the current numeric shoulder span with both calibrated anchor ranges.
+  When it leaves the anchor range by more than the largest of MDC, `1.96 × std`, or a 5% scale allowance, the
+  analyzer returns `UNKNOWN` with `shared_shoulder_scale_measurement_abstained`, zero current deviation and
+  confidence, and pauses exposure. The 5% allowance is an adjustable product reliability parameter, not an
+  anatomical, physiological, or medical threshold.
+- Positive protection: a separate deterministic replay keeps shoulder width at the calibrated 200 px while face and
+  torso geometry jointly move beyond the relaxed anchor. It still enters `WATCH` immediately and reaches `BAD` after
+  the configured 12-second equivalent-exposure threshold, proving the reliability gate does not suppress every
+  measurable forward-posture change.
+- Debug UI: the preferred, non-sampling transition, and silent relaxed stages now use green, orange, and purple
+  12-pixel camera borders; large action-first camera banners; and a bottom two-stage rail showing which posture is
+  active. The full dual-anchor flow and the labelled legacy single-frame comparison both remain available. An initial
+  offscreen screenshot pass found the rail text vertically cropped; rail padding was corrected and a font-metric
+  regression assertion was added.
+- Verification from the repository root:
+  - Bundled `py_compile` passed for the runtime, UI, localization, and affected test modules.
+  - `ruff check .` passed.
+  - `test_posture_science.py`, `test_feature_toggles.py`, `test_vision_worker.py`, `test_vision_tracking.py`,
+    `test_startup_guards.py`, `test_debug_ui.py`, and `test_vision_replay.py` passed.
+  - The unchanged-posture replay covered 1,800 observations over five minutes, encountered the new explicit
+    shoulder-scale abstention, and never produced `WATCH`, `BAD`, `CRITICAL`, non-zero deviation, or exposure.
+  - Three 1020×700 offscreen Debug UI views were re-rendered with the local Microsoft YaHei system font after the
+    crop fix. The stage banner and bottom rail text were complete in preferred, transition, and relaxed views; the
+    temporary images contain only the fake test skeleton/UI and remain outside the repository.
+  - `git diff --check` passed; the only diagnostic noise was the existing bundled Qt missing-font-directory warning.
+- Privacy and artifacts: no camera frame, face crop, video, identity template/vector, reliability report, package,
+  release asset, or tag was created. The temporary fake-data UI screenshots are local-only and are not staged.
+- Gaps: no live-camera or packaged-display run is claimed. MediaPipe initialization from this non-ASCII workspace
+  path remains a separate environment evidence gap, as do cross-device SEM/MDC, consented recording, user feedback,
+  external validity, and medical validation.
+- Conclusion: the field false-positive mechanism is reproduced and guarded by deterministic negative and positive
+  tests; the offscreen Debug UI action states are visually verified. Ready to push to the existing PR, subject to its
+  remote checks and the named live-camera gap.
+
 ## 2026-08-13 - Validate the calibrated normal range before enabling exposure
 
-- Git: commit `pending`, branch `codex/pr2-phase1-calibration-safety`, tag `none`; delivery target is the existing PR
+- Git: commit `53f416c0333678c04f10c58faf2c92c9a293aaa9`, branch `codex/pr2-phase1-calibration-safety`, tag `none`; delivery target is the existing PR
   `#23`, with no new PR.
 - Source: continued field report that the full five-second preferred stage still failed with `preferred_samples` and
   `pose_quality_low`, and that an unchanged upright posture could enter `WATCH` after a successful calibration.

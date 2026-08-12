@@ -20,6 +20,7 @@ from posture_science import (
     normalized_feature_deviation,
     runtime_noise_floor,
     score_posture_deviation,
+    shared_scale_measurement_unstable,
 )
 
 
@@ -335,6 +336,77 @@ def test_single_feature_excursion_is_inconclusive_for_group_scoring() -> None:
     print("test_single_feature_excursion_is_inconclusive_for_group_scoring OK")
 
 
+def test_shared_head_shoulder_ratios_are_one_evidence_channel() -> None:
+    accumulator = CalibrationAccumulator(CalibrationPlan(min_samples_per_stage=5))
+    for index in range(5):
+        accumulator.add(
+            index,
+            {
+                "face_shoulder_ratio": 0.30,
+                "ear_shoulder_ratio": 0.40,
+            },
+        )
+    accumulator.begin_transition(5.0)
+    for index in range(5):
+        accumulator.add(
+            6.0 + index,
+            {
+                "face_shoulder_ratio": 0.40,
+                "ear_shoulder_ratio": 0.50,
+            },
+        )
+    profile = accumulator.finalize()
+
+    score = score_posture_deviation(
+        {
+            "face_shoulder_ratio": 0.60,
+            "ear_shoulder_ratio": 0.70,
+        },
+        profile,
+    )
+    assert score.raw_deviation > 0.0
+    assert score.deviation == 0.0
+    assert not score.corroborated
+    print("test_shared_head_shoulder_ratios_are_one_evidence_channel OK")
+
+
+def test_shared_shoulder_scale_drift_abstains_from_ratio_scoring() -> None:
+    accumulator = CalibrationAccumulator(CalibrationPlan(min_samples_per_stage=5))
+    preferred = {
+        "face_shoulder_ratio": 0.30,
+        "torso_shoulder_ratio": 0.90,
+        "ear_shoulder_ratio": 0.40,
+        "shoulder_width_px": 200.0,
+    }
+    relaxed = {
+        "face_shoulder_ratio": 1.0 / 3.0,
+        "torso_shoulder_ratio": 1.00,
+        "ear_shoulder_ratio": 4.0 / 9.0,
+        "shoulder_width_px": 180.0,
+    }
+    for index in range(5):
+        accumulator.add(index, preferred)
+    accumulator.begin_transition(5.0)
+    for index in range(5):
+        accumulator.add(6.0 + index, relaxed)
+    profile = accumulator.finalize()
+    unchanged_numerators_with_drifted_width = {
+        "face_shoulder_ratio": 60.0 / 160.0,
+        "torso_shoulder_ratio": 180.0 / 160.0,
+        "ear_shoulder_ratio": 80.0 / 160.0,
+        "shoulder_width_px": 160.0,
+    }
+
+    score = score_posture_deviation(unchanged_numerators_with_drifted_width, profile)
+    assert score.deviation >= PosturePolicy().alert_enter
+    assert shared_scale_measurement_unstable(
+        unchanged_numerators_with_drifted_width,
+        profile,
+    )
+    assert not shared_scale_measurement_unstable(relaxed, profile)
+    print("test_shared_shoulder_scale_drift_abstains_from_ratio_scoring OK")
+
+
 def test_runtime_noise_band_uses_single_observation_repeatability() -> None:
     preferred = FeatureStatistics.from_values([0.98, 0.99, 1.00, 1.01, 1.02] * 20)
     relaxed = FeatureStatistics.from_values([1.18, 1.19, 1.20, 1.21, 1.22] * 20)
@@ -513,6 +585,8 @@ if __name__ == "__main__":
     test_explicit_phase_timing_and_bounded_extension()
     test_mdc_normalization_and_group_deduplication()
     test_single_feature_excursion_is_inconclusive_for_group_scoring()
+    test_shared_head_shoulder_ratios_are_one_evidence_channel()
+    test_shared_shoulder_scale_drift_abstains_from_ratio_scoring()
     test_runtime_noise_band_uses_single_observation_repeatability()
     test_marginal_anchor_signal_is_disabled_by_runtime_noise()
     test_near_identical_smoothed_anchors_do_not_create_false_signal()

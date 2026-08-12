@@ -111,14 +111,20 @@ def test_debug_panel_runs_full_dual_anchor_calibration() -> None:
         assert "color: white" in preferred_style
         assert window.calibration_stage_badge.text() == "1/2"
         assert window.calibration_stage_progress.value() == 20
-        assert "阶段 1/2" in window.calibration_stage_title.text()
+        assert "第一段" in window.calibration_stage_title.text()
+        assert "现在坐直" in window.calibration_stage_title.text()
         assert "5s" in window.calibration_stage_title.text()
-        assert "现在不要放松" in window.calibration_stage_detail.text()
+        assert "此刻不要放松" in window.calibration_stage_detail.text()
         assert not window.calibration_camera_stage_banner.isHidden()
-        assert "阶段 1/2" in window.calibration_camera_stage_banner.text()
-        assert "坐直姿势" in window.calibration_camera_stage_banner.text()
+        assert "第 1 段 / 2" in window.calibration_camera_stage_banner.text()
+        assert "现在坐直" in window.calibration_camera_stage_banner.text()
+        assert "不要放松" in window.calibration_camera_stage_banner.text()
         assert window.calibration_camera_stage_banner.width() >= window.video_label.width() - 24
-        assert window.calibration_camera_stage_banner.height() >= 166
+        assert window.calibration_camera_stage_banner.height() >= 214
+        assert not window.calibration_phase_rail.isHidden()
+        assert window.calibration_phase_preferred.text() == "1  坐直中"
+        assert window.calibration_phase_relaxed.text() == "2  放松（随后）"
+        assert "border: 12px solid #22c55e" in window.video_label.styleSheet()
         for index in range(5):
             backend.sample = make_sample(T0 + timedelta(seconds=index))
             window.update_frame()
@@ -134,11 +140,15 @@ def test_debug_panel_runs_full_dual_anchor_calibration() -> None:
         assert "background: #9a4f00" in transition_style
         assert window.calibration_stage_badge.text() == "放松"
         assert window.calibration_stage_progress.value() == 50
-        assert "现在可以自然放松" in window.calibration_stage_title.text()
+        assert "现在放松" in window.calibration_stage_title.text()
         assert not window.calibration_camera_prompt.isHidden()
-        assert "现在可以自然放松" in window.calibration_camera_prompt.text()
+        assert "请现在自然放松" in window.calibration_camera_prompt.text()
         assert window.calibration_camera_prompt.parent() is window.video_label
-        assert "阶段切换" in window.calibration_camera_stage_banner.text()
+        assert "停止坐直" in window.calibration_camera_stage_banner.text()
+        assert "现在放松" in window.calibration_camera_stage_banner.text()
+        assert window.calibration_phase_preferred.text() == "1  坐直完成"
+        assert window.calibration_phase_relaxed.text() == "2  现在放松"
+        assert "border: 12px solid #f59e0b" in window.video_label.styleSheet()
         prompt_geometry = window.calibration_camera_prompt.geometry()
         assert window.video_label.rect().contains(prompt_geometry)
         assert transition_style != preferred_style
@@ -160,14 +170,19 @@ def test_debug_panel_runs_full_dual_anchor_calibration() -> None:
         assert window.calibration_stage_badge.text() == "2/2"
         assert window.calibration_stage_progress.minimum() == 0
         assert window.calibration_stage_progress.maximum() == 0
-        assert "阶段 2/2" in window.calibration_stage_title.text()
+        assert "第二段" in window.calibration_stage_title.text()
+        assert "保持自然放松" in window.calibration_stage_title.text()
         # Relaxed collection is silent: the persistent banner identifies the
         # active stage without presenting a second user-facing countdown.
         assert "5s" not in window.calibration_stage_title.text()
-        assert "保持自然放松" in window.calibration_stage_detail.text()
+        assert "保持放松" in window.calibration_stage_detail.text()
         assert not window.calibration_camera_stage_banner.isHidden()
-        assert "阶段 2/2" in window.calibration_camera_stage_banner.text()
-        assert "自然放松姿势" in window.calibration_camera_stage_banner.text()
+        assert "第 2 段 / 2" in window.calibration_camera_stage_banner.text()
+        assert "保持自然放松" in window.calibration_camera_stage_banner.text()
+        assert "静默记录放松姿势" in window.calibration_camera_stage_banner.text()
+        assert window.calibration_phase_preferred.text() == "1  坐直完成"
+        assert window.calibration_phase_relaxed.text() == "2  放松采集中"
+        assert "border: 12px solid #8b5cf6" in window.video_label.styleSheet()
         banner_geometry = window.calibration_camera_stage_banner.geometry()
         assert window.video_label.rect().contains(banner_geometry)
         assert relaxed_style not in {preferred_style, transition_style}
@@ -189,6 +204,7 @@ def test_debug_panel_runs_full_dual_anchor_calibration() -> None:
         assert window.calibration_stage_badge.text() == "复验"
         assert "正在复验正常范围" in window.calibration_stage_title.text()
         assert window.calibration_camera_stage_banner.isHidden()
+        assert window.calibration_phase_rail.isHidden()
         assert window.calibration_stage_card.styleSheet() not in {
             preferred_style,
             transition_style,
@@ -244,6 +260,14 @@ def test_debug_panel_places_stage_card_above_camera() -> None:
         app.processEvents()
         banner_geometry = window.calibration_camera_stage_banner.geometry()
         assert window.video_label.rect().contains(banner_geometry)
+        assert (
+            window.calibration_phase_preferred.contentsRect().height()
+            >= window.calibration_phase_preferred.fontMetrics().height()
+        )
+        assert (
+            window.calibration_phase_relaxed.contentsRect().height()
+            >= window.calibration_phase_relaxed.fontMetrics().height()
+        )
     finally:
         window.close()
         app.processEvents()

@@ -426,6 +426,13 @@ class PosturePolicy:
     # product reliability parameters, not physiological thresholds.
     runtime_ratio_noise_floor: float = 0.015
     runtime_angle_noise_floor_deg: float = 1.5
+    # Every normalized posture feature except trunk lean depends on the
+    # detected shoulder span. If that shared denominator leaves both
+    # calibrated anchor ranges by more than its repeatability allowance, the
+    # ratios are not independent posture evidence. Abstain instead of turning
+    # one landmark-width drift into several corroborating features. This is a
+    # measurement-reliability parameter, not an anatomical threshold.
+    shared_shoulder_scale_guard_ratio: float = 0.05
 
     def __post_init__(self) -> None:
         if not (0.0 <= self.watch_exit < self.watch_enter <= 1.0):
@@ -446,6 +453,8 @@ class PosturePolicy:
             raise ValueError("runtime_ratio_noise_floor cannot be negative")
         if self.runtime_angle_noise_floor_deg < 0.0:
             raise ValueError("runtime_angle_noise_floor_deg cannot be negative")
+        if not (0.0 <= self.shared_shoulder_scale_guard_ratio < 1.0):
+            raise ValueError("shared_shoulder_scale_guard_ratio must be in [0, 1)")
         if not (0.0 <= self.minimum_group_support_deviation <= 1.0):
             raise ValueError("minimum_group_support_deviation must be in [0, 1]")
 
@@ -615,8 +624,18 @@ def score_posture_deviation(
         )
 
     by_name = {result.feature: result.deviation for result in feature_results}
+    # Face/shoulder and ear/shoulder are two views of the same head-to-shoulder
+    # relation and share the same shoulder-width denominator. Treat them as
+    # one evidence channel. Only torso/shoulder can independently support that
+    # channel inside the forward group; otherwise one drifting shoulder span
+    # would be counted twice and could open WATCH by itself.
+    head_shoulder = max(
+        by_name.get("face_shoulder_ratio", 0.0),
+        by_name.get("ear_shoulder_ratio", 0.0),
+    )
+    torso_shoulder = by_name.get("torso_shoulder_ratio", 0.0)
     forward, forward_corroborated = _group_score(
-        [by_name[name] for name in FORWARD_FEATURES if name in by_name],
+        [head_shoulder, torso_shoulder],
         policy.within_group_corroboration,
         policy.minimum_group_support_deviation,
     )
@@ -654,6 +673,47 @@ def score_posture_deviation(
         corroborated=forward_corroborated or lateral_corroborated,
         raw_deviation=raw_deviation,
     )
+
+
+def shared_scale_measurement_unstable(
+    values: Mapping[str, float],
+    profile: CalibrationProfile,
+    policy: Optional[PosturePolicy] = None,
+) -> bool:
+    """Detect a posture score driven by an unstable shared shoulder span.
+
+    The normalized face, torso, ear, and shoulder-asymmetry features all use
+    shoulder width. A pose-landmark width that moves beyond both accepted
+    anchors can therefore move several ratios together while the person is
+    physically unchanged. This check uses only the already-audited numeric
+    calibration statistics and explicitly abstains; it never manufactures a
+    GOOD or BAD posture judgment.
+    """
+
+    policy = policy or PosturePolicy()
+    current = _finite_float(values.get("shoulder_width_px"))
+    preferred = profile.preferred.get("shoulder_width_px")
+    relaxed = profile.relaxed.get("shoulder_width_px")
+    if (
+        current is None
+        or preferred is None
+        or relaxed is None
+        or preferred.mean <= 0.0
+        or relaxed.mean <= 0.0
+    ):
+        return False
+
+    reference_scale = max(abs(preferred.mean), abs(relaxed.mean), 1.0)
+    repeatability = max(
+        preferred.mdc,
+        relaxed.mdc,
+        policy.runtime_noise_std_multiplier * preferred.std,
+        policy.runtime_noise_std_multiplier * relaxed.std,
+        policy.shared_shoulder_scale_guard_ratio * reference_scale,
+    )
+    lower = min(preferred.mean, relaxed.mean) - repeatability
+    upper = max(preferred.mean, relaxed.mean) + repeatability
+    return current < lower or current > upper
 
 
 @dataclass(frozen=True)

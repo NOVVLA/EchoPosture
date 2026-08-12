@@ -503,6 +503,64 @@ def test_fixed_posture_distance_scale_does_not_become_head_turn_watch():
     print("test_fixed_posture_distance_scale_does_not_become_head_turn_watch OK")
 
 
+def test_unchanged_posture_shared_shoulder_width_drift_never_accumulates_exposure():
+    """One drifting ratio denominator must not become several posture votes."""
+
+    analyzer = scientific_analyzer()
+    validate_scientific_profile(analyzer, T0)
+    baseline = scientific_sample(T0, 0.0)
+    decisions = []
+    for index in range(1, 1801):
+        # Face size, torso height, ear height, shoulder slope, and trunk lean
+        # remain unchanged. Only the pose detector's shoulder span drifts from
+        # 200 px to 160 px, reproducing the shared-denominator false alarm.
+        fraction = min(1.0, index / 180.0)
+        sample = replace(
+            baseline,
+            timestamp=T0 + timedelta(seconds=3.0 + index / 6.0),
+            shoulder_width_px=200.0 - 40.0 * fraction,
+            left_shoulder_point=(220.0 + 20.0 * fraction, 240.0),
+            right_shoulder_point=(420.0 - 20.0 * fraction, 244.0),
+        )
+        decisions.append(analyzer.evaluate(sample))
+
+    assert all(decision.status not in {"WATCH", "BAD", "CRITICAL"} for decision in decisions)
+    assert any(
+        decision.reason == "shared_shoulder_scale_measurement_abstained"
+        for decision in decisions
+    )
+    assert max(decision.posture_deviation for decision in decisions) == 0.0
+    assert max(decision.exposure_seconds for decision in decisions) == 0.0
+    print(
+        "test_unchanged_posture_shared_shoulder_width_drift_never_accumulates_exposure OK"
+    )
+
+
+def test_real_forward_change_with_stable_shoulder_scale_still_alerts():
+    """The reliability guard must not suppress corroborated posture change."""
+
+    analyzer = scientific_analyzer()
+    validate_scientific_profile(analyzer, T0)
+    decisions = []
+    for seconds in range(3, 19):
+        # Shoulder width stays at the calibrated 200 px. Independent face and
+        # torso geometry move beyond the relaxed anchor together, representing
+        # a measurable forward-posture change rather than denominator drift.
+        sample = replace(
+            scientific_sample(T0 + timedelta(seconds=seconds), 1.0),
+            interpupillary_px=96.0,
+            torso_height_px=108.0,
+        )
+        decisions.append(analyzer.evaluate(sample))
+
+    assert decisions[0].reason != "shared_shoulder_scale_measurement_abstained"
+    assert decisions[0].status == "WATCH", decisions[0]
+    assert decisions[0].posture_deviation >= analyzer.posture_policy.alert_enter
+    assert decisions[-1].status == "BAD", decisions[-1]
+    assert decisions[-1].exposure_seconds >= analyzer.posture_policy.alert_exposure_seconds
+    print("test_real_forward_change_with_stable_shoulder_scale_still_alerts OK")
+
+
 if __name__ == "__main__":
     test_defaults_all_enabled()
     test_auto_calibration_requires_complete_single_person_sample()
@@ -517,4 +575,6 @@ if __name__ == "__main__":
     test_single_feature_runtime_drift_does_not_open_watch_or_exposure()
     test_head_turn_abstains_without_static_exposure()
     test_fixed_posture_distance_scale_does_not_become_head_turn_watch()
+    test_unchanged_posture_shared_shoulder_width_drift_never_accumulates_exposure()
+    test_real_forward_change_with_stable_shoulder_scale_still_alerts()
     print("ALL TESTS PASSED")

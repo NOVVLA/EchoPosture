@@ -31,6 +31,7 @@ from posture_science import (
     measurement_values,
     runtime_measurement_values,
     score_posture_deviation,
+    shared_scale_measurement_unstable,
 )
 
 
@@ -687,6 +688,21 @@ class HighPrecisionPostureAnalyzer(PostureAnalyzer):
                 posture_deviation=0.0,
                 exposure_seconds=exposure.exposure_seconds,
                 confidence=confidence,
+                calibration_quality=profile.calibration_quality,
+                activity_state=activity_state,
+            )
+
+        if shared_scale_measurement_unstable(values, profile, self.posture_policy):
+            self._reset_post_calibration_validation_window()
+            exposure = self.exposure_accumulator.pause(sample.timestamp)
+            return PostureDecision(
+                "UNKNOWN",
+                "shared_shoulder_scale_measurement_abstained",
+                True,
+                sustained_seconds=exposure.exposure_seconds,
+                posture_deviation=0.0,
+                exposure_seconds=exposure.exposure_seconds,
+                confidence=0.0,
                 calibration_quality=profile.calibration_quality,
                 activity_state=activity_state,
             )

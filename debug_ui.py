@@ -162,6 +162,7 @@ REASON_TEXT: Dict[str, str] = {
     "activity_moving_exposure_paused": "reason.activity_moving_exposure_paused",
     "camera_drift_recalibration_required": "reason.camera_drift_recalibration_required",
     "head_turn_measurement_abstained": "reason.head_turn_measurement_abstained",
+    "shared_shoulder_scale_measurement_abstained": "reason.shared_shoulder_scale_measurement_abstained",
     "posture_features_unavailable": "reason.posture_features_unavailable",
     "posture_evidence_inconclusive": "reason.posture_evidence_inconclusive",
     "post_calibration_normal_range_validation": "reason.post_calibration_normal_range_validation",
@@ -442,6 +443,30 @@ class DebugWindow(QMainWindow):
         self.calibration_camera_stage_banner.setAlignment(Qt.AlignCenter)
         self.calibration_camera_stage_banner.setWordWrap(True)
         self.calibration_camera_stage_banner.hide()
+        self.calibration_phase_rail = QFrame(self.video_label)
+        self.calibration_phase_rail.setObjectName("calibrationPhaseRail")
+        rail_layout = QHBoxLayout(self.calibration_phase_rail)
+        # Keep enough vertical room for CJK glyphs. Large stylesheet padding
+        # can otherwise leave only a few pixels of the label's contents rect
+        # at the fixed camera-overlay height and visibly crop the stage text.
+        rail_layout.setContentsMargins(12, 5, 12, 5)
+        rail_layout.setSpacing(8)
+        self.calibration_phase_preferred = QLabel()
+        self.calibration_phase_preferred.setObjectName("calibrationPhasePreferred")
+        self.calibration_phase_transition = QLabel("→")
+        self.calibration_phase_transition.setObjectName("calibrationPhaseTransition")
+        self.calibration_phase_relaxed = QLabel()
+        self.calibration_phase_relaxed.setObjectName("calibrationPhaseRelaxed")
+        for label in (
+            self.calibration_phase_preferred,
+            self.calibration_phase_transition,
+            self.calibration_phase_relaxed,
+        ):
+            label.setAlignment(Qt.AlignCenter)
+        rail_layout.addWidget(self.calibration_phase_preferred, 1)
+        rail_layout.addWidget(self.calibration_phase_transition, 0)
+        rail_layout.addWidget(self.calibration_phase_relaxed, 1)
+        self.calibration_phase_rail.hide()
 
         self.status_label = QLabel(_t("debug_status_init"))
         self.status_label.setFont(QFont("Microsoft YaHei", 20, QFont.Bold))
@@ -1154,8 +1179,35 @@ class DebugWindow(QMainWindow):
         config = visual.get(phase)
         if config is None:
             self.calibration_camera_stage_banner.hide()
+            self.calibration_phase_rail.hide()
+            self.video_label.setStyleSheet("background: #111; color: #ccc;")
             return
         text_key, background, border = config
+        (
+            first_text,
+            second_text,
+            first_background,
+            second_background,
+        ) = {
+            "preferred": (
+                _t("debug_stage_rail_preferred_active"),
+                _t("debug_stage_rail_relaxed_next"),
+                "#16a34a",
+                "rgba(15, 23, 42, 225)",
+            ),
+            "transition": (
+                _t("debug_stage_rail_preferred_done"),
+                _t("debug_stage_rail_relaxed_now"),
+                "#475569",
+                "#7c3aed",
+            ),
+            "relaxed": (
+                _t("debug_stage_rail_preferred_done"),
+                _t("debug_stage_rail_relaxed_active"),
+                "#475569",
+                "#7c3aed",
+            ),
+        }[phase]
         self.calibration_camera_stage_banner.setText(_t(text_key))
         self.calibration_camera_stage_banner.setStyleSheet(
             "QLabel#calibrationCameraStageBanner {"
@@ -1163,9 +1215,30 @@ class DebugWindow(QMainWindow):
             "border-radius: 8px; font-size: 30px; font-weight: 800; padding: 18px;"
             "}"
         )
+        self.calibration_phase_preferred.setText(first_text)
+        self.calibration_phase_relaxed.setText(second_text)
+        self.calibration_phase_rail.setStyleSheet(
+            "QFrame#calibrationPhaseRail {"
+            "background: rgba(2, 6, 23, 235); border: 3px solid white; border-radius: 10px;"
+            "} QLabel { color: white; font-size: 20px; font-weight: 800; padding: 4px 14px;"
+            " border-radius: 7px; }"
+            f" QLabel#calibrationPhasePreferred {{ background: {first_background}; }}"
+            " QLabel#calibrationPhaseTransition { background: transparent; font-size: 28px; padding: 0; }"
+            f" QLabel#calibrationPhaseRelaxed {{ background: {second_background}; }}"
+        )
+        video_border = {
+            "preferred": "#22c55e",
+            "transition": "#f59e0b",
+            "relaxed": "#8b5cf6",
+        }[phase]
+        self.video_label.setStyleSheet(
+            f"background: #111; color: #ccc; border: 12px solid {video_border};"
+        )
         self._position_calibration_camera_overlays()
         self.calibration_camera_stage_banner.show()
         self.calibration_camera_stage_banner.raise_()
+        self.calibration_phase_rail.show()
+        self.calibration_phase_rail.raise_()
 
     def _show_calibration_camera_prompt(self) -> None:
         self.calibration_camera_prompt.setText(_t("debug_stage_camera_relax_prompt"))
@@ -1187,13 +1260,23 @@ class DebugWindow(QMainWindow):
         # anchor must be unambiguous even when the operator is looking only at
         # the video preview rather than the controls above it.
         banner_width = max(420, self.video_label.width() - 24)
-        banner_height = 166
+        banner_height = 214
         banner_left = max(0, (self.video_label.width() - banner_width) // 2)
         self.calibration_camera_stage_banner.setGeometry(
             banner_left,
             8,
             banner_width,
             banner_height,
+        )
+        rail_width = max(420, self.video_label.width() - 48)
+        rail_height = 76
+        rail_left = max(0, (self.video_label.width() - rail_width) // 2)
+        rail_top = max(0, self.video_label.height() - rail_height - 14)
+        self.calibration_phase_rail.setGeometry(
+            rail_left,
+            rail_top,
+            rail_width,
+            rail_height,
         )
         width = min(max(360, self.video_label.width() - 80), 680)
         height = 150
