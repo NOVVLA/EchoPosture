@@ -21,16 +21,18 @@ The release package is a portable folder for Windows x64. It includes the embedd
 3. Open the extracted folder.
 4. Double-click `EchoPosture.exe`.
 5. Allow camera access if Windows asks.
-6. During the 5-second prompt, hold the comfortable posture you want to use for the first 2 seconds, then relax naturally for 3 seconds. Face the camera, stay reasonably still, and keep only one person in frame.
+6. Hold the comfortable posture you want to use for the entire 5-second prompt. When the countdown closes and the tray says you may relax, relax naturally; EchoPosture then waits about one second and silently measures that relaxed posture for about five seconds. Keep only one person in frame.
 
-After calibration, EchoPosture continues running from the Windows notification area.
+After the relaxed measurement, return to the comfortable posture you chose and hold it for about two seconds.
+EchoPosture pauses static-exposure accumulation until that preferred posture is stable, then continues running from
+the Windows notification area.
 
 Windows SmartScreen may warn about unsigned builds. Only run the package if it came from the release link above and the SHA256 matches.
 
 ## Tray Controls
 
 - Right-click the tray icon to open the menu.
-- `立即重新校准` starts the same 5-second preferred/relaxed two-anchor calibration.
+- `立即重新校准` starts the same full two-anchor flow: a visible 5-second preferred stage, a short transition, and a silent relaxed stage.
 - `立即测试最深效果` previews the strongest visual intervention.
 - `停止` clears the visual overlay, releases the camera, and exits the app.
 - Double-click the tray icon to open the console window.
@@ -78,6 +80,10 @@ All user-facing text is localized across five UI modules:
 - `tray_app.py` — startup calibration dialog, status panel, tray messages, warning dialogs
 - `posture_console.py` — debug console (vertebra feature names, tooltips, status lines)
 - `debug_ui.py` — visual debug UI (status codes, reason codes, labels, buttons, dialogs)
+
+The visual Debug UI exposes both calibration modes: its primary action runs
+the full production-equivalent two-anchor profile, while the visually
+secondary single-frame action is retained only for labelled legacy comparison.
 
 ### Non-invasive design
 

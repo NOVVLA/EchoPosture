@@ -852,8 +852,9 @@
 - Git: commit `pending`, branch `codex/pr2-phase1-calibration-safety`, tag `none`.
 - Scope: added `posture_science.py` and metrics-only `tools/collect_posture_reliability.py`; extended
   `VisionSample`, `PostureFeatures`, `Keypoint`, target motion/activity output, and `PostureDecision`; switched the
-  production tray analyzer and both startup/manual recalibration flows to a fixed 2s preferred + 3s relaxed dual-anchor
-  profile; retained `set_baseline_from_sample()` only for explicit legacy debug/self-test; updated tray intervention,
+  production tray analyzer and both startup/manual recalibration flows to a two-anchor profile; the original timing
+  interpretation was later corrected in the 2026-08-12 entry below; retained `set_baseline_from_sample()` only for
+  explicit legacy debug/self-test; updated tray intervention,
   i18n, debug metrics, README/docs, ADR-0002, replay, and focused tests.
 - Product policy: watch enter/exit `0.50/0.40`, alert enter/exit `0.70/0.55`, severe deviation `0.85`, equivalent
   exposure `12s/30s`, confirmation `3s`, cooldown `60s`. These values are interaction policy parameters, not medical
@@ -876,6 +877,123 @@
 - Not run: real camera reliability collection, `--output` report generation, SEM/MDC cross-device repeatability,
   external clinical validity, user comfort feedback, package build, and GUI/manual overlay observation.
 - Conclusion: local implementation ready for static verification; real-camera and external-validity evidence remain open.
+
+## 2026-08-12 - Debug UI full two-anchor calibration
+
+- Source: user report that the diagnostic UI exposed only the legacy single-frame calibration after the production
+  path had moved to the two-anchor posture model.
+- Git: core behavior commit `bac3c33`, UI/docs in this commit, branch
+  `codex/pr2-phase1-calibration-safety`, tag `none`.
+- Scope:
+  - Made the Debug UI primary calibration action run the production-equivalent explicit phase flow: a full visible
+    five-second preferred-posture stage, an approximately one-second ignored transition, then a silent approximately
+    five-second relaxed-posture stage with at most two seconds of bounded extension.
+  - Reused `CalibrationPlan`, `CalibrationAccumulator`, `calibration_rejection_reason()`,
+    `calibration_measurement_values()`, and `HighPrecisionPostureAnalyzer.set_calibration_profile()` so stage counts,
+    quality gates, MDC feature disabling, and failure semantics match the production decision layer.
+  - Added live preferred/relaxed sample counts, rejection details, cancellation, failure, and successful profile
+    summary in both Chinese and English.
+  - Preserved the legacy single-frame path as a visually secondary, explicitly labelled comparison button. The fast
+    packaged `debug_ui.py --self-test` contract still uses that explicit legacy comparison and reports its mode.
+  - Extended the offscreen Debug UI test to cover a complete 5+5-sample profile and the separate legacy path.
+- Evidence boundary: deterministic UI tests use timestamped numeric samples and do not prove real-camera repeatability
+  or cross-device SEM/MDC. Those external evidence gates remain open.
+
+## 2026-08-12 - Correct dual-anchor production timing
+
+- Source: user-reported severe production bug. The initial implementation incorrectly split the existing visible
+  five-second countdown into 2 seconds preferred plus 3 seconds relaxed, even though the user had not yet been told to
+  relax. This shortened both anchors and caused frequent valid-sample failures.
+- Root-cause fix:
+  - Kept the visible countdown at five seconds and assigned every sample in it only to the preferred anchor.
+  - Added an explicit preferred/transition/relaxed state machine. The countdown closes before the tray says the user
+    may relax; transition samples are ignored for about one second and cannot count or reset either anchor.
+  - Added a silent approximately five-second relaxed window. If it has fewer than five valid samples at the nominal
+    target, collection may extend by at most two seconds before reporting failure.
+  - Routed startup calibration, manual recalibration, and the Debug UI primary calibration through the same phase
+    semantics. The labelled legacy single-frame Debug UI and self-test paths remain separate.
+- Policy boundary: 5-second preferred, about 1-second transition, about 5-second relaxed, and 2-second maximum
+  extension are adjustable product interaction timings, not medical or physiological standards.
+- Evidence boundary: deterministic tests verify phase ownership, ignored transition samples, bounded extension,
+  timeout failure, dialog-before-relax ordering, and legacy separation. Real-camera timing and repeatability remain an
+  independent evidence gate.
+
+## 2026-08-12 - Fix calibration quality dropout amplification
+
+- Source: user reported production calibration still failed with both `preferred_samples` and `pose_quality_low` even
+  during the full five-second preferred stage.
+- Root cause:
+  - Every rejected frame cleared all previously accepted samples in the active anchor, so one transient quality or
+    motion dropout near the end converted an otherwise valid five-second window into a sample shortage.
+  - Aggregate `pose_quality` used the minimum visibility across shoulders and hips. A partly cropped or lower-quality
+    hip therefore rejected otherwise reliable face/shoulder evidence, despite hip-dependent features being optional.
+  - The calibration layer added an unvalidated `0.65` pose cutoff above the backend's own `0.50` usable-landmark
+    threshold, discarding otherwise measurable `0.50-0.64` shoulder observations before SEM/MDC could assess them.
+- Fix:
+  - Multiple-person and ambiguous-target observations still reset the active anchor because they can contaminate
+    identity. Zero-person dropouts, low quality, motion, missing keypoints, and temporary uncertainty now abstain for
+    one frame and are counted for audit without erasing accepted samples. Previously, `face_count == 0` was mistakenly
+    grouped with multiple-person contamination and could still clear the full preferred window.
+  - Aggregate pose quality now represents the required shoulder pair. Landmark-level gates remove hip-dependent torso
+    features when hip visibility is low while retaining reliable face/shoulder, shoulder-asymmetry, and ear/shoulder
+    evidence.
+  - The calibration pose floor now matches the backend's `0.50` usability floor. Feature repeatability statistics and
+    MDC, rather than an unsupported stricter whole-frame threshold, decide whether a feature has usable evidence.
+- Evidence: deterministic regressions prove that four valid samples survive an intervening low-quality frame and reach
+  five on the next valid frame, and that `0.55/0.58` hip visibility does not reject high-confidence shoulder evidence.
+- Remaining evidence gate: a real-camera production calibration must still be rerun to confirm the observed hardware
+  no longer fails; deterministic tests do not establish the user's live camera result.
+
+## 2026-08-12 - Prevent relaxed-anchor startup exposure and noise amplification
+
+- Source: user observed that the Debug UI did not clearly distinguish the two anchor stages and that monitoring entered
+  `WATCH` immediately after calibration even though the ending posture had not changed.
+- Deterministic root cause:
+  - The calibration necessarily ended at the relaxed anchor, which is defined as deviation `1.0`; monitoring began on
+    the next frame, so holding the expected ending posture immediately opened WATCH and accumulated exposure.
+  - Runtime scoring used SEM-derived MDC as if it were the complete single-frame noise band. Because SEM shrinks with
+    sample count, a marginal anchor span could leave a near-zero denominator and amplify ordinary frame jitter.
+- Fix:
+  - Added a post-calibration preferred-posture re-entry gate. The relaxed ending posture and all re-entry frames pause
+    exposure; monitoring activates only after the preferred range is held for about two stable seconds.
+  - Runtime tolerance now uses the larger of MDC and `1.96 ×` within-anchor standard deviation. Anchor features that do
+    not clear this single-observation repeatability floor with a minimum signal margin are disabled before group
+    scoring.
+  - Added a high-contrast Debug UI stage card: green preferred, orange transition, purple silent relaxed, blue re-entry,
+    plus distinct active and failed states. The card now sits directly above the camera area at the same width, rather
+    than being buried in the metrics panel. The legacy single-frame control remains separately labelled.
+- Policy boundary: the `1.96` repeatability multiplier, minimum signal margin, and two-second re-entry stability are
+  adjustable product parameters, not medical or physiological standards.
+- Evidence:
+  - Deterministic regressions cover 60 seconds at the relaxed ending posture with zero exposure, preferred re-entry
+    activation, preferred-range runtime jitter, rejection of an all-noise near-identical anchor profile, marginal
+    feature disabling, and distinct Debug UI states.
+  - A separate long-hold regression activates monitoring after preferred re-entry, then holds the preferred posture for
+    five minutes; every decision remains `GOOD`, `posture_deviation` remains `0`, and exposure remains `0`.
+  - The offscreen Qt geometry check at a 1020 x 700 Debug UI reports a 678 x 86 stage card above a 678 x 576 camera
+    area, with equal widths and no overlap. Offscreen preferred/relaxed screenshots confirmed the green/purple stage
+    styling, camera placement, and control hierarchy. Qt emitted its existing bundled-runtime missing-font-directory
+    warning and rendered system UI text blank in those screenshots, so they are not treated as Chinese text or font
+    fidelity evidence.
+- Verification passed from `C:\Users\aaabb\Documents\ICC驼背项目`:
+  - `runtime\python311\python.exe -m py_compile posture_science.py vision_test.py vision_worker.py tray_app.py debug_ui.py tools\collect_posture_reliability.py test_posture_science.py test_feature_toggles.py test_vision_worker.py test_vision_tracking.py test_startup_guards.py test_debug_ui.py test_vision_replay.py`
+  - `ruff check .`
+  - `runtime\python311\python.exe test_posture_science.py`
+  - `runtime\python311\python.exe test_feature_toggles.py`
+  - `runtime\python311\python.exe test_vision_worker.py`
+  - `runtime\python311\python.exe test_vision_tracking.py`
+  - `runtime\python311\python.exe test_startup_guards.py`
+  - `runtime\python311\python.exe test_debug_ui.py`
+  - `runtime\python311\python.exe test_vision_replay.py`
+  - `git diff --check`
+- Verification note: `runtime\python311\python.exe -m ruff check .` was unavailable because the bundled interpreter
+  does not include the `ruff` module; the repository's installed `ruff check .` executable passed instead.
+- Backup: before staging, `git stash create` captured all 18 tracked modifications at object
+  `388fd230704151915bcc5a057d12a587e5d95859` from source HEAD
+  `9ad26519e9ed5d0f049696652d15f0cb3bd71d78`; no untracked local artifacts were included.
+- Gaps: a real-camera production calibration must still be rerun under the user's camera, framing, lighting, normal
+  movement, and lens-drift conditions. No live-camera pass, successful screenshot-based text/font review, consented
+  recording, or external-validity result is claimed.
 
 ## 2026-08-11 - AI review findings routed into the vision plan
 

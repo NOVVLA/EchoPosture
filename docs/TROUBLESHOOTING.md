@@ -46,7 +46,7 @@ Interpret failures by stage:
 - Stage 2 only: PyQt platform plugin, display, or packaged module problem.
 - Stage 3 only: camera, OpenCV, MediaPipe resource, or one-frame landmark path problem.
 - Stage 4 only: camera sampling or startup runtime problem. Production calibration can still fail later if either the
-  preferred 2-second or relaxed 3-second stage has fewer than five quality-gated samples.
+  visible 5-second preferred stage or the silent relaxed stage has fewer than five quality-gated samples.
 - Several missing-file failures: incomplete extraction or an incorrectly assembled package.
 
 An environment-sensitive failure is still a failed check. Record the exact stage and observation instead of reporting
@@ -117,11 +117,18 @@ single-person, quality-gated samples in both calibration stages; it does not sil
 - Face the camera with even front lighting; avoid a bright window behind you.
 - Keep the face, both shoulders, and upper torso in frame.
 - Remove lens covers and verify that the preview is not black.
-- Keep one person in frame and remain still during both the preferred 2-second and relaxed 3-second stages.
-- A moving target, ambiguous face/body association, low visibility, turned head, or missing keypoint resets the current
-  stage window.
+- Keep one person in frame. Hold the preferred posture throughout the visible 5-second countdown; relax only after the
+  prompt, then remain reasonably still during the silent relaxed measurement.
+- A moving target, low visibility, turned head, temporary target uncertainty, or missing keypoint skips that frame but
+  preserves earlier valid samples. Multiple people or an ambiguous target reset the current anchor because identity
+  contamination cannot be averaged away.
+- Hip visibility gates only hip-dependent torso features. Clear shoulders and face measurements can still contribute
+  to calibration when the hips are less visible.
 - Recalibrate after moving the camera, chair, or monitor. A detected camera drift pauses exposure and reports that
   recalibration is required.
+- After the silent relaxed measurement completes, return to the preferred comfortable posture and hold it for about
+  two seconds. Monitoring remains in an exposure-paused activation state until that posture is stable; staying in the
+  relaxed calibration ending pose must not itself create a static-exposure episode.
 
 A successful debug preview with a failed tray calibration usually means one of the two stages did not contain enough
 quality-gated samples, not that the tray icon itself is broken. The debug panel's one-frame button is an explicit legacy
@@ -135,10 +142,11 @@ To collect repeatability evidence deliberately, run the command from the reposit
 runtime\python311\python.exe tools\collect_posture_reliability.py --frames 200 --output report.json
 ```
 
-The first 40 percent of samples are treated as the preferred anchor and the rest as relaxed. The report contains only
-numeric feature statistics, anchor separation versus MDC, hardware/resolution/backend/model metadata, sample counts,
-and an explicit unverified-items list. Without `--output`, the JSON is printed and no report is written. This command
-does not establish clinical validity or cross-device reliability by itself.
+The command prompts for two equal numeric sampling blocks with a short transition between them; this validation tool
+is separate from the production UI timing path. The report contains only numeric feature statistics, anchor separation
+versus MDC, hardware/resolution/backend/model metadata, sample counts, and an explicit unverified-items list. Without
+`--output`, the JSON is printed and no report is written. This command does not establish clinical validity or
+cross-device reliability by itself.
 
 ## Tray and Console
 

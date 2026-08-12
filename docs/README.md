@@ -26,11 +26,14 @@ From the source checkout, start the live diagnostic panel with:
 The CMD always enables the P3/P4 target panel. The right-hand panel shows the
 current target state, locked track ID, people present, association score, and
 state reason alongside posture deviation, exposure seconds, confidence, and
-anchor metrics. Its `Legacy Single-frame Calibration (Debug Only)` button is
-kept for explicit compatibility checks; it is not the production scientific
-calibration path.
+anchor metrics. `Start Full Two-anchor Calibration` runs the same visible
+5-second preferred stage, roughly 1-second ignored transition, and silent
+roughly 5-second relaxed stage (with a bounded extension) used by the
+production tray path. `Legacy Single-frame Calibration (Debug Only)` is a
+separate secondary button kept only for explicit compatibility comparisons.
 
-For a camera-free proof of the panel wiring, run:
+For a camera-free proof of both the scientific two-anchor path and the labelled
+legacy comparison path, run:
 
 ```powershell
 runtime\python311\python.exe test_debug_ui.py

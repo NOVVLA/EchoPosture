@@ -133,16 +133,33 @@ accumulate static exposure.
 
 ### Scientific calibration and measurement abstention
 
-Production calibration is a fixed five-second page: the first two seconds are the preferred comfortable anchor and the
-final three seconds are the relaxed anchor. Each stage needs at least five complete, single-person, quality-gated
-samples. A multi-person, ambiguous, missing-keypoint, low-quality, or moving observation clears the current stage
-window. The worker applies the resulting `CalibrationProfile` only after the target manager locks one unambiguous
-track. `set_baseline_from_sample()` remains available only for explicit legacy debugging/self-test.
+Production calibration uses explicit phases. The visible dialog stays open for five seconds and every sample in that
+window belongs only to the preferred comfortable anchor. After the dialog closes, the tray tells the user that they may
+relax; about one second of transition samples is ignored, then the worker silently collects the relaxed anchor for about
+five seconds. If fewer than five valid relaxed samples are available at the nominal target, collection may extend by at
+most two seconds. Each anchor needs at least five complete, single-person, quality-gated samples. A multi-person or
+ambiguous observation clears only the active anchor window because it can contaminate identity. A low-quality, moving,
+temporarily uncertain, or missing-keypoint observation abstains for that frame without erasing earlier accepted
+samples; transition observations neither count nor reset a window. Landmark quality is feature-specific: low hip
+visibility disables hip-dependent torso evidence for that observation but does not discard reliable face/shoulder
+evidence. The pose usability floor matches the backend's `0.50` landmark floor; repeatability is then evaluated per
+feature through SEM/MDC instead of imposing an unvalidated stricter whole-frame cutoff. The worker applies the
+resulting `CalibrationProfile` only after the target manager locks one unambiguous track.
+`set_baseline_from_sample()` remains available only for explicit legacy debugging/self-test.
 
 The posture score uses scale-relative face/shoulder and torso/shoulder ratios, optional ear/shoulder position, shoulder
 asymmetry angle, and trunk lean. Raw shoulder width and distance remain separate environment prompts. If anchor
 separation is not above the feature's MDC, that feature is disabled. Turned-head, low-confidence, moving, ambiguous,
 and camera-drift observations produce `UNKNOWN`/`WATCH` and pause exposure instead of forcing a `BAD` result.
+
+Calibration ends while the user is intentionally holding the relaxed anchor, so the analyzer does not immediately
+start exposure integration. It first asks for a return to the preferred posture and requires about two stable seconds
+inside the preferred acceptance range. The relaxed ending posture and this re-entry interval always remain exposure-
+paused. Runtime single-frame tolerance uses the largest of reported MDC, `1.96 ×` within-anchor standard deviation,
+and a conservative per-feature resolution floor (`0.015` for normalized ratios, `1.5°` for angle features). SEM/MDC
+remains in the audit report, but is not treated as the full single-observation noise band. Features whose anchor
+separation does not clear the runtime repeatability floor with a minimum signal margin are disabled. These floors,
+multipliers, and durations are adjustable product policy, not biological standards.
 
 ### Overlay controller and native host
 
@@ -178,11 +195,12 @@ that writes a report, under the package-local `logs` directory.
 1. The launcher prepares the run root and starts `tray_app.py`.
 2. `TrayMonitor` starts `VisionWorker` and waits up to 15 seconds for the camera handshake.
 3. The tray icon appears and the onboarding toast asks the user to enable monitoring.
-4. A five-second calibration dialog is shown while the worker samples at 180 ms intervals; its fixed stages are 2s
-   preferred and 3s relaxed.
-5. `CalibrationAccumulator` builds per-feature repeatability statistics and `CalibrationProfile`; the analyzer accepts
+4. A five-second calibration dialog is shown while the worker collects only the preferred anchor at 180 ms intervals.
+5. The dialog closes before the user is told to relax. The worker ignores an approximately one-second transition and
+   silently samples the relaxed anchor for approximately five seconds, with at most two seconds of bounded extension.
+6. `CalibrationAccumulator` builds per-feature repeatability statistics and `CalibrationProfile`; the analyzer accepts
    it only when both stages meet the minimum and at least one posture feature separates above MDC.
-6. A successful result starts monitoring; a failed startup calibration shows a warning and stops the application.
+7. A successful result starts monitoring; a failed startup calibration shows a warning and stops the application.
 
 ### Monitoring and intervention
 

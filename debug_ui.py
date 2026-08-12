@@ -9,10 +9,12 @@ from __future__ import annotations
 
 import argparse
 import ctypes
+import math
 import os
 import sys
 import time
 from dataclasses import replace
+from datetime import datetime
 from typing import Callable, Dict, Optional
 
 import cv2
@@ -65,6 +67,17 @@ from vision_test import (
 )
 from vision_backend import CompatibilityBackend, PostureFeatureExtractor
 from vision_tracking import TargetManager, TargetUpdate
+from posture_science import (
+    CALIBRATION_CONTAMINATION_REASONS,
+    CalibrationAccumulator,
+    CalibrationPlan,
+    CalibrationProfile,
+    PREFERRED,
+    RELAXED,
+    TRANSITION,
+    calibration_measurement_values,
+    calibration_rejection_reason,
+)
 
 from i18n import _t, add_listener, remove_listener
 
@@ -144,6 +157,9 @@ REASON_TEXT: Dict[str, str] = {
     "multi_exit_stabilizing_s": "reason.multi_exit_stabilizing_s",
     "target_presence_check_disabled": "reason.target_presence_check_disabled",
     "dual_anchor_calibration_required": "reason.dual_anchor_calibration_required",
+    "dual_anchor_calibration_collecting": "reason.dual_anchor_calibration_collecting",
+    "post_calibration_return_to_preferred": "reason.post_calibration_return_to_preferred",
+    "preferred_posture_monitoring_activated": "reason.preferred_posture_monitoring_activated",
     "activity_moving_exposure_paused": "reason.activity_moving_exposure_paused",
     "camera_drift_recalibration_required": "reason.camera_drift_recalibration_required",
     "head_turn_measurement_abstained": "reason.head_turn_measurement_abstained",
@@ -395,6 +411,12 @@ class DebugWindow(QMainWindow):
         self.normal_fps = fps
         self.high_performance_fps = 72.0
         self.high_precision_enabled = False
+        self.calibration_plan = CalibrationPlan()
+        self._dual_calibration_accumulator: Optional[CalibrationAccumulator] = None
+        self._dual_calibration_last_rejection: Optional[str] = None
+        self._scientific_profile: Optional[CalibrationProfile] = None
+        self._calibration_message_key = "debug_calib_init"
+        self._calibration_message_kwargs: dict[str, object] = {}
         self.intervention_overlay = (
             PostureInterventionOverlay() if intervention_enabled else None
         )
@@ -421,6 +443,23 @@ class DebugWindow(QMainWindow):
         self.baseline_label.setWordWrap(True)
         self.calibration_label = QLabel(_t("debug_calib_init"))
         self.calibration_label.setWordWrap(True)
+        self.calibration_stage_card = QFrame()
+        self.calibration_stage_card.setObjectName("calibrationStageCard")
+        stage_layout = QVBoxLayout(self.calibration_stage_card)
+        stage_layout.setContentsMargins(12, 10, 12, 10)
+        stage_layout.setSpacing(4)
+        self.calibration_stage_title = QLabel()
+        self.calibration_stage_title.setObjectName("calibrationStageTitle")
+        self.calibration_stage_title.setFont(QFont("Microsoft YaHei", 18, QFont.Bold))
+        self.calibration_stage_title.setWordWrap(True)
+        self.calibration_stage_detail = QLabel()
+        self.calibration_stage_detail.setObjectName("calibrationStageDetail")
+        self.calibration_stage_detail.setWordWrap(True)
+        self.calibration_stage_card.setMinimumHeight(86)
+        stage_layout.addWidget(self.calibration_stage_title)
+        stage_layout.addWidget(self.calibration_stage_detail)
+        self._calibration_visual_phase = "idle"
+        self._set_calibration_stage_visual("idle")
 
         self.target_state_label = QLabel("--")
         self.target_track_label = QLabel("--")
@@ -429,8 +468,11 @@ class DebugWindow(QMainWindow):
         self.target_reason_label = QLabel("--")
         self.target_reason_label.setWordWrap(True)
 
-        self.calibrate_button = QPushButton(_t("debug_calibrate_btn"))
-        self.calibrate_button.clicked.connect(self.calibrate_current_sample)
+        self.calibrate_button = QPushButton(_t("debug_dual_calibrate_btn"))
+        self.calibrate_button.clicked.connect(self.toggle_dual_anchor_calibration)
+        self.legacy_calibrate_button = QPushButton(_t("debug_calibrate_btn"))
+        self.legacy_calibrate_button.setObjectName("legacyCalibrationButton")
+        self.legacy_calibrate_button.clicked.connect(self.calibrate_current_sample)
         self.precision_checkbox = QCheckBox(_t("debug_precision_cb"))
         self.precision_checkbox.toggled.connect(self.toggle_high_precision)
         self.distance_input = QDoubleSpinBox()
@@ -453,6 +495,9 @@ class DebugWindow(QMainWindow):
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.update_frame)
         self.timer.start(self._interval_ms(self.normal_fps))
+        self.dual_calibration_timer = QTimer(self)
+        self.dual_calibration_timer.setSingleShot(True)
+        self.dual_calibration_timer.timeout.connect(self._advance_dual_anchor_calibration)
 
         self.engine.start()
         self.precision_checkbox.setChecked(True)
@@ -530,10 +575,16 @@ class DebugWindow(QMainWindow):
         panel_layout.addWidget(self.performance_checkbox)
         panel_layout.addStretch(1)
         panel_layout.addWidget(self.calibrate_button)
+        panel_layout.addWidget(self.legacy_calibrate_button)
         self.title_label = title
         self.target_title_label = target_title
 
-        layout.addWidget(self.video_label, 1)
+        camera_layout = QVBoxLayout()
+        camera_layout.setContentsMargins(0, 0, 0, 0)
+        camera_layout.setSpacing(10)
+        camera_layout.addWidget(self.calibration_stage_card)
+        camera_layout.addWidget(self.video_label, 1)
+        layout.addLayout(camera_layout, 1)
         layout.addWidget(panel)
         self.setCentralWidget(root)
 
@@ -553,6 +604,19 @@ class DebugWindow(QMainWindow):
                 font-weight: 600;
             }
             QPushButton:hover { background: #1557b0; }
+            QPushButton#legacyCalibrationButton {
+                background: #687384;
+                font-size: 12px;
+                font-weight: 500;
+            }
+            QPushButton#legacyCalibrationButton:hover { background: #4f5968; }
+            QFrame#calibrationStageCard {
+                border: 2px solid #94a3b8;
+                border-radius: 8px;
+                background: #f8fafc;
+            }
+            QLabel#calibrationStageTitle { font-size: 18px; font-weight: 700; }
+            QLabel#calibrationStageDetail { font-size: 14px; }
             """
         )
 
@@ -582,20 +646,206 @@ class DebugWindow(QMainWindow):
         sample = self._sample_for_target(raw_sample, target_update)
         self.current_sample = sample
         self.current_target_update = target_update
-        decision = self.analyzer.evaluate(sample)
+        self._collect_dual_anchor_sample(sample)
+        # Automatic finalization may lock the target and replace both values;
+        # do not overwrite that fresh state with this frame's pre-lock update.
+        sample = self.current_sample or sample
+        target_update = self.current_target_update
+        if self._dual_calibration_accumulator is not None:
+            decision = PostureDecision(
+                "CALIBRATING",
+                "dual_anchor_calibration_collecting",
+                False,
+                activity_state=sample.activity_state or "UNKNOWN",
+            )
+        else:
+            decision = self.analyzer.evaluate(sample)
+            if decision.reason == "preferred_posture_monitoring_activated":
+                self._set_calibration_stage_visual("active")
+                self._set_calibration_message("debug_dual_calib_active")
         self._show_frame(frame, raw_sample)
         self._show_metrics(sample, decision)
         if target_update is not None:
             self._show_target_metrics(target_update)
         self._update_intervention(decision)
 
-    def calibrate_current_sample(self) -> None:
-        if self.current_sample is None:
-            self.calibration_label.setText(_t("debug_calib_no_sample"))
+    def toggle_dual_anchor_calibration(self) -> None:
+        if self._dual_calibration_accumulator is None:
+            self.start_dual_anchor_calibration()
+        else:
+            self.cancel_dual_anchor_calibration()
+
+    def start_dual_anchor_calibration(self) -> None:
+        """Start the production five-second preferred countdown."""
+        self._ensure_scientific_analyzer()
+        if self.target_manager is not None:
+            self.target_manager.reset()
+            self.current_target_update = None
+        self._dual_calibration_accumulator = CalibrationAccumulator(self.calibration_plan)
+        self._dual_calibration_last_rejection = None
+        self.calibrate_button.setText(_t("debug_dual_cancel_btn"))
+        self.legacy_calibrate_button.setEnabled(False)
+        self.precision_checkbox.setEnabled(False)
+        self.dual_calibration_timer.start(
+            int(round(self.calibration_plan.preferred_seconds * 1000.0))
+        )
+        self._set_calibration_stage_visual("preferred")
+        self._set_calibration_message("debug_dual_calib_started")
+
+    def _advance_dual_anchor_calibration(self) -> None:
+        accumulator = self._dual_calibration_accumulator
+        if accumulator is None:
+            return
+        if accumulator.phase == PREFERRED:
+            self.complete_preferred_stage()
+        else:
+            self.finish_dual_anchor_calibration()
+
+    def complete_preferred_stage(self, timestamp=None) -> None:
+        """Close the countdown, announce relaxation, then collect silently."""
+
+        accumulator = self._dual_calibration_accumulator
+        if accumulator is None or accumulator.phase != PREFERRED:
+            return
+        accumulator.begin_transition(timestamp or datetime.now())
+        silent_seconds = (
+            self.calibration_plan.transition_seconds
+            + self.calibration_plan.relaxed_seconds
+            + self.calibration_plan.relaxed_max_extension_seconds
+        )
+        self.dual_calibration_timer.start(int(round(silent_seconds * 1000.0)) + 250)
+        self._set_calibration_stage_visual("transition")
+        self._set_calibration_message("debug_dual_calib_relax_now")
+
+    def cancel_dual_anchor_calibration(self) -> None:
+        if self._dual_calibration_accumulator is None:
+            return
+        self._dual_calibration_accumulator = None
+        self._dual_calibration_last_rejection = None
+        self.dual_calibration_timer.stop()
+        self._restore_calibration_controls()
+        self._set_calibration_stage_visual("idle")
+        self._set_calibration_message("debug_dual_calib_cancelled")
+
+    def _collect_dual_anchor_sample(self, sample: VisionSample) -> None:
+        accumulator = self._dual_calibration_accumulator
+        if accumulator is None:
+            return
+
+        phase = accumulator.stage_at(sample.timestamp)
+        if phase == TRANSITION:
+            self._set_calibration_stage_visual("transition")
+            counts = accumulator.stage_counts
+            self._set_calibration_message(
+                "debug_dual_calib_transition",
+                preferred=counts.get("preferred", 0),
+                relaxed=counts.get("relaxed", 0),
+            )
+            return
+
+        rejection = calibration_rejection_reason(sample, self.calibration_plan)
+        if rejection is not None:
+            if rejection in CALIBRATION_CONTAMINATION_REASONS:
+                stage = accumulator.reject(sample.timestamp, rejection)
+            else:
+                stage = accumulator.skip(sample.timestamp, rejection)
+            self._dual_calibration_last_rejection = rejection
+        else:
+            stage = accumulator.add(
+                sample.timestamp,
+                calibration_measurement_values(sample, self.calibration_plan),
+            )
+            self._dual_calibration_last_rejection = None
+
+        counts = accumulator.stage_counts
+        if stage == RELAXED and accumulator.ready_to_finalize(sample.timestamp):
+            self.finish_dual_anchor_calibration()
+            return
+        if stage == RELAXED and accumulator.relaxed_deadline_reached(sample.timestamp):
+            self.finish_dual_anchor_calibration()
+            return
+        if stage == PREFERRED:
+            self._set_calibration_stage_visual("preferred")
+            message_key = "debug_dual_calib_preferred"
+        elif accumulator.relaxed_target_reached(sample.timestamp):
+            self._set_calibration_stage_visual("relaxed")
+            message_key = "debug_dual_calib_extending"
+        else:
+            self._set_calibration_stage_visual("relaxed")
+            message_key = "debug_dual_calib_relaxed"
+        detail = self._calibration_reason_text(self._dual_calibration_last_rejection)
+        self._set_calibration_message(
+            message_key,
+            preferred=counts.get("preferred", 0),
+            relaxed=counts.get("relaxed", 0),
+            detail=detail,
+        )
+
+    def finish_dual_anchor_calibration(self) -> None:
+        accumulator = self._dual_calibration_accumulator
+        if accumulator is None:
+            return
+        self._dual_calibration_accumulator = None
+        self.dual_calibration_timer.stop()
+        self._restore_calibration_controls()
+
+        try:
+            profile = accumulator.finalize()
+        except ValueError as exc:
+            self._set_calibration_stage_visual("failed")
+            self._set_calibration_message(
+                "debug_dual_calib_failed",
+                detail=self._calibration_failure_text(str(exc)),
+            )
             return
 
         if self.target_manager is not None and not self.target_manager.lock_calibration_target():
-            self.calibration_label.setText(_t("debug_target_calib_fail"))
+            self._set_calibration_stage_visual("failed")
+            self._set_calibration_message(
+                "debug_dual_calib_failed",
+                detail=_t("debug_target_calib_fail"),
+            )
+            return
+        if self.target_manager is not None and self.current_raw_sample is not None:
+            self.current_target_update = self.target_manager.update(
+                self.engine.observations_for_last_sample(),
+                timestamp=self.current_raw_sample.timestamp,
+            )
+            self.current_sample = self._sample_for_target(
+                self.current_raw_sample,
+                self.current_target_update,
+            )
+            self._show_target_metrics(self.current_target_update)
+
+        self._ensure_scientific_analyzer()
+        distance_cm = float(self.distance_input.value())
+        if not self.analyzer.set_calibration_profile(profile, distance_cm):
+            self._set_calibration_stage_visual("failed")
+            self._set_calibration_message(
+                "debug_dual_calib_failed",
+                detail=_t("calib_missing_no_feature_separates_above_mdc"),
+            )
+            return
+
+        self._scientific_profile = profile
+        self._set_calibration_stage_visual("reentry")
+        self._set_calibration_message("debug_dual_calib_reentry")
+        self.baseline_label.setText(format_calibration_profile(profile))
+        if self.current_sample is not None:
+            decision = self.analyzer.evaluate(self.current_sample)
+            self._show_metrics(self.current_sample, decision)
+            self._update_intervention(decision)
+
+    def calibrate_current_sample(self) -> None:
+        """Apply the explicitly legacy one-frame baseline for comparison."""
+        if self._dual_calibration_accumulator is not None:
+            return
+        if self.current_sample is None:
+            self._set_calibration_message("debug_calib_no_sample")
+            return
+
+        if self.target_manager is not None and not self.target_manager.lock_calibration_target():
+            self._set_calibration_message("debug_target_calib_fail")
             return
 
         if self.target_manager is not None and self.current_raw_sample is not None:
@@ -608,14 +858,25 @@ class DebugWindow(QMainWindow):
                 self.current_target_update,
             )
 
+        old_analyzer = self.analyzer
+        if self.high_precision_enabled:
+            self.analyzer = HighPrecisionPostureAnalyzer(
+                auto_calibrate=False,
+                calibrated_distance_cm=float(self.distance_input.value()),
+                require_dual_anchor=False,
+            )
+            self._copy_analyzer_toggles(old_analyzer, self.analyzer)
+        else:
+            self.analyzer = PostureAnalyzer(auto_calibrate=False)
+        self._scientific_profile = None
         distance_cm = float(self.distance_input.value()) if self.high_precision_enabled else None
         if not self.analyzer.set_baseline_from_sample(self.current_sample, distance_cm):
             if self.target_manager is not None:
                 self.target_manager.reset()
-            self.calibration_label.setText(_t("debug_calib_fail"))
+            self._set_calibration_message("debug_calib_fail")
             return
 
-        self.calibration_label.setText(_t("debug_calib_ok"))
+        self._set_calibration_message("debug_calib_ok")
         self.baseline_label.setText(format_baseline(self.analyzer.baseline))
         decision = self.analyzer.evaluate(self.current_sample)
         self._show_metrics(self.current_sample, decision)
@@ -629,16 +890,21 @@ class DebugWindow(QMainWindow):
         self.engine.set_capture_fps(target_fps)
 
     def toggle_high_precision(self, enabled: bool) -> None:
+        if self._dual_calibration_accumulator is not None:
+            return
         old_baseline = self.analyzer.baseline
+        old_analyzer = self.analyzer
         distance_cm = float(self.distance_input.value())
         self.high_precision_enabled = enabled
         self.distance_input.setEnabled(enabled)
         if enabled:
             self.analyzer = HighPrecisionPostureAnalyzer(
                 auto_calibrate=False,
-                baseline=old_baseline,
                 calibrated_distance_cm=distance_cm,
+                require_dual_anchor=True,
+                calibration_profile=self._scientific_profile,
             )
+            self._copy_analyzer_toggles(old_analyzer, self.analyzer)
             self.analyzer.set_calibrated_distance_cm(distance_cm)
         else:
             self.analyzer = PostureAnalyzer(auto_calibrate=False, baseline=old_baseline)
@@ -652,6 +918,142 @@ class DebugWindow(QMainWindow):
             if self.current_sample is not None:
                 decision = self.analyzer.evaluate(self.current_sample)
                 self._show_metrics(self.current_sample, decision)
+
+    def _ensure_scientific_analyzer(self) -> None:
+        if (
+            isinstance(self.analyzer, HighPrecisionPostureAnalyzer)
+            and self.analyzer.require_dual_anchor
+        ):
+            return
+        old_analyzer = self.analyzer
+        self.high_precision_enabled = True
+        if not self.precision_checkbox.isChecked():
+            self.precision_checkbox.setChecked(True)
+        self.distance_input.setEnabled(True)
+        self.analyzer = HighPrecisionPostureAnalyzer(
+            auto_calibrate=False,
+            calibrated_distance_cm=float(self.distance_input.value()),
+            require_dual_anchor=True,
+            calibration_profile=self._scientific_profile,
+        )
+        self._copy_analyzer_toggles(old_analyzer, self.analyzer)
+
+    @staticmethod
+    def _copy_analyzer_toggles(source, target) -> None:
+        for name in (
+            "precision_enabled",
+            "presence_check_enabled",
+            "identity_check_enabled",
+        ):
+            if hasattr(source, name) and hasattr(target, name):
+                setattr(target, name, getattr(source, name))
+
+    def _restore_calibration_controls(self) -> None:
+        self.calibrate_button.setText(_t("debug_dual_calibrate_btn"))
+        self.legacy_calibrate_button.setEnabled(True)
+        self.precision_checkbox.setEnabled(True)
+
+    def _set_calibration_message(self, key: str, **kwargs: object) -> None:
+        self._calibration_message_key = key
+        self._calibration_message_kwargs = kwargs
+        self.calibration_label.setText(_t(key, **kwargs))
+
+    def _calibration_stage_seconds_remaining(self, phase: str) -> Optional[int]:
+        accumulator = self._dual_calibration_accumulator
+        if accumulator is None or self.current_sample is None:
+            return None
+        if phase == "preferred":
+            if accumulator.started_at is None or not isinstance(
+                accumulator.started_at, datetime
+            ):
+                return int(math.ceil(self.calibration_plan.preferred_seconds))
+            if not isinstance(self.current_sample.timestamp, datetime):
+                return int(math.ceil(self.calibration_plan.preferred_seconds))
+            elapsed = max(
+                0.0,
+                (self.current_sample.timestamp - accumulator.started_at).total_seconds(),
+            )
+            return max(0, int(math.ceil(self.calibration_plan.preferred_seconds - elapsed)))
+        if phase == "relaxed":
+            elapsed = accumulator.relaxed_elapsed(self.current_sample.timestamp)
+            return max(0, int(math.ceil(self.calibration_plan.relaxed_seconds - elapsed)))
+        return None
+
+    def _set_calibration_stage_visual(self, phase: str) -> None:
+        """Make every two-anchor phase visibly distinct in the debug UI."""
+
+        visual = {
+            "idle": (
+                "debug_stage_idle_title",
+                "debug_stage_idle_detail",
+                "#f8fafc",
+                "#64748b",
+            ),
+            "preferred": (
+                "debug_stage_preferred_title",
+                "debug_stage_preferred_detail",
+                "#e8f5ee",
+                "#16803a",
+            ),
+            "transition": (
+                "debug_stage_transition_title",
+                "debug_stage_transition_detail",
+                "#fff4df",
+                "#c26a00",
+            ),
+            "relaxed": (
+                "debug_stage_relaxed_title",
+                "debug_stage_relaxed_detail",
+                "#f2eafe",
+                "#7c3aed",
+            ),
+            "reentry": (
+                "debug_stage_reentry_title",
+                "debug_stage_reentry_detail",
+                "#e8f1ff",
+                "#1d4ed8",
+            ),
+            "active": (
+                "debug_stage_active_title",
+                "debug_stage_active_detail",
+                "#e8f5ee",
+                "#16803a",
+            ),
+            "failed": (
+                "debug_stage_failed_title",
+                "debug_stage_failed_detail",
+                "#fff0f0",
+                "#b42318",
+            ),
+        }
+        title_key, detail_key, background, border = visual.get(phase, visual["idle"])
+        self._calibration_visual_phase = phase
+        self.calibration_stage_card.setProperty("calibrationPhase", phase)
+        title = _t(title_key)
+        remaining = self._calibration_stage_seconds_remaining(phase)
+        if remaining is not None:
+            title = f"{title} · {remaining}s"
+        self.calibration_stage_title.setText(title)
+        self.calibration_stage_detail.setText(_t(detail_key))
+        self.calibration_stage_card.setStyleSheet(
+            "QFrame#calibrationStageCard {"
+            f"background: {background}; border: 3px solid {border}; border-radius: 8px;"
+            "} QLabel { background: transparent; }"
+        )
+
+    @staticmethod
+    def _calibration_reason_text(reason: Optional[str]) -> str:
+        if reason is None:
+            return _t("debug_dual_calib_accepting")
+        key = f"calib_missing_{reason}"
+        translated = _t(key)
+        return translated if translated != key else reason
+
+    def _calibration_failure_text(self, failure: str) -> str:
+        parts = [part for part in failure.split(",") if part]
+        if not parts:
+            return _t("calib_missing_unknown")
+        return "；".join(self._calibration_reason_text(part) for part in parts)
 
     def _show_frame(self, frame, sample: VisionSample) -> None:
         annotated = frame.copy()
@@ -870,8 +1272,18 @@ class DebugWindow(QMainWindow):
         self.title_label.setText(_t("debug_panel_title"))
         self.status_label.setText(_t("debug_status_init"))
         self.reason_label.setText(_t("debug_reason_init"))
-        self.calibration_label.setText(_t("debug_calib_init"))
-        self.calibrate_button.setText(_t("debug_calibrate_btn"))
+        self.calibration_label.setText(
+            _t(self._calibration_message_key, **self._calibration_message_kwargs)
+        )
+        self.calibrate_button.setText(
+            _t(
+                "debug_dual_cancel_btn"
+                if self._dual_calibration_accumulator is not None
+                else "debug_dual_calibrate_btn"
+            )
+        )
+        self.legacy_calibrate_button.setText(_t("debug_calibrate_btn"))
+        self._set_calibration_stage_visual(self._calibration_visual_phase)
         self.precision_checkbox.setText(_t("debug_precision_cb"))
         self.performance_checkbox.setText(_t("debug_performance_cb"))
         self.face_metric_label.setText(_t("debug_metric_face"))
@@ -930,6 +1342,7 @@ class DebugWindow(QMainWindow):
     def closeEvent(self, event) -> None:
         remove_listener(self._on_language_changed)
         self.timer.stop()
+        self.dual_calibration_timer.stop()
         if self.intervention_overlay is not None:
             self.intervention_overlay.force_clear()
             self.intervention_overlay.close()
@@ -997,6 +1410,9 @@ def main() -> int:
 
     if args.self_test:
         window.update_frame()
+        # Keep the packaged smoke-test contract fast and camera-focused. The
+        # interactive UI's primary button runs the full five-second profile;
+        # this explicit call exercises the labelled legacy comparison only.
         window.calibrate_current_sample()
         print(f"status={window.status_label.text()}")
         print(f"face={window.face_label.text()}")
@@ -1010,6 +1426,7 @@ def main() -> int:
         print(f"target_reason={window.target_reason_label.text()}")
         print(f"high_precision={window.precision_checkbox.isChecked()}")
         print(f"high_performance={window.performance_checkbox.isChecked()}")
+        print("calibration_mode=legacy-smoke-test")
         window.close()
         return 0
 
