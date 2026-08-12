@@ -21,18 +21,18 @@ The release package is a portable folder for Windows x64. It includes the embedd
 3. Open the extracted folder.
 4. Double-click `EchoPosture.exe`.
 5. Allow camera access if Windows asks.
-6. Hold the comfortable posture you want to use for the entire 5-second prompt. When the countdown closes and the tray says you may relax, relax naturally; EchoPosture then waits about one second and silently measures that relaxed posture for about five seconds. Keep only one person in frame.
+6. Hold the comfortable upright posture you want to use for the entire 5-second prompt. When the countdown closes and the tray says you may relax, relax naturally; EchoPosture then waits about one second and measures that relaxed posture in the background for about five seconds. Keep only one person in frame and remain naturally relaxed until calibration completes.
 
-After the relaxed measurement, return to the comfortable posture you chose and hold it for about two seconds.
-EchoPosture pauses static-exposure accumulation until that preferred posture is stable, then continues running from
-the Windows notification area.
+Both calibrated postures and the interval between them form your personal normal posture range. Monitoring starts as
+soon as calibration succeeds; only sustained movement beyond the relaxed boundary and the measurement-noise band can
+accumulate static exposure.
 
 Windows SmartScreen may warn about unsigned builds. Only run the package if it came from the release link above and the SHA256 matches.
 
 ## Tray Controls
 
 - Right-click the tray icon to open the menu.
-- `立即重新校准` starts the same full two-anchor flow: a visible 5-second preferred stage, a short transition, and a silent relaxed stage.
+- `立即重新校准` starts the same full two-anchor flow: a visible 5-second preferred stage, a short transition, and a background relaxed stage announced by a tray message.
 - `立即测试最深效果` previews the strongest visual intervention.
 - `停止` clears the visual overlay, releases the camera, and exits the app.
 - Double-click the tray icon to open the console window.

@@ -1,5 +1,23 @@
 # DEVELOPMENT_LOG（Development Log，开发日志）
 
+## 2026-08-12 - Correct dual-anchor normal-band semantics and calibration guidance
+
+- Source: user-reported production behavior: unchanged posture entered `WATCH` after dual-anchor calibration and later accumulated static exposure; Debug UI also made the two collection stages too easy to confuse.
+- Git: pending, branch `codex/pr2-phase1-calibration-safety`, existing PR `#23`, tag `none`.
+- Root cause: the previous scoring contract treated `preferred` as deviation `0.0` and the explicitly requested `relaxed` anchor as deviation `1.0`. With `alert_enter=0.70`, the user's valid relaxed calibration posture was immediately classified as a risky posture. A two-second preferred re-entry gate only delayed the incorrect classification.
+- Scope: `posture_science.py` now treats both anchors and the interval between them as a personal normal posture band; only excursion beyond the relaxed boundary and runtime noise band has non-zero deviation. `ExposureAccumulator` ignores observation gaps over two seconds instead of backfilling missing time, and the analyzer/replay report `GOOD` once the current posture leaves the watch hysteresis even when old exposure is decaying. `vision_test.py`, `vision_replay.py`, and deterministic tests cover the production scoring path.
+- User-visible guidance: `debug_ui.py` keeps distinct colored camera banners for upright, transition, and natural-relaxation phases, then enters active monitoring directly. Tray and localized documentation now say that background relaxed sampling is still active and that monitoring starts immediately after successful calibration; stale re-entry labels and messages were removed. Public architecture, troubleshooting, and ADR text now describe the normal-band contract.
+- Risk: this changes the meaning of the relaxed anchor and therefore the product's intervention timing. Exposure thresholds, noise floors, and the two-second observation-gap limit remain adjustable product policy, not medical or physiological standards.
+- Verification:
+  - `runtime\\python311\\python.exe test_posture_science.py`: passed, including preferred/midpoint/relaxed zero-deviation, continuous over-boundary exposure, decay, and long-gap no-backfill regressions.
+  - `runtime\\python311\\python.exe test_feature_toggles.py`: passed, including multi-minute relaxed and midpoint holds staying `GOOD` with zero exposure.
+  - `runtime\\python311\\python.exe test_vision_replay.py`: passed, including sparse replay and recovery-to-`GOOD` cases.
+  - `runtime\\python311\\python.exe test_debug_ui.py`: passed, including persistent stage banners, geometry containment, and direct active state.
+  - `runtime\\python311\\python.exe test_vision_worker.py`, `test_vision_tracking.py`, `test_startup_guards.py`, `test_tray_flyout.py`, `test_identity_model_adapters.py`, `test_identity_verifier.py`, `test_ai_pr_review_guards.py`, and `test_ai_maintainer_manual_flows.py`: passed.
+  - `ruff check .`, bundled `py_compile`, and `git diff --check`: passed. Qt emitted the existing bundled-font-directory warning during Debug UI tests; it does not indicate a test failure.
+- Gaps: no real-camera run, packaged font-fidelity review, cross-device SEM/MDC study, consented recording, external-validity or medical validation is claimed. The excluded local `README.local.md` was updated for maintainer consistency but is not uploaded.
+- Conclusion: deterministic root-cause fix and user guidance are ready for delivery through PR `#23`; remote CI must be rechecked against the final pushed SHA.
+
 ## 2026-07-25 - Strengthen PR Review Escalation Guidance Without Weakening Close Gates
 
 - Source: user request to make the PR reviewer more willing to identify present, easily minimized defects and to

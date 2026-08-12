@@ -46,7 +46,7 @@ Interpret failures by stage:
 - Stage 2 only: PyQt platform plugin, display, or packaged module problem.
 - Stage 3 only: camera, OpenCV, MediaPipe resource, or one-frame landmark path problem.
 - Stage 4 only: camera sampling or startup runtime problem. Production calibration can still fail later if either the
-  visible 5-second preferred stage or the silent relaxed stage has fewer than five quality-gated samples.
+  visible 5-second preferred stage or the background relaxed stage has fewer than five quality-gated samples.
 - Several missing-file failures: incomplete extraction or an incorrectly assembled package.
 
 An environment-sensitive failure is still a failed check. Record the exact stage and observation instead of reporting
@@ -118,7 +118,7 @@ single-person, quality-gated samples in both calibration stages; it does not sil
 - Keep the face, both shoulders, and upper torso in frame.
 - Remove lens covers and verify that the preview is not black.
 - Keep one person in frame. Hold the preferred posture throughout the visible 5-second countdown; relax only after the
-  prompt, then remain reasonably still during the silent relaxed measurement.
+  prompt, then remain reasonably still during the background relaxed measurement until completion.
 - A moving target, low visibility, turned head, temporary target uncertainty, or missing keypoint skips that frame but
   preserves earlier valid samples. Multiple people or an ambiguous target reset the current anchor because identity
   contamination cannot be averaged away.
@@ -126,9 +126,9 @@ single-person, quality-gated samples in both calibration stages; it does not sil
   to calibration when the hips are less visible.
 - Recalibrate after moving the camera, chair, or monitor. A detected camera drift pauses exposure and reports that
   recalibration is required.
-- After the silent relaxed measurement completes, return to the preferred comfortable posture and hold it for about
-  two seconds. Monitoring remains in an exposure-paused activation state until that posture is stable; staying in the
-  relaxed calibration ending pose must not itself create a static-exposure episode.
+- Remain naturally relaxed until the relaxed measurement completes. Monitoring then starts immediately; the two
+  anchors and the interval between them are the personal normal range, so staying in the relaxed calibration ending
+  pose must not create a static-exposure episode.
 
 A successful debug preview with a failed tray calibration usually means one of the two stages did not contain enough
 quality-gated samples, not that the tray icon itself is broken. The debug panel's one-frame button is an explicit legacy

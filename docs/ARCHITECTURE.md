@@ -135,7 +135,7 @@ accumulate static exposure.
 
 Production calibration uses explicit phases. The visible dialog stays open for five seconds and every sample in that
 window belongs only to the preferred comfortable anchor. After the dialog closes, the tray tells the user that they may
-relax; about one second of transition samples is ignored, then the worker silently collects the relaxed anchor for about
+relax; about one second of transition samples is ignored, then the worker collects the relaxed anchor in the background for about
 five seconds. If fewer than five valid relaxed samples are available at the nominal target, collection may extend by at
 most two seconds. Each anchor needs at least five complete, single-person, quality-gated samples. A multi-person or
 ambiguous observation clears only the active anchor window because it can contaminate identity. A low-quality, moving,
@@ -154,16 +154,18 @@ confidence is computed from the features that actually reached scoring. Raw shou
 separate environment prompts. Turned-head, low-confidence, moving, ambiguous, and camera-drift observations produce
 `UNKNOWN`/`WATCH` and pause exposure instead of forcing a `BAD` result.
 
-Calibration ends while the user is intentionally holding the relaxed anchor, so the analyzer does not immediately
-start exposure integration. It first asks for a return to the preferred posture and requires about two stable seconds
-inside the preferred acceptance range. The relaxed ending posture and this re-entry interval always remain exposure-
-paused. Runtime single-frame tolerance uses the largest of reported MDC, `1.96 ×` within-anchor standard deviation,
-and a conservative per-feature resolution floor (`0.015` for normalized ratios, `1.5°` for angle features). SEM/MDC
-remains in the audit report, but is not treated as the full single-observation noise band. A feature needs at least two
-runtime-noise bands of anchor separation so subtracting the acceptance band cannot leave a near-zero scoring
-denominator. WATCH hysteresis remains available for observation, but exposure integrates only while alert hysteresis
-is active at deviation `0.70` or above; WATCH-only drift cannot accumulate an alert budget. These floors, multipliers,
-and durations are adjustable product policy, not biological standards.
+The preferred and relaxed anchors are both user-accepted postures. For each enabled feature, the calibrated interval
+between them is a personal normal band with deviation `0.0`; scoring begins only after an observation passes the
+relaxed boundary in the calibrated direction by more than the runtime noise band. Monitoring starts immediately after
+the profile is accepted, so the relaxed calibration ending pose cannot create a static-exposure episode. Runtime
+single-frame tolerance uses the largest of reported MDC, `1.96 ×` within-anchor standard deviation, and a conservative
+per-feature resolution floor (`0.015` for normalized ratios, `1.5°` for angle features). SEM/MDC remains in the audit
+report, but is not treated as the full single-observation noise band. A feature needs at least two runtime-noise bands
+of anchor separation so subtracting the acceptance band cannot leave a near-zero scoring denominator. WATCH
+hysteresis remains available for observation, but exposure integrates only while alert hysteresis is active at
+deviation `0.70` or above; WATCH-only drift cannot accumulate an alert budget. Observation gaps longer than two
+seconds pause integration instead of backfilling unobserved time. These floors, multipliers, and durations are
+adjustable product policy, not biological standards.
 
 ### Overlay controller and native host
 
@@ -201,10 +203,11 @@ that writes a report, under the package-local `logs` directory.
 3. The tray icon appears and the onboarding toast asks the user to enable monitoring.
 4. A five-second calibration dialog is shown while the worker collects only the preferred anchor at 180 ms intervals.
 5. The dialog closes before the user is told to relax. The worker ignores an approximately one-second transition and
-   silently samples the relaxed anchor for approximately five seconds, with at most two seconds of bounded extension.
+   samples the relaxed anchor in the background for approximately five seconds, with at most two seconds of bounded extension.
 6. `CalibrationAccumulator` builds per-feature repeatability statistics and `CalibrationProfile`; the analyzer accepts
    it only when both stages meet the minimum and at least one posture feature separates above MDC.
-7. A successful result starts monitoring; a failed startup calibration shows a warning and stops the application.
+7. A successful result starts monitoring immediately with both anchors and their interval treated as the personal
+   normal posture range; a failed startup calibration shows a warning and stops the application.
 
 ### Monitoring and intervention
 
