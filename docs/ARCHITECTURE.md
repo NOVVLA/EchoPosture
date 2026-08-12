@@ -142,8 +142,10 @@ ambiguous observation clears only the active anchor window because it can contam
 temporarily uncertain, or missing-keypoint observation abstains for that frame without erasing earlier accepted
 samples; transition observations neither count nor reset a window. Landmark quality is feature-specific: low hip
 visibility disables hip-dependent torso evidence for that observation but does not discard reliable face/shoulder
-evidence. The pose usability floor matches the backend's `0.50` landmark floor; repeatability is then evaluated per
-feature through SEM/MDC instead of imposing an unvalidated stricter whole-frame cutoff. The worker applies the
+evidence. The calibration-only shoulder usability floor is `0.30`, allowing a five-second repeatability window to
+assess stable edge-of-frame landmarks instead of discarding every frame before statistics exist. Runtime intervention
+confidence remains `0.65`, and hip-dependent features retain their separate `0.50` landmark floor. Repeatability is
+evaluated per feature through SEM/MDC rather than an unvalidated stricter whole-frame cutoff. The worker applies the
 resulting `CalibrationProfile` only after the target manager locks one unambiguous track.
 `set_baseline_from_sample()` remains available only for explicit legacy debugging/self-test.
 
@@ -156,8 +158,10 @@ separate environment prompts. Turned-head, low-confidence, moving, ambiguous, an
 
 The preferred and relaxed anchors are both user-accepted postures. For each enabled feature, the calibrated interval
 between them is a personal normal band with deviation `0.0`; scoring begins only after an observation passes the
-relaxed boundary in the calibrated direction by more than the runtime noise band. Monitoring starts immediately after
-the profile is accepted, so the relaxed calibration ending pose cannot create a static-exposure episode. Runtime
+relaxed boundary in the calibrated direction by more than the runtime noise band. After the profile is accepted, the
+target-locked runtime stream must stay inside that band for about two stable seconds before exposure is enabled. This
+validation returns `UNKNOWN`, reports zero deviation, and pauses exposure; it guards the adapter/target-replacement
+boundary and prevents the relaxed calibration ending pose from creating an exposure episode. Runtime
 single-frame tolerance uses the largest of reported MDC, `1.96 ×` within-anchor standard deviation, and a conservative
 per-feature resolution floor (`0.015` for normalized ratios, `1.5°` for angle features). SEM/MDC remains in the audit
 report, but is not treated as the full single-observation noise band. A feature needs at least two runtime-noise bands

@@ -164,6 +164,8 @@ REASON_TEXT: Dict[str, str] = {
     "head_turn_measurement_abstained": "reason.head_turn_measurement_abstained",
     "posture_features_unavailable": "reason.posture_features_unavailable",
     "posture_evidence_inconclusive": "reason.posture_evidence_inconclusive",
+    "post_calibration_normal_range_validation": "reason.post_calibration_normal_range_validation",
+    "post_calibration_normal_range_validated": "reason.post_calibration_normal_range_validated",
     "measurement_quality_low": "reason.measurement_quality_low",
     "within_personal_posture_range": "reason.within_personal_posture_range",
     "posture_deviation": "reason.posture_deviation",
@@ -871,7 +873,7 @@ class DebugWindow(QMainWindow):
 
         self._scientific_profile = profile
         counts = profile.stage_counts
-        self._set_calibration_stage_visual("active")
+        self._set_calibration_stage_visual("validating")
         self._set_calibration_message(
             "debug_dual_calib_ok",
             preferred=counts.get("preferred", 0),
@@ -1068,6 +1070,15 @@ class DebugWindow(QMainWindow):
                 "#3f1c68",
                 "debug_stage_badge_relaxed",
                 80,
+                "white",
+            ),
+            "validating": (
+                "debug_stage_validating_title",
+                "debug_stage_validating_detail",
+                "#145da0",
+                "#0b355d",
+                "debug_stage_badge_validating",
+                90,
                 "white",
             ),
             "active": (
@@ -1321,6 +1332,13 @@ class DebugWindow(QMainWindow):
         return max(1, int(1000 / max(fps, 1.0)))
 
     def _show_metrics(self, sample: VisionSample, decision: PostureDecision) -> None:
+        if (
+            self._dual_calibration_accumulator is None
+            and self._calibration_visual_phase == "validating"
+            and decision.reason == "post_calibration_normal_range_validated"
+        ):
+            self._set_calibration_stage_visual("active")
+            self._set_calibration_message("debug_dual_calib_active")
         self.status_label.setText(_t(STATUS_TEXT.get(decision.status, decision.status)))
         self.reason_label.setText(self._human_reason(decision.reason))
         self.status_label.setStyleSheet(self._status_style(decision.status))

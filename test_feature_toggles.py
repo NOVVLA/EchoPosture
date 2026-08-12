@@ -114,6 +114,21 @@ def scientific_analyzer() -> HighPrecisionPostureAnalyzer:
     return analyzer
 
 
+def validate_scientific_profile(
+    analyzer: HighPrecisionPostureAnalyzer,
+    start: datetime = T0,
+) -> None:
+    """Complete the production post-calibration normal-range validation."""
+
+    first = analyzer.evaluate(scientific_sample(start, 1.0))
+    assert first.status == "UNKNOWN", first
+    assert first.reason == "post_calibration_normal_range_validation", first
+    validated = analyzer.evaluate(scientific_sample(start + timedelta(seconds=2.1), 1.0))
+    assert validated.status == "GOOD", validated
+    assert validated.reason == "post_calibration_normal_range_validated", validated
+    assert validated.exposure_seconds == 0.0
+
+
 def test_defaults_all_enabled():
     analyzer = HighPrecisionPostureAnalyzer()
     assert analyzer.precision_enabled
@@ -255,11 +270,13 @@ def test_scientific_continuous_scoring_exposure_and_abstention():
     # Both anchors are user-accepted posture. The relaxed anchor and every
     # posture between the anchors must remain inside the personal normal band.
     ending_posture = analyzer.evaluate(scientific_sample(T0, 1.0))
-    assert ending_posture.status == "GOOD", ending_posture
+    assert ending_posture.status == "UNKNOWN", ending_posture
+    assert ending_posture.reason == "post_calibration_normal_range_validation"
     assert ending_posture.posture_deviation == 0.0
     assert ending_posture.exposure_seconds == 0.0
-    still_relaxed = analyzer.evaluate(scientific_sample(T0 + timedelta(seconds=60), 1.0))
+    still_relaxed = analyzer.evaluate(scientific_sample(T0 + timedelta(seconds=2.1), 1.0))
     assert still_relaxed.status == "GOOD", still_relaxed
+    assert still_relaxed.reason == "post_calibration_normal_range_validated"
     assert still_relaxed.posture_deviation == 0.0
     assert still_relaxed.exposure_seconds == 0.0
 
@@ -312,6 +329,29 @@ def test_scientific_continuous_scoring_exposure_and_abstention():
     print("test_scientific_continuous_scoring_exposure_and_abstention OK")
 
 
+def test_post_calibration_validation_requires_the_actual_normal_band():
+    """A sub-WATCH deviation cannot unlock exposure after calibration."""
+
+    analyzer = scientific_analyzer()
+    near_band = analyzer.evaluate(scientific_sample(T0, 1.4))
+    assert near_band.status == "UNKNOWN", near_band
+    assert near_band.reason == "post_calibration_normal_range_validation"
+    assert 0.0 < near_band.risk_score < analyzer.posture_policy.watch_exit * 100.0
+    assert near_band.posture_deviation == 0.0
+    assert near_band.exposure_seconds == 0.0
+
+    first_in_band = analyzer.evaluate(scientific_sample(T0 + timedelta(seconds=1.0), 1.0))
+    assert first_in_band.reason == "post_calibration_normal_range_validation"
+    too_soon = analyzer.evaluate(scientific_sample(T0 + timedelta(seconds=2.1), 1.0))
+    assert too_soon.status == "UNKNOWN", too_soon
+    assert too_soon.reason == "post_calibration_normal_range_validation"
+    validated = analyzer.evaluate(scientific_sample(T0 + timedelta(seconds=3.1), 1.0))
+    assert validated.status == "GOOD", validated
+    assert validated.reason == "post_calibration_normal_range_validated"
+    assert validated.exposure_seconds == 0.0
+    print("test_post_calibration_validation_requires_the_actual_normal_band OK")
+
+
 def test_production_target_chain_ignores_high_fps_landmark_jitter():
     """Unchanged posture must stay GOOD after target-sample replacement."""
     analyzer = scientific_analyzer()
@@ -321,6 +361,8 @@ def test_production_target_chain_ignores_high_fps_landmark_jitter():
     assert first_observation
     manager.update(first_observation, timestamp=T0)
     assert manager.lock_calibration_target()
+
+    validate_scientific_profile(analyzer, T0)
 
     jitters = (0.8, -0.7, 1.1, -0.9, 0.4, -1.0, 0.6, -0.5)
     frame_dt = timedelta(seconds=1.0 / 72.0)
@@ -370,8 +412,7 @@ def test_production_target_chain_ignores_high_fps_landmark_jitter():
 
 def test_runtime_local_hip_quality_abstains_torso_features():
     analyzer = scientific_analyzer()
-    analyzer.evaluate(scientific_sample(T0, 0.0))
-    analyzer.evaluate(scientific_sample(T0 + timedelta(seconds=2.1), 0.0))
+    validate_scientific_profile(analyzer, T0)
 
     low_hip = replace(
         scientific_sample(T0 + timedelta(seconds=3.0), 0.0),
@@ -390,6 +431,7 @@ def test_runtime_local_hip_quality_abstains_torso_features():
 
 def test_single_feature_runtime_drift_does_not_open_watch_or_exposure():
     analyzer = scientific_analyzer()
+    validate_scientific_profile(analyzer, T0)
     sample = scientific_sample(T0)
     values = measurement_values(sample)
     feature = "face_shoulder_ratio"
@@ -415,6 +457,7 @@ def test_single_feature_runtime_drift_does_not_open_watch_or_exposure():
 
 def test_head_turn_abstains_without_static_exposure():
     analyzer = scientific_analyzer()
+    validate_scientific_profile(analyzer, T0)
     upright = scientific_sample(T0, 0.0)
     assert analyzer.evaluate(upright).status == "GOOD"
     turned = replace(
@@ -435,6 +478,7 @@ def test_head_turn_abstains_without_static_exposure():
 def test_fixed_posture_distance_scale_does_not_become_head_turn_watch():
     """Distance/face scale changes are environment noise, not posture state."""
     analyzer = scientific_analyzer()
+    validate_scientific_profile(analyzer, T0)
     baseline = scientific_sample(T0, 0.0)
     for index, scale in enumerate((0.50, 0.60, 0.70, 0.74, 0.80, 1.20, 1.35)):
         sample = replace(
@@ -467,6 +511,7 @@ if __name__ == "__main__":
     test_presence_toggle_resets_multi_debounce_anchor()
     test_identity_toggle()
     test_scientific_continuous_scoring_exposure_and_abstention()
+    test_post_calibration_validation_requires_the_actual_normal_band()
     test_production_target_chain_ignores_high_fps_landmark_jitter()
     test_runtime_local_hip_quality_abstains_torso_features()
     test_single_feature_runtime_drift_does_not_open_watch_or_exposure()

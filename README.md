@@ -23,9 +23,10 @@ The release package is a portable folder for Windows x64. It includes the embedd
 5. Allow camera access if Windows asks.
 6. Hold the comfortable upright posture you want to use for the entire 5-second prompt. When the countdown closes and the tray says you may relax, relax naturally; EchoPosture then waits about one second and measures that relaxed posture in the background for about five seconds. Keep only one person in frame and remain naturally relaxed until calibration completes.
 
-Both calibrated postures and the interval between them form your personal normal posture range. Monitoring starts as
-soon as calibration succeeds; only sustained movement beyond the relaxed boundary and the measurement-noise band can
-accumulate static exposure.
+Both calibrated postures and the interval between them form your personal normal posture range. After calibration,
+EchoPosture briefly rechecks that the target-locked measurements reproduce this range; static exposure stays paused
+during that check. Only sustained movement beyond the relaxed boundary and the measurement-noise band can accumulate
+exposure.
 
 Windows SmartScreen may warn about unsigned builds. Only run the package if it came from the release link above and the SHA256 matches.
 

@@ -185,16 +185,19 @@ def test_debug_panel_runs_full_dual_anchor_calibration() -> None:
             "relaxed": 5,
         }
         assert window.calibration_label.text().startswith("双锚点科学校准完成")
-        assert window._calibration_visual_phase == "active"
-        assert window.calibration_stage_badge.text() == "监测"
-        assert "正式监测中" in window.calibration_stage_title.text()
+        assert window._calibration_visual_phase == "validating"
+        assert window.calibration_stage_badge.text() == "复验"
+        assert "正在复验正常范围" in window.calibration_stage_title.text()
         assert window.calibration_camera_stage_banner.isHidden()
         assert window.calibration_stage_card.styleSheet() not in {
             preferred_style,
             transition_style,
             relaxed_style,
         }
-        backend.sample = make_sample(T0 + timedelta(seconds=13), relaxed=1.0)
+        backend.sample = make_sample(T0 + timedelta(seconds=12.5), relaxed=1.0)
+        window.update_frame()
+        assert window._calibration_visual_phase == "validating"
+        backend.sample = make_sample(T0 + timedelta(seconds=14.1), relaxed=1.0)
         window.update_frame()
         assert window._calibration_visual_phase == "active"
         assert window.calibration_stage_badge.text() == "监测"

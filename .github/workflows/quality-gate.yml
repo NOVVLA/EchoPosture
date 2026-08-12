@@ -30,7 +30,7 @@ jobs:
           pip install -r requirements-dev.txt
 
       - name: Run Ruff static checks
-        run: ruff check .github/ai-flows/branch_preflight.py .github/ai-flows/common_ai_client.py .github/ai-flows/release_audit.py debug_ui.py gpu_blur_overlay.py onboarding_toast.py overlay_test.py posture_console.py test_ai_client_timeout.py test_ai_maintainer_manual_flows.py test_ai_pr_review_guards.py test_startup_guards.py test_tray_flyout.py test_vision_worker.py tray_app.py tray_flyout.py vision_test.py vision_worker.py
+        run: ruff check .github/ai-flows/branch_preflight.py .github/ai-flows/common_ai_client.py .github/ai-flows/release_audit.py debug_ui.py gpu_blur_overlay.py onboarding_toast.py overlay_test.py posture_console.py posture_science.py test_ai_client_timeout.py test_ai_maintainer_manual_flows.py test_ai_pr_review_guards.py test_debug_ui.py test_feature_toggles.py test_posture_science.py test_startup_guards.py test_tray_flyout.py test_vision_replay.py test_vision_tracking.py test_vision_worker.py tray_app.py tray_flyout.py vision_test.py vision_worker.py
 
       - name: Compile Python source
         shell: pwsh
@@ -44,11 +44,17 @@ jobs:
             "onboarding_toast.py",
             "overlay_test.py",
             "posture_console.py",
+            "posture_science.py",
             "test_ai_client_timeout.py",
             "test_ai_maintainer_manual_flows.py",
             "test_ai_pr_review_guards.py",
+            "test_debug_ui.py",
+            "test_feature_toggles.py",
+            "test_posture_science.py",
             "test_startup_guards.py",
             "test_tray_flyout.py",
+            "test_vision_replay.py",
+            "test_vision_tracking.py",
             "test_vision_worker.py",
             "tray_app.py",
             "tray_flyout.py",
@@ -61,7 +67,12 @@ jobs:
         run: |
           python test_startup_guards.py
           python test_tray_flyout.py
+          python test_posture_science.py
+          python test_feature_toggles.py
           python test_vision_worker.py
+          python test_vision_tracking.py
+          python test_debug_ui.py
+          python test_vision_replay.py
           python test_ai_client_timeout.py
           python test_ai_maintainer_manual_flows.py
           python test_ai_pr_review_guards.py

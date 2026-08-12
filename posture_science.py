@@ -119,8 +119,10 @@ class CalibrationPlan:
     # Borderline upper-body landmarks may still provide a usable anchor when
     # collected repeatedly. Runtime decisions retain the stricter 0.65
     # quality floor, so this calibration grace does not enable intervention
-    # from low-confidence observations.
-    min_pose_quality: float = 0.40
+    # from low-confidence observations. MediaPipe visibility commonly dips
+    # below 0.40 at a frame edge; the per-feature repeatability/noise checks
+    # remain responsible for disabling unstable anchor evidence.
+    min_pose_quality: float = 0.30
     # Torso ratio and trunk lean depend on both hips. Keep their landmark
     # floor stricter so borderline shoulder samples do not smuggle weak hip
     # geometry into either anchor.
@@ -394,6 +396,12 @@ class PosturePolicy:
     # that interval. Never backfill it as continuous exposure on the next
     # frame. This is an acquisition reliability limit, not a medical value.
     maximum_observation_gap_seconds: float = 2.0
+    # After calibration, require the target-locked runtime representation to
+    # reproduce the personal normal band before exposure can accumulate. This
+    # guards against a discontinuity between calibration samples and the
+    # target-replaced monitoring stream. It is a product reliability delay,
+    # not a physiological standard.
+    post_calibration_validation_seconds: float = 2.0
     confirmation_seconds: float = 3.0
     cooldown_seconds: float = 60.0
     moving_threshold: float = 0.20
@@ -428,6 +436,8 @@ class PosturePolicy:
             raise ValueError("recovery_half_life_seconds must be positive")
         if self.maximum_observation_gap_seconds <= 0:
             raise ValueError("maximum_observation_gap_seconds must be positive")
+        if self.post_calibration_validation_seconds < 0:
+            raise ValueError("post_calibration_validation_seconds cannot be negative")
         if self.runtime_noise_std_multiplier <= 0:
             raise ValueError("runtime_noise_std_multiplier must be positive")
         if self.runtime_min_signal_to_noise_ratio <= 1.0:

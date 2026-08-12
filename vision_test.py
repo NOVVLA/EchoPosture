@@ -425,6 +425,8 @@ class HighPrecisionPostureAnalyzer(PostureAnalyzer):
         self.exposure_accumulator = ExposureAccumulator(self.posture_policy)
         self.legacy_calibration_used = False
         self._camera_drifted = False
+        self._post_calibration_validation_required = False
+        self._post_calibration_validation_started_at: Optional[datetime] = None
         # 运行时功能开关（UI 主线程写、工作线程读；GIL 下 bool 读写原子，
         # evaluate 每帧读取一次即可生效）。默认全开，与历史行为一致。
         self.precision_enabled = True        # False → 回退到基础阈值判定
@@ -494,6 +496,8 @@ class HighPrecisionPostureAnalyzer(PostureAnalyzer):
         self._camera_drifted = False
         self.exposure_accumulator.reset()
         self._reset_risk_state()
+        self._post_calibration_validation_required = True
+        self._post_calibration_validation_started_at = None
         return True
 
     def reset_baseline(self) -> None:
@@ -502,6 +506,8 @@ class HighPrecisionPostureAnalyzer(PostureAnalyzer):
         self.legacy_calibration_used = False
         self._camera_drifted = False
         self.exposure_accumulator.reset()
+        self._post_calibration_validation_required = False
+        self._post_calibration_validation_started_at = None
 
     def evaluate(self, sample: VisionSample) -> PostureDecision:
         if not self.precision_enabled:
@@ -591,6 +597,7 @@ class HighPrecisionPostureAnalyzer(PostureAnalyzer):
 
         suppressed = self._suppressed_presence_decision(sample)
         if suppressed is not None:
+            self._reset_post_calibration_validation_window()
             exposure = self.exposure_accumulator.pause(sample.timestamp)
             return PostureDecision(
                 suppressed.status,
@@ -608,6 +615,7 @@ class HighPrecisionPostureAnalyzer(PostureAnalyzer):
             )
 
         if activity_state == "MOVING":
+            self._reset_post_calibration_validation_window()
             exposure = self.exposure_accumulator.pause(sample.timestamp)
             return PostureDecision(
                 "UNKNOWN",
@@ -624,6 +632,7 @@ class HighPrecisionPostureAnalyzer(PostureAnalyzer):
         if sample.camera_drift:
             self._camera_drifted = True
         if self._camera_drifted:
+            self._reset_post_calibration_validation_window()
             exposure = self.exposure_accumulator.pause(sample.timestamp)
             return PostureDecision(
                 "UNKNOWN",
@@ -638,6 +647,7 @@ class HighPrecisionPostureAnalyzer(PostureAnalyzer):
             )
 
         if self._camera_scale_jump(sample, profile):
+            self._reset_post_calibration_validation_window()
             exposure = self.exposure_accumulator.pause(sample.timestamp)
             return PostureDecision(
                 "UNKNOWN",
@@ -667,6 +677,7 @@ class HighPrecisionPostureAnalyzer(PostureAnalyzer):
             head_turned = abs(sample.head_turn_ratio - preferred_head_turn.mean) > 0.25
 
         if head_turned:
+            self._reset_post_calibration_validation_window()
             exposure = self.exposure_accumulator.pause(sample.timestamp)
             return PostureDecision(
                 "UNKNOWN",
@@ -681,6 +692,7 @@ class HighPrecisionPostureAnalyzer(PostureAnalyzer):
             )
 
         if not score.features:
+            self._reset_post_calibration_validation_window()
             exposure = self.exposure_accumulator.pause(sample.timestamp)
             return PostureDecision(
                 "UNKNOWN",
@@ -695,6 +707,7 @@ class HighPrecisionPostureAnalyzer(PostureAnalyzer):
             )
 
         if confidence < self.posture_policy.quality_floor:
+            self._reset_post_calibration_validation_window()
             exposure = self.exposure_accumulator.pause(sample.timestamp)
             return PostureDecision(
                 "UNKNOWN",
@@ -703,6 +716,48 @@ class HighPrecisionPostureAnalyzer(PostureAnalyzer):
                 risk_score=score.deviation * 100.0,
                 sustained_seconds=exposure.exposure_seconds,
                 posture_deviation=score.deviation,
+                exposure_seconds=exposure.exposure_seconds,
+                confidence=confidence,
+                calibration_quality=profile.calibration_quality,
+                activity_state=activity_state,
+            )
+
+        if self._post_calibration_validation_required:
+            exposure = self.exposure_accumulator.pause(sample.timestamp)
+            within_normal_band = score.raw_deviation <= 1e-9
+            if within_normal_band:
+                if self._post_calibration_validation_started_at is None:
+                    self._post_calibration_validation_started_at = sample.timestamp
+                stable_seconds = max(
+                    0.0,
+                    (
+                        sample.timestamp - self._post_calibration_validation_started_at
+                    ).total_seconds(),
+                )
+                if stable_seconds >= self.posture_policy.post_calibration_validation_seconds:
+                    self._post_calibration_validation_required = False
+                    self._post_calibration_validation_started_at = None
+                    self.exposure_accumulator.reset()
+                    self.exposure_accumulator.pause(sample.timestamp)
+                    return PostureDecision(
+                        "GOOD",
+                        "post_calibration_normal_range_validated",
+                        True,
+                        posture_deviation=0.0,
+                        exposure_seconds=0.0,
+                        confidence=confidence,
+                        calibration_quality=profile.calibration_quality,
+                        activity_state=activity_state,
+                    )
+            else:
+                self._post_calibration_validation_started_at = None
+            return PostureDecision(
+                "UNKNOWN",
+                "post_calibration_normal_range_validation",
+                True,
+                risk_score=score.raw_deviation * 100.0,
+                sustained_seconds=exposure.exposure_seconds,
+                posture_deviation=0.0,
                 exposure_seconds=exposure.exposure_seconds,
                 confidence=confidence,
                 calibration_quality=profile.calibration_quality,
@@ -772,6 +827,10 @@ class HighPrecisionPostureAnalyzer(PostureAnalyzer):
             calibration_quality=profile.calibration_quality,
             activity_state=activity_state,
         )
+
+    def _reset_post_calibration_validation_window(self) -> None:
+        if self._post_calibration_validation_required:
+            self._post_calibration_validation_started_at = None
 
     def _basic_mode_evaluate(self, sample: VisionSample) -> PostureDecision:
         """PRECISION 关闭时的回退：沿用基础阈值判定（PostureAnalyzer），
@@ -1509,7 +1568,7 @@ class VisionEngine:
         # calibration layer records repeatability and can disable noisy
         # features; dropping every borderline frame here made the five-second
         # anchor window fail before it could gather five valid samples.
-        if left.visibility < 0.4 or right.visibility < 0.4:
+        if left.visibility < 0.3 or right.visibility < 0.3:
             return None
 
         signed_shoulder_diff = (left.y - right.y) * height

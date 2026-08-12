@@ -14,6 +14,8 @@ from datetime import datetime, timedelta
 from types import SimpleNamespace
 
 from posture_science import CalibrationPlan, TRANSITION
+from vision_backend import observation_from_sample
+from vision_tracking import TargetManager
 from vision_test import (
     CameraBlackFrameError,
     HighPrecisionPostureAnalyzer,
@@ -83,6 +85,21 @@ class IncompleteEngine(FakeEngine):
         self.thread_idents.setdefault("read", threading.get_ident())
         self.read_count += 1
         return replace(make_sample(), pose_detected=False, trunk_lean_deg=None)
+
+
+class ProductionReplayEngine(FakeEngine):
+    """Programmable backend that exposes the production observation adapter."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.sample = make_sample()
+
+    def read_sample(self) -> VisionSample:
+        self.read_count += 1
+        return self.sample
+
+    def observations_for_last_sample(self):
+        return observation_from_sample(self.sample)
 
 
 def wait_until(predicate, timeout=5.0, interval=0.02) -> bool:
@@ -177,6 +194,29 @@ def make_dual_sample(ts: datetime, relaxed: float = 0.0, face_count: int = 1) ->
     )
 
 
+def make_production_dual_sample(
+    ts: datetime,
+    relaxed: float = 0.0,
+) -> VisionSample:
+    return replace(
+        make_dual_sample(ts, relaxed),
+        frame_width=640,
+        frame_height=480,
+        left_eye_center=(290.0, 150.0),
+        right_eye_center=(350.0, 150.0),
+        face_nose_point=(320.0, 170.0),
+        nose_point=(320.0, 170.0),
+        left_ear_point=(278.0, 168.0),
+        right_ear_point=(362.0, 168.0),
+        left_shoulder_point=(220.0, 240.0),
+        right_shoulder_point=(420.0, 244.0),
+        left_hip_point=(260.0, 390.0),
+        right_hip_point=(380.0, 390.0),
+        shoulder_center=(320.0, 242.0),
+        hip_center=(320.0, 390.0),
+    )
+
+
 def test_pose_quality_uses_shoulders_not_optional_hips() -> None:
     landmarks = [SimpleNamespace(x=0.5, y=0.5, visibility=1.0) for _ in range(33)]
     landmarks[11] = SimpleNamespace(x=0.35, y=0.4, visibility=0.55)
@@ -195,6 +235,22 @@ def test_pose_quality_uses_shoulders_not_optional_hips() -> None:
     assert values[5] is None and values[6] is None
     assert values[8] is None
     print("test_pose_quality_uses_shoulders_not_optional_hips OK")
+
+
+def test_pose_extraction_retains_repeatable_borderline_shoulders() -> None:
+    """The five-second anchor can assess stable 0.30-0.39 shoulders."""
+
+    landmarks = [SimpleNamespace(x=0.5, y=0.5, visibility=1.0) for _ in range(33)]
+    landmarks[11] = SimpleNamespace(x=0.35, y=0.4, visibility=0.35)
+    landmarks[12] = SimpleNamespace(x=0.65, y=0.4, visibility=0.38)
+    result = SimpleNamespace(pose_landmarks=SimpleNamespace(landmark=landmarks))
+    engine = object.__new__(VisionEngine)
+
+    values = engine._measure_pose_points(result, 640, 480)
+
+    assert values is not None
+    assert values[-1] == 0.35
+    print("test_pose_extraction_retains_repeatable_borderline_shoulders OK")
 
 
 def test_multi_person_resets_calibration_window():
@@ -350,7 +406,7 @@ def test_dual_anchor_worker_skips_quality_dropout_without_resetting_stage() -> N
     worker._collect_calibration_sample(
         replace(
             make_dual_sample(start + timedelta(seconds=2.1)),
-            pose_quality=0.35,
+            pose_quality=0.25,
         )
     )
     assert worker._calibration_accumulator.stage_counts["preferred"] == 4
@@ -363,7 +419,7 @@ def test_dual_anchor_worker_skips_quality_dropout_without_resetting_stage() -> N
 
 
 def test_dual_anchor_worker_accepts_borderline_pose_quality_for_anchor_repeatability():
-    """Stable 0.45 pose quality is usable for anchor repeatability."""
+    """Stable 0.35 pose quality is usable for anchor repeatability."""
     engine = FakeEngine()
     analyzer = HighPrecisionPostureAnalyzer(auto_calibrate=False, require_dual_anchor=True)
     worker = VisionWorker(engine_factory=lambda: engine, analyzer=analyzer)
@@ -372,7 +428,9 @@ def test_dual_anchor_worker_accepts_borderline_pose_quality_for_anchor_repeatabi
         worker._collect_calibration_sample(
             replace(
                 make_dual_sample(start + timedelta(seconds=index)),
-                pose_quality=0.45,
+                pose_quality=0.35,
+                left_shoulder_confidence=0.35,
+                right_shoulder_confidence=0.38,
             )
         )
     assert worker._calibration_accumulator is not None
@@ -382,7 +440,9 @@ def test_dual_anchor_worker_accepts_borderline_pose_quality_for_anchor_repeatabi
         worker._collect_calibration_sample(
             replace(
                 make_dual_sample(start + timedelta(seconds=6 + index), 1.0),
-                pose_quality=0.45,
+                pose_quality=0.35,
+                left_shoulder_confidence=0.35,
+                right_shoulder_confidence=0.38,
             )
         )
     worker._dual_calibration_request = (60.0, 9)
@@ -391,6 +451,58 @@ def test_dual_anchor_worker_accepts_borderline_pose_quality_for_anchor_repeatabi
     assert result is not None and result.ok, result
     assert dict(result.stage_counts) == {"preferred": 5, "relaxed": 5}
     print("test_dual_anchor_worker_accepts_borderline_pose_quality_for_anchor_repeatability OK")
+
+
+def test_production_worker_dual_anchor_requires_normal_range_before_exposure() -> None:
+    """Target-replaced monitoring cannot enter WATCH straight after calibration."""
+
+    engine = ProductionReplayEngine()
+    analyzer = HighPrecisionPostureAnalyzer(auto_calibrate=False, require_dual_anchor=True)
+
+    worker = VisionWorker(
+        engine_factory=lambda: engine,
+        analyzer=analyzer,
+        target_manager=TargetManager(),
+    )
+    start = datetime(2026, 1, 1, 12, 0, 0)
+
+    for index in range(5):
+        engine.sample = make_production_dual_sample(start + timedelta(seconds=index), 0.0)
+        sample, _ = worker._read_sample(engine)
+        worker._collect_calibration_sample(sample)
+    assert worker._calibration_accumulator is not None
+    worker._calibration_accumulator.begin_transition(start + timedelta(seconds=5))
+    for index in range(5):
+        engine.sample = make_production_dual_sample(
+            start + timedelta(seconds=6 + index),
+            1.0,
+        )
+        sample, _ = worker._read_sample(engine)
+        worker._collect_calibration_sample(sample)
+
+    worker._finalize_dual_anchor_calibration(60.0, 21)
+    result = worker.take_calibration_result()
+    assert result is not None and result.ok, result
+
+    decisions = []
+    for index in range(1, 902):
+        engine.sample = make_production_dual_sample(
+            start + timedelta(seconds=11 + index / 3.0),
+            1.0,
+        )
+        sample, _ = worker._read_sample(engine)
+        decisions.append(analyzer.evaluate(sample))
+
+    assert decisions[0].status == "UNKNOWN"
+    assert decisions[0].reason == "post_calibration_normal_range_validation"
+    assert any(
+        decision.reason == "post_calibration_normal_range_validated"
+        for decision in decisions[:10]
+    )
+    assert all(decision.status != "WATCH" for decision in decisions)
+    assert max(decision.posture_deviation for decision in decisions) == 0.0
+    assert max(decision.exposure_seconds for decision in decisions) == 0.0
+    print("test_production_worker_dual_anchor_requires_normal_range_before_exposure OK")
 
 
 def test_dual_anchor_worker_skips_zero_person_dropout_without_resetting_stage() -> None:
@@ -529,6 +641,7 @@ def test_set_capture_fps_roundtrip():
 if __name__ == "__main__":
     test_average_matches_legacy_semantics()
     test_pose_quality_uses_shoulders_not_optional_hips()
+    test_pose_extraction_retains_repeatable_borderline_shoulders()
     test_multi_person_resets_calibration_window()
     test_target_manager_presence_resets_calibration_window()
     test_thread_affinity_and_mailbox()
@@ -538,6 +651,7 @@ if __name__ == "__main__":
     test_dual_anchor_worker_rejects_multi_person_and_short_stage()
     test_dual_anchor_worker_skips_quality_dropout_without_resetting_stage()
     test_dual_anchor_worker_accepts_borderline_pose_quality_for_anchor_repeatability()
+    test_production_worker_dual_anchor_requires_normal_range_before_exposure()
     test_dual_anchor_worker_skips_zero_person_dropout_without_resetting_stage()
     test_dual_anchor_worker_uses_bounded_relaxed_extension()
     test_monitoring_error_pauses_worker()

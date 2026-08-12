@@ -126,9 +126,9 @@ single-person, quality-gated samples in both calibration stages; it does not sil
   to calibration when the hips are less visible.
 - Recalibrate after moving the camera, chair, or monitor. A detected camera drift pauses exposure and reports that
   recalibration is required.
-- Remain naturally relaxed until the relaxed measurement completes. Monitoring then starts immediately; the two
-  anchors and the interval between them are the personal normal range, so staying in the relaxed calibration ending
-  pose must not create a static-exposure episode.
+- Remain naturally relaxed until the relaxed measurement completes. The app then briefly validates that the
+  target-locked measurements still fall in the two-anchor personal normal range. This validation reports `UNKNOWN`
+  and pauses exposure; staying in the relaxed calibration ending pose must not create a static-exposure episode.
 
 A successful debug preview with a failed tray calibration usually means one of the two stages did not contain enough
 quality-gated samples, not that the tray icon itself is broken. The debug panel's one-frame button is an explicit legacy

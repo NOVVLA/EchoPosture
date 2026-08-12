@@ -1,5 +1,46 @@
 # DEVELOPMENT_LOG（Development Log，开发日志）
 
+## 2026-08-13 - Validate the calibrated normal range before enabling exposure
+
+- Git: commit `pending`, branch `codex/pr2-phase1-calibration-safety`, tag `none`; delivery target is the existing PR
+  `#23`, with no new PR.
+- Source: continued field report that the full five-second preferred stage still failed with `preferred_samples` and
+  `pose_quality_low`, and that an unchanged upright posture could enter `WATCH` after a successful calibration.
+- Calibration root cause: before the preceding follow-up, the MediaPipe extraction floor was `0.50`; the first fix
+  lowered both extraction and calibration shoulder-quality floors to `0.40`. Field behavior showed that when either
+  shoulder stayed at visibility `0.30-0.39`, the backend still discarded every frame before the five-second
+  repeatability window could assess it, so the stage necessarily ended with zero valid samples.
+- Calibration fix: shoulder landmarks at or above `0.30` now reach the calibration accumulator. The strict runtime
+  intervention confidence floor remains `0.65`; anchor repeatability, noise floors, multi-person rejection, and
+  per-feature confidence gates still disable evidence that is not reliable enough. Hip-dependent features retain
+  their independent `0.50` landmark floor.
+- False-exposure root cause and fix: calibration samples and target-locked monitoring samples cross an adapter/target
+  replacement boundary. The analyzer now requires about two stable seconds in the calibrated personal normal band
+  after target lock before exposure is enabled. During this validation it returns `UNKNOWN`, reports zero posture
+  deviation, and pauses exposure. Uncertain target, motion, camera drift/scale jump, head turn, missing features, and
+  low confidence reset the validation window. A posture outside the normal band cannot satisfy the gate.
+- Debug UI: preferred, transition, and silent relaxed collection retain their persistent green/orange/purple camera
+  banners. After both anchors are collected, a distinct blue `复验` state remains visible until the same production
+  normal-range gate activates monitoring; the legacy single-frame comparison remains separate.
+- CI: the Windows `python-quality` job now compiles and runs the posture-science, feature-toggle, tracking, Debug UI,
+  and numeric replay suites in addition to `test_vision_worker.py`, so these production contracts are enforced on the
+  existing PR instead of relying only on local checks.
+- Evidence: deterministic tests cover stable shoulder visibility `0.35/0.38`, a complete worker target-adapter
+  calibration path, post-calibration validation, and five minutes of unchanged target-replaced posture with no
+  `WATCH`, non-zero deviation, or exposure. These values are product reliability parameters, not medical standards.
+- Verification from the repository root:
+  - Bundled `py_compile` passed for the changed runtime, UI, localization, and test modules.
+  - `ruff check .` passed.
+  - `test_posture_science.py`, `test_feature_toggles.py`, `test_vision_worker.py`, `test_vision_tracking.py`,
+    `test_startup_guards.py`, `test_debug_ui.py`, and `test_vision_replay.py` passed.
+  - `git diff --check` passed. The Debug UI test emitted only the existing bundled Qt missing-font-directory warning.
+- Artifacts: no package, release asset, tag, image, video, or numeric reliability report was created or saved.
+- Remaining evidence gate: the MediaPipe asset exists on disk, but FaceMesh initialization still reports
+  `FileNotFoundError` for that exact resource under the non-ASCII workspace path. The live camera chain therefore was
+  not run; no real-camera or external-validity pass is claimed.
+- Conclusion: deterministic and offscreen checks pass; ready to push to the existing PR, subject to remote CI and the
+  named real-camera evidence gap.
+
 ## 2026-08-13 - Filter detector jitter from production activity gating
 
 - Source: production-path replay reproduced a serious false-positive path: an unchanged upright posture became `WATCH` because 72 FPS detector/landmark jitter was classified as `MOVING`.
