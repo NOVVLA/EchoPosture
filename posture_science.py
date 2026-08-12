@@ -116,10 +116,15 @@ class CalibrationPlan:
     relaxed_max_extension_seconds: float = 2.0
     min_samples_per_stage: int = 5
     min_face_quality: float = 0.65
-    # Match the MediaPipe landmark usability floor. Reliability is assessed
-    # per feature by SEM/MDC; an unvalidated 0.65 whole-frame cutoff caused
-    # otherwise usable 0.50-0.64 shoulder observations to be discarded.
-    min_pose_quality: float = 0.50
+    # Borderline upper-body landmarks may still provide a usable anchor when
+    # collected repeatedly. Runtime decisions retain the stricter 0.65
+    # quality floor, so this calibration grace does not enable intervention
+    # from low-confidence observations.
+    min_pose_quality: float = 0.40
+    # Torso ratio and trunk lean depend on both hips. Keep their landmark
+    # floor stricter so borderline shoulder samples do not smuggle weak hip
+    # geometry into either anchor.
+    min_hip_quality: float = 0.50
     max_target_motion: float = 0.20
 
     def __post_init__(self) -> None:
@@ -129,6 +134,10 @@ class CalibrationPlan:
             raise ValueError("calibration transition and extension cannot be negative")
         if self.min_samples_per_stage < 1:
             raise ValueError("min_samples_per_stage must be positive")
+        if not (0.0 <= self.min_pose_quality <= 1.0):
+            raise ValueError("min_pose_quality must be in [0, 1]")
+        if not (0.0 <= self.min_hip_quality <= 1.0):
+            raise ValueError("min_hip_quality must be in [0, 1]")
 
     @property
     def total_seconds(self) -> float:
@@ -824,7 +833,7 @@ def calibration_measurement_values(
     hips_ok = _confidences_meet_floor(
         sample,
         ("left_hip_confidence", "right_hip_confidence"),
-        floor,
+        max(floor, plan.min_hip_quality),
     )
     if not shoulders_ok:
         for name in (

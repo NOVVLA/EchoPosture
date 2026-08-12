@@ -350,7 +350,7 @@ def test_dual_anchor_worker_skips_quality_dropout_without_resetting_stage() -> N
     worker._collect_calibration_sample(
         replace(
             make_dual_sample(start + timedelta(seconds=2.1)),
-            pose_quality=0.40,
+            pose_quality=0.35,
         )
     )
     assert worker._calibration_accumulator.stage_counts["preferred"] == 4
@@ -360,6 +360,37 @@ def test_dual_anchor_worker_skips_quality_dropout_without_resetting_stage() -> N
         "preferred:pose_quality_low": 1
     }
     print("test_dual_anchor_worker_skips_quality_dropout_without_resetting_stage OK")
+
+
+def test_dual_anchor_worker_accepts_borderline_pose_quality_for_anchor_repeatability():
+    """Stable 0.45 pose quality is usable for anchor repeatability."""
+    engine = FakeEngine()
+    analyzer = HighPrecisionPostureAnalyzer(auto_calibrate=False, require_dual_anchor=True)
+    worker = VisionWorker(engine_factory=lambda: engine, analyzer=analyzer)
+    start = datetime(2026, 1, 1, 12, 0, 0)
+    for index in range(5):
+        worker._collect_calibration_sample(
+            replace(
+                make_dual_sample(start + timedelta(seconds=index)),
+                pose_quality=0.45,
+            )
+        )
+    assert worker._calibration_accumulator is not None
+    assert worker._calibration_accumulator.stage_counts["preferred"] == 5
+    worker._calibration_accumulator.begin_transition(start + timedelta(seconds=5))
+    for index in range(5):
+        worker._collect_calibration_sample(
+            replace(
+                make_dual_sample(start + timedelta(seconds=6 + index), 1.0),
+                pose_quality=0.45,
+            )
+        )
+    worker._dual_calibration_request = (60.0, 9)
+    worker._finalize_dual_anchor_calibration(60.0, 9)
+    result = worker.take_calibration_result()
+    assert result is not None and result.ok, result
+    assert dict(result.stage_counts) == {"preferred": 5, "relaxed": 5}
+    print("test_dual_anchor_worker_accepts_borderline_pose_quality_for_anchor_repeatability OK")
 
 
 def test_dual_anchor_worker_skips_zero_person_dropout_without_resetting_stage() -> None:
@@ -506,6 +537,7 @@ if __name__ == "__main__":
     test_dual_anchor_worker_calibration_and_stage_counts()
     test_dual_anchor_worker_rejects_multi_person_and_short_stage()
     test_dual_anchor_worker_skips_quality_dropout_without_resetting_stage()
+    test_dual_anchor_worker_accepts_borderline_pose_quality_for_anchor_repeatability()
     test_dual_anchor_worker_skips_zero_person_dropout_without_resetting_stage()
     test_dual_anchor_worker_uses_bounded_relaxed_extension()
     test_monitoring_error_pauses_worker()

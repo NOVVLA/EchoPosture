@@ -610,7 +610,7 @@ class HighPrecisionPostureAnalyzer(PostureAnalyzer):
         if activity_state == "MOVING":
             exposure = self.exposure_accumulator.pause(sample.timestamp)
             return PostureDecision(
-                "WATCH",
+                "UNKNOWN",
                 "activity_moving_exposure_paused",
                 True,
                 sustained_seconds=exposure.exposure_seconds,
@@ -637,27 +637,43 @@ class HighPrecisionPostureAnalyzer(PostureAnalyzer):
                 activity_state=activity_state,
             )
 
+        if self._camera_scale_jump(sample, profile):
+            exposure = self.exposure_accumulator.pause(sample.timestamp)
+            return PostureDecision(
+                "UNKNOWN",
+                "camera_scale_jump_measurement_abstained",
+                True,
+                sustained_seconds=exposure.exposure_seconds,
+                posture_deviation=0.0,
+                exposure_seconds=exposure.exposure_seconds,
+                confidence=0.0,
+                calibration_quality=profile.calibration_quality,
+                activity_state=activity_state,
+            )
+
         values = runtime_measurement_values(sample)
         score = score_posture_deviation(values, profile, self.posture_policy)
         scored_features = tuple(item.feature for item in score.features)
         quality = aggregate_sample_quality(sample, scored_features)
         confidence = max(0.0, min(1.0, quality * score.coverage))
 
+        # Head orientation is a measurement-validity gate, not posture
+        # evidence.  Use only the normalized nose/eye ratio here.  Raw
+        # interpupillary pixels change with camera distance and must never
+        # turn a fixed posture into a head-turn warning.
         head_turned = False
         preferred_head_turn = profile.preferred.get("head_turn_ratio")
         if sample.head_turn_ratio is not None and preferred_head_turn is not None:
             head_turned = abs(sample.head_turn_ratio - preferred_head_turn.mean) > 0.25
-        if self._eye_width_ratio(sample) is not None:
-            head_turned = head_turned or self._eye_width_ratio(sample) < 0.75
 
         if head_turned:
             exposure = self.exposure_accumulator.pause(sample.timestamp)
             return PostureDecision(
-                "WATCH",
+                "UNKNOWN",
                 "head_turn_measurement_abstained",
                 True,
                 sustained_seconds=exposure.exposure_seconds,
-                posture_deviation=score.deviation,
+                posture_deviation=0.0,
                 exposure_seconds=exposure.exposure_seconds,
                 confidence=confidence,
                 calibration_quality=profile.calibration_quality,
@@ -680,9 +696,8 @@ class HighPrecisionPostureAnalyzer(PostureAnalyzer):
 
         if confidence < self.posture_policy.quality_floor:
             exposure = self.exposure_accumulator.pause(sample.timestamp)
-            status = "WATCH" if exposure.exposure_seconds > 0.0 else "UNKNOWN"
             return PostureDecision(
-                status,
+                "UNKNOWN",
                 f"measurement_quality_low={confidence:.2f}",
                 True,
                 risk_score=score.deviation * 100.0,
@@ -1049,6 +1064,34 @@ class HighPrecisionPostureAnalyzer(PostureAnalyzer):
         ):
             return None
         return sample.interpupillary_px / self.baseline.interpupillary_px
+
+    def _camera_scale_jump(
+        self,
+        sample: VisionSample,
+        profile: CalibrationProfile,
+    ) -> bool:
+        """Detect a correlated raw-scale jump before scoring posture."""
+
+        preferred_ipd = profile.preferred.get("interpupillary_px")
+        preferred_width = profile.preferred.get("shoulder_width_px")
+        if (
+            preferred_ipd is None
+            or preferred_width is None
+            or preferred_ipd.mean <= 0.0
+            or preferred_width.mean <= 0.0
+            or sample.interpupillary_px is None
+            or sample.shoulder_width_px is None
+            or sample.interpupillary_px <= 0.0
+            or sample.shoulder_width_px <= 0.0
+        ):
+            return False
+        ipd_ratio = sample.interpupillary_px / preferred_ipd.mean
+        width_ratio = sample.shoulder_width_px / preferred_width.mean
+        if abs(ipd_ratio - width_ratio) > 0.12:
+            return False
+        return abs((ipd_ratio + width_ratio) / 2.0 - 1.0) >= (
+            self.posture_policy.camera_scale_jump_ratio
+        )
 
     def _shoulder_asymmetry_score(
         self,
@@ -1462,7 +1505,11 @@ class VisionEngine:
         left = landmarks[LEFT_SHOULDER]
         right = landmarks[RIGHT_SHOULDER]
 
-        if left.visibility < 0.5 or right.visibility < 0.5:
+        # Keep a lower extraction floor than the runtime quality gate. The
+        # calibration layer records repeatability and can disable noisy
+        # features; dropping every borderline frame here made the five-second
+        # anchor window fail before it could gather five valid samples.
+        if left.visibility < 0.4 or right.visibility < 0.4:
             return None
 
         signed_shoulder_diff = (left.y - right.y) * height

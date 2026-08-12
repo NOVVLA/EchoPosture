@@ -307,7 +307,7 @@ def test_scientific_continuous_scoring_exposure_and_abstention():
         activity_state="MOVING",
     )
     moving_decision = analyzer.evaluate(moving)
-    assert moving_decision.status == "WATCH", moving_decision
+    assert moving_decision.status == "UNKNOWN", moving_decision
     assert moving_decision.exposure_seconds == before
     print("test_scientific_continuous_scoring_exposure_and_abstention OK")
 
@@ -422,7 +422,7 @@ def test_head_turn_abstains_without_static_exposure():
         head_turn_ratio=0.50,
     )
     decision = analyzer.evaluate(turned)
-    assert decision.status == "WATCH", decision
+    assert decision.status == "UNKNOWN", decision
     assert decision.reason == "head_turn_measurement_abstained"
     assert decision.posture_deviation == 0.0
     assert decision.exposure_seconds == 0.0
@@ -430,6 +430,33 @@ def test_head_turn_abstains_without_static_exposure():
     assert recovered.status == "GOOD", recovered
     assert recovered.exposure_seconds == 0.0
     print("test_head_turn_abstains_without_static_exposure OK")
+
+
+def test_fixed_posture_distance_scale_does_not_become_head_turn_watch():
+    """Distance/face scale changes are environment noise, not posture state."""
+    analyzer = scientific_analyzer()
+    baseline = scientific_sample(T0, 0.0)
+    for index, scale in enumerate((0.50, 0.60, 0.70, 0.74, 0.80, 1.20, 1.35)):
+        sample = replace(
+            baseline,
+            timestamp=T0 + timedelta(seconds=index + 1),
+            interpupillary_px=baseline.interpupillary_px * scale,
+        )
+        decision = analyzer.evaluate(sample)
+        assert decision.status == "GOOD", decision
+        assert decision.posture_deviation == 0.0, decision
+        assert decision.exposure_seconds == 0.0, decision
+    scaled = replace(
+        baseline,
+        timestamp=T0 + timedelta(seconds=20),
+        interpupillary_px=baseline.interpupillary_px * 1.35,
+        shoulder_width_px=baseline.shoulder_width_px * 1.35,
+    )
+    decision = analyzer.evaluate(scaled)
+    assert decision.status == "UNKNOWN", decision
+    assert decision.reason == "camera_scale_jump_measurement_abstained"
+    assert decision.exposure_seconds == 0.0
+    print("test_fixed_posture_distance_scale_does_not_become_head_turn_watch OK")
 
 
 if __name__ == "__main__":
@@ -444,4 +471,5 @@ if __name__ == "__main__":
     test_runtime_local_hip_quality_abstains_torso_features()
     test_single_feature_runtime_drift_does_not_open_watch_or_exposure()
     test_head_turn_abstains_without_static_exposure()
+    test_fixed_posture_distance_scale_does_not_become_head_turn_watch()
     print("ALL TESTS PASSED")

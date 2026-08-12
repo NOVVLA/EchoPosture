@@ -1188,3 +1188,24 @@
   medical validity is claimed. These remain independent evidence or follow-up gates.
 - Conclusion: code integration, deterministic validation, remote CI, conflict resolution, and stale-review cleanup are
   complete for the integration head. PR `#23` awaits the repository's required human approval.
+
+## 2026-08-13 - Fixed-posture abstention and dual-anchor quality-floor follow-up
+
+- Source: field report that a fixed upright posture could remain visibly `WATCH`, and that the five-second preferred
+  stage could fail with insufficient body-keypoint quality.
+- Root cause: scientific-mode uncertainty branches used `WATCH` for moving/head-turn/low-quality frames; head-turn
+  detection also reused raw interpupillary pixel scale, which changes with camera distance. The pose extractor rejected
+  both shoulders below 0.50 before the calibration repeatability layer could collect five samples.
+- Changes:
+  - Measurement uncertainty now returns `UNKNOWN` and pauses exposure; it cannot be interpreted as posture deviation or
+    open an intervention episode.
+  - Scientific head-turn gating uses only normalized nose/eye ratio. Raw interpupillary scale remains environment data.
+  - Calibration accepts stable shoulder observations down to the explicit 0.40 extraction floor, while hip-dependent
+    torso features keep a separate 0.50 landmark floor. Runtime intervention quality remains 0.65.
+- Verification:
+  - Passed `test_feature_toggles.py`, including distance-scale replay and no-exposure head-turn/movement abstention.
+  - Passed `test_posture_science.py`, `test_vision_worker.py`, and `test_debug_ui.py`; the worker test now covers stable
+    borderline pose quality completing both anchors.
+  - Real-camera validation remains unavailable because the bundled MediaPipe face-landmark model artifact is missing;
+    no live-camera success is claimed.
+- Gaps: external camera/device repeatability and user-facing status wording for `UNKNOWN` remain evidence/follow-up work.

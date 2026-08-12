@@ -175,7 +175,8 @@ def test_low_hip_visibility_does_not_reject_upper_body_evidence() -> None:
         right_ear_confidence=0.89,
     )
     assert calibration_rejection_reason(sample) is None
-    assert CalibrationPlan().min_pose_quality == 0.50
+    assert CalibrationPlan().min_pose_quality == 0.40
+    assert CalibrationPlan().min_hip_quality == 0.50
     values = calibration_measurement_values(sample)
     assert "face_shoulder_ratio" in values
     assert "shoulder_asymmetry_deg" in values
