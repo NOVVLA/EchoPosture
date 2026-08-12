@@ -29,6 +29,7 @@ from posture_science import (
     PosturePolicy,
     aggregate_sample_quality,
     measurement_values,
+    runtime_measurement_values,
     score_posture_deviation,
 )
 
@@ -652,9 +653,10 @@ class HighPrecisionPostureAnalyzer(PostureAnalyzer):
                 activity_state=activity_state,
             )
 
-        values = measurement_values(sample)
+        values = runtime_measurement_values(sample)
         score = score_posture_deviation(values, profile, self.posture_policy)
-        quality = aggregate_sample_quality(sample)
+        scored_features = tuple(item.feature for item in score.features)
+        quality = aggregate_sample_quality(sample, scored_features)
         confidence = max(0.0, min(1.0, quality * score.coverage))
 
         head_turned = False

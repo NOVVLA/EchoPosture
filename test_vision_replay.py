@@ -43,7 +43,21 @@ def test_numeric_posture_exposure_replay():
     print("test_numeric_posture_exposure_replay OK")
 
 
+def test_watch_replay_does_not_preload_alert_exposure():
+    lines = [
+        '{"timestamp_s": 0, "posture_deviation": 0.60, "expected_posture_status": "WATCH"}',
+        '{"timestamp_s": 300, "posture_deviation": 0.60, "expected_posture_status": "WATCH"}',
+        '{"timestamp_s": 301, "posture_deviation": 1.0, "expected_posture_status": "WATCH"}',
+        '{"timestamp_s": 302, "posture_deviation": 1.0, "expected_posture_status": "WATCH"}',
+    ]
+    results = replay_lines(lines)
+    assert results[1].exposure_seconds == 0.0
+    assert results[3].exposure_seconds == 2.0
+    print("test_watch_replay_does_not_preload_alert_exposure OK")
+
+
 if __name__ == "__main__":
     test_synthetic_replay_matrix()
     test_numeric_posture_exposure_replay()
+    test_watch_replay_does_not_preload_alert_exposure()
     print("ALL TESTS PASSED")

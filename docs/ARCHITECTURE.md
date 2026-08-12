@@ -148,18 +148,22 @@ resulting `CalibrationProfile` only after the target manager locks one unambiguo
 `set_baseline_from_sample()` remains available only for explicit legacy debugging/self-test.
 
 The posture score uses scale-relative face/shoulder and torso/shoulder ratios, optional ear/shoulder position, shoulder
-asymmetry angle, and trunk lean. Raw shoulder width and distance remain separate environment prompts. If anchor
-separation is not above the feature's MDC, that feature is disabled. Turned-head, low-confidence, moving, ambiguous,
-and camera-drift observations produce `UNKNOWN`/`WATCH` and pause exposure instead of forcing a `BAD` result.
+asymmetry angle, and trunk lean. Runtime extraction repeats the feature-local landmark gate used during calibration:
+shoulder evidence may remain usable while low-confidence hips remove only torso/hip-dependent features, and decision
+confidence is computed from the features that actually reached scoring. Raw shoulder width and distance remain
+separate environment prompts. Turned-head, low-confidence, moving, ambiguous, and camera-drift observations produce
+`UNKNOWN`/`WATCH` and pause exposure instead of forcing a `BAD` result.
 
 Calibration ends while the user is intentionally holding the relaxed anchor, so the analyzer does not immediately
 start exposure integration. It first asks for a return to the preferred posture and requires about two stable seconds
 inside the preferred acceptance range. The relaxed ending posture and this re-entry interval always remain exposure-
 paused. Runtime single-frame tolerance uses the largest of reported MDC, `1.96 ×` within-anchor standard deviation,
 and a conservative per-feature resolution floor (`0.015` for normalized ratios, `1.5°` for angle features). SEM/MDC
-remains in the audit report, but is not treated as the full single-observation noise band. Features whose anchor
-separation does not clear the runtime repeatability floor with a minimum signal margin are disabled. These floors,
-multipliers, and durations are adjustable product policy, not biological standards.
+remains in the audit report, but is not treated as the full single-observation noise band. A feature needs at least two
+runtime-noise bands of anchor separation so subtracting the acceptance band cannot leave a near-zero scoring
+denominator. WATCH hysteresis remains available for observation, but exposure integrates only while alert hysteresis
+is active at deviation `0.70` or above; WATCH-only drift cannot accumulate an alert budget. These floors, multipliers,
+and durations are adjustable product policy, not biological standards.
 
 ### Overlay controller and native host
 

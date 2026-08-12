@@ -387,7 +387,9 @@ class PosturePolicy:
     # band is based on within-anchor standard deviation rather than SEM alone.
     # These are adjustable reliability/product parameters, not physiology.
     runtime_noise_std_multiplier: float = 1.96
-    runtime_min_signal_to_noise_ratio: float = 1.25
+    # A two-band span leaves at least one full noise band after the acceptance
+    # band is removed, avoiding a near-zero scoring denominator.
+    runtime_min_signal_to_noise_ratio: float = 2.0
     # Calibration smoothing can make observed std/MDC unrealistically close
     # to zero. These conservative feature-unit floors prevent a tiny stage
     # drift from becoming a complete 0-to-1 posture axis. They are adjustable
@@ -467,13 +469,20 @@ def normalized_feature_deviation(
         if runtime_noise_floor is not None
         else _runtime_noise_floor_for_feature(preferred, relaxed, policy, feature)
     )
-    signal_reliability = 1.0 if anchor_span > noise_floor else 0.0
-    if anchor_span <= noise_floor:
+    credible_anchor_span = anchor_span - noise_floor
+    minimum_credible_span = noise_floor * (
+        policy.runtime_min_signal_to_noise_ratio - 1.0
+    )
+    signal_reliability = (
+        1.0
+        if credible_anchor_span >= minimum_credible_span and credible_anchor_span > 0.0
+        else 0.0
+    )
+    if signal_reliability == 0.0:
         deviation = 0.0
     else:
         projected_change = (float(current) - preferred.mean) * direction
         credible_change = max(0.0, projected_change - noise_floor)
-        credible_anchor_span = max(anchor_span - noise_floor, 1e-9)
         deviation = max(0.0, min(1.5, credible_change / credible_anchor_span))
     return FeatureDeviation(
         feature=feature,
@@ -651,7 +660,7 @@ class ExposureAccumulator:
 
         integrated = 0.0
         recovered = 0.0
-        if self.watch_active:
+        if self.alert_active:
             integrated = elapsed * deviation
             self.exposure_seconds += integrated
         elif elapsed > 0.0 and self.exposure_seconds > 0.0:
@@ -769,7 +778,78 @@ def calibration_measurement_values(
     return values
 
 
-def aggregate_sample_quality(sample) -> float:
+def runtime_measurement_values(
+    sample,
+    plan: Optional[CalibrationPlan] = None,
+) -> dict[str, float]:
+    """Extract posture values whose own landmarks are usable in this frame."""
+
+    return calibration_measurement_values(sample, plan)
+
+
+_FEATURE_CONFIDENCE_REQUIREMENTS: Mapping[str, tuple[str, ...]] = {
+    "face_shoulder_ratio": (
+        "left_shoulder_confidence",
+        "right_shoulder_confidence",
+    ),
+    "torso_shoulder_ratio": (
+        "left_shoulder_confidence",
+        "right_shoulder_confidence",
+        "left_hip_confidence",
+        "right_hip_confidence",
+    ),
+    "ear_shoulder_ratio": (
+        "left_shoulder_confidence",
+        "right_shoulder_confidence",
+        "left_ear_confidence",
+        "right_ear_confidence",
+    ),
+    "shoulder_asymmetry_deg": (
+        "left_shoulder_confidence",
+        "right_shoulder_confidence",
+    ),
+    "trunk_lean_deg": (
+        "left_shoulder_confidence",
+        "right_shoulder_confidence",
+        "left_hip_confidence",
+        "right_hip_confidence",
+    ),
+}
+
+
+def feature_measurement_quality(sample, feature: str) -> float:
+    """Return quality for the measurements that actually drive one feature."""
+
+    qualities: list[float] = []
+    if feature == "face_shoulder_ratio":
+        face_quality = _finite_float(getattr(sample, "face_quality", None))
+        qualities.append(face_quality if face_quality is not None else 1.0)
+
+    confidence_names = _FEATURE_CONFIDENCE_REQUIREMENTS.get(feature, ())
+    confidences = [_finite_float(getattr(sample, name, None)) for name in confidence_names]
+    if any(value is not None for value in confidences):
+        if all(value is not None for value in confidences):
+            qualities.append(min(value for value in confidences if value is not None))
+        else:
+            qualities.append(0.0)
+    else:
+        pose_quality = _finite_float(getattr(sample, "pose_quality", None))
+        if pose_quality is not None:
+            qualities.append(pose_quality)
+
+    return max(0.0, min(1.0, min(qualities))) if qualities else 1.0
+
+
+def aggregate_sample_quality(
+    sample,
+    feature_names: Optional[Sequence[str]] = None,
+) -> float:
+    if feature_names is not None:
+        if not feature_names:
+            return 0.0
+        qualities = [feature_measurement_quality(sample, name) for name in feature_names]
+        if qualities:
+            return max(0.0, min(1.0, min(qualities)))
     qualities: list[float] = []
     face_quality = _finite_float(getattr(sample, "face_quality", None))
     pose_quality = _finite_float(getattr(sample, "pose_quality", None))

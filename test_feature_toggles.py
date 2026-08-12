@@ -300,6 +300,26 @@ def test_scientific_continuous_scoring_exposure_and_abstention():
     print("test_scientific_continuous_scoring_exposure_and_abstention OK")
 
 
+def test_runtime_local_hip_quality_abstains_torso_features():
+    analyzer = scientific_analyzer()
+    analyzer.evaluate(scientific_sample(T0, 0.0))
+    analyzer.evaluate(scientific_sample(T0 + timedelta(seconds=2.1), 0.0))
+
+    low_hip = replace(
+        scientific_sample(T0 + timedelta(seconds=3.0), 0.0),
+        torso_height_px=140.0,
+        left_hip_confidence=0.20,
+        right_hip_confidence=0.20,
+        pose_quality=0.95,
+    )
+    decision = analyzer.evaluate(low_hip)
+    assert decision.status == "UNKNOWN", decision
+    assert decision.posture_deviation == 0.0, decision
+    assert decision.exposure_seconds == 0.0, decision
+    assert decision.confidence < analyzer.posture_policy.quality_floor, decision
+    print("test_runtime_local_hip_quality_abstains_torso_features OK")
+
+
 if __name__ == "__main__":
     test_defaults_all_enabled()
     test_auto_calibration_requires_complete_single_person_sample()
@@ -308,4 +328,5 @@ if __name__ == "__main__":
     test_presence_toggle_resets_multi_debounce_anchor()
     test_identity_toggle()
     test_scientific_continuous_scoring_exposure_and_abstention()
+    test_runtime_local_hip_quality_abstains_torso_features()
     print("ALL TESTS PASSED")

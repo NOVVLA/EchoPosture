@@ -14,6 +14,7 @@ from posture_science import (
     PosturePolicy,
     RELAXED,
     TRANSITION,
+    aggregate_sample_quality,
     calibration_measurement_values,
     calibration_rejection_reason,
     normalized_feature_deviation,
@@ -166,6 +167,26 @@ def test_low_hip_visibility_does_not_reject_upper_body_evidence() -> None:
     print("test_low_hip_visibility_does_not_reject_upper_body_evidence OK")
 
 
+def test_feature_quality_uses_only_scored_landmarks() -> None:
+    sample = SimpleNamespace(
+        face_quality=0.95,
+        pose_quality=0.95,
+        left_shoulder_confidence=0.90,
+        right_shoulder_confidence=0.88,
+        left_hip_confidence=0.20,
+        right_hip_confidence=0.22,
+    )
+    upper_quality = aggregate_sample_quality(
+        sample,
+        ("face_shoulder_ratio", "shoulder_asymmetry_deg"),
+    )
+    torso_quality = aggregate_sample_quality(sample, ("torso_shoulder_ratio",))
+    assert math.isclose(upper_quality, 0.88)
+    assert math.isclose(torso_quality, 0.20)
+    assert aggregate_sample_quality(sample, ()) == 0.0
+    print("test_feature_quality_uses_only_scored_landmarks OK")
+
+
 def test_stage_sample_shortage_fails() -> None:
     accumulator = CalibrationAccumulator(CalibrationPlan(min_samples_per_stage=5))
     for index in range(5):
@@ -314,6 +335,23 @@ def test_near_identical_smoothed_anchors_do_not_create_false_signal() -> None:
     print("test_near_identical_smoothed_anchors_do_not_create_false_signal OK")
 
 
+def test_narrow_credible_anchor_span_is_disabled() -> None:
+    accumulator = CalibrationAccumulator(CalibrationPlan(min_samples_per_stage=5))
+    for index in range(5):
+        accumulator.add(index, {"face_shoulder_ratio": 0.300})
+    accumulator.begin_transition(5.0)
+    for index in range(5):
+        accumulator.add(6.0 + index, {"face_shoulder_ratio": 0.320})
+
+    try:
+        accumulator.finalize()
+    except ValueError as exc:
+        assert str(exc) == "no_feature_separates_above_mdc"
+    else:
+        raise AssertionError("a 0.005 credible span must not amplify runtime jitter")
+    print("test_narrow_credible_anchor_span_is_disabled OK")
+
+
 def test_exposure_uses_timestamps_pauses_and_decays() -> None:
     policy = PosturePolicy(recovery_half_life_seconds=10.0)
     exposure = ExposureAccumulator(policy)
@@ -333,6 +371,22 @@ def test_exposure_uses_timestamps_pauses_and_decays() -> None:
     assert not recovered.watch_active
     assert not recovered.alert_active
     print("test_exposure_uses_timestamps_pauses_and_decays OK")
+
+
+def test_watch_only_deviation_does_not_preload_exposure() -> None:
+    exposure = ExposureAccumulator()
+    exposure.update(0.0, 0.60)
+    watching = exposure.update(300.0, 0.60)
+    assert watching.watch_active
+    assert not watching.alert_active
+    assert watching.integrated_seconds == 0.0
+    assert watching.exposure_seconds == 0.0
+
+    exposure.update(301.0, 1.0)
+    brief_alert = exposure.update(302.0, 1.0)
+    assert brief_alert.exposure_seconds == 2.0
+    assert brief_alert.exposure_seconds < exposure.policy.alert_exposure_seconds
+    print("test_watch_only_deviation_does_not_preload_exposure OK")
 
 
 def test_exposure_hysteresis() -> None:
@@ -366,12 +420,15 @@ if __name__ == "__main__":
     test_low_quality_abstention_preserves_valid_samples()
     test_zero_person_dropout_abstains_but_multiple_people_contaminate()
     test_low_hip_visibility_does_not_reject_upper_body_evidence()
+    test_feature_quality_uses_only_scored_landmarks()
     test_stage_sample_shortage_fails()
     test_explicit_phase_timing_and_bounded_extension()
     test_mdc_normalization_and_group_deduplication()
     test_runtime_noise_band_uses_single_observation_repeatability()
     test_marginal_anchor_signal_is_disabled_by_runtime_noise()
     test_near_identical_smoothed_anchors_do_not_create_false_signal()
+    test_narrow_credible_anchor_span_is_disabled()
     test_exposure_uses_timestamps_pauses_and_decays()
+    test_watch_only_deviation_does_not_preload_exposure()
     test_exposure_hysteresis()
     print("ALL TESTS PASSED")
