@@ -4,7 +4,7 @@
 
 - Source: field report that an unchanged posture could remain in `WATCH` and later trigger static-exposure
   intervention, plus a request to make the preferred, transition, and relaxed Debug UI stages unmistakable.
-- Git: commit `pending`, branch `codex/pr2-phase1-calibration-safety`, tag `none`; delivery target is the existing PR
+- Git: commit `40ec8e70d3f1ef17c5feb1ff02575960b8d70fe4`, branch `codex/pr2-phase1-calibration-safety`, tag `none`; delivery target is the existing PR
   `#23`, with no new PR.
 - Numeric root cause: a deterministic replay held face size, torso height, ear height, shoulder slope, and trunk lean
   fixed while the detected `shoulder_width_px` drifted from 200 px to 160 px. Because face/shoulder,
