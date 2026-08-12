@@ -1083,3 +1083,50 @@
 - Gaps: no local provider credentials are available, so a real AI response and post-fix GitHub run require remote verification after publication. `actionlint`, PyYAML, and Ruby YAML were unavailable locally, so workflow YAML parsing is deferred to GitHub Actions.
 - Artifacts: no release or binary artifacts.
 - Conclusion: local regression validation passed; ready for remote branch CI and pull-request review.
+
+## 2026-08-12 - PR23 main integration and final delivery audit
+
+- Source: user request to continue delivery of the dual-anchor calibration and runtime evidence fixes through the
+  existing PR without creating another feature PR.
+- Git: integration commit `b6a331f5a3e9bd31c0eb6353cebaba75859a715d`, branch
+  `codex/pr2-phase1-calibration-safety`, PR `#23`, tag `none`.
+- Integration:
+  - Created backup branch `backup/pr23-before-main-merge-20260812` at
+    `eedadfeca421177fad26b7a3568a08922ae8ed8f` before changing branch history.
+  - Fetched `origin/main` at `8a9c6cd2f802b3275270373c2f7dd8246b8ddf5b` and merged it into the PR branch.
+  - The only content conflict was `DEVELOPMENT_LOG.md`. The resolution preserved both the posture-science history and
+    main's AI-review timeout recovery entry; main's source/workflow/test changes merged without manual code edits.
+  - Updated the runtime and Debug UI delivery record with their pushed commits: `dcbcf20` and `eedadfe`.
+- Local verification after the merge:
+  - `ruff check .`: passed.
+  - Bundled Python `py_compile`: passed for posture science, analyzer, backend, tracking, worker, tray, Debug UI,
+    reliability CLI, AI client/review code, and the corresponding focused test scripts.
+  - Passed: `test_posture_science.py`, `test_feature_toggles.py`, `test_vision_worker.py`,
+    `test_vision_tracking.py`, `test_startup_guards.py`, `test_debug_ui.py`, `test_vision_replay.py`,
+    `test_tray_flyout.py`, `test_identity_model_adapters.py`, `test_identity_verifier.py`,
+    `test_ai_client_timeout.py`, `test_ai_pr_review_guards.py`, and `test_ai_maintainer_manual_flows.py`.
+  - `tools\collect_posture_reliability.py --help`: passed without writing a report.
+  - `git diff --check` and staged diff checks: passed. Debug UI tests emitted only the existing bundled Qt missing-font
+    directory warning.
+- Remote evidence for integration head `b6a331f`:
+  - Push and pull-request quality-gate runs `31608381489` and `31608386942`: `python-quality` and `windows-build`
+    completed successfully in both runs.
+  - Push and pull-request CodeQL runs `31608381405` and `31608386887`: `analyze` completed successfully in both runs;
+    the resulting `CodeQL` check also completed successfully.
+  - AI review workflow run `31608386895` completed successfully.
+  - GitHub reported `mergeable: MERGEABLE`; the prior source conflict is resolved.
+- Review disposition:
+  - Review `4907534781` on old commit `bcd4bfb` was dismissed as stale and factually incorrect after GitHub's PR files
+    API confirmed there are zero changed paths under `models/p5/`. The review had treated LFS path rules as proof that
+    model weights were committed.
+  - After dismissal, GitHub reports `reviewDecision: REVIEW_REQUIRED`. Ruleset `Protect main branch` requires one
+    approving review, so PR `#23` remains `BLOCKED` pending normal human approval even though the required status checks
+    pass and the branch is technically mergeable.
+- Remote state: PR `#23` remains the delivery PR at
+  `https://github.com/NOVVLA/EchoPosture/pull/23`; no second feature PR was created. The repository remains public with
+  `main` as its default branch.
+- Gaps: no real-camera calibration, cross-device SEM/MDC study, packaged font-fidelity check, consented recording,
+  privacy review, model-weight redistribution approval, adversarial multi-person latency evidence, or external
+  medical validity is claimed. These remain independent evidence or follow-up gates.
+- Conclusion: code integration, deterministic validation, remote CI, conflict resolution, and stale-review cleanup are
+  complete for the integration head. PR `#23` awaits the repository's required human approval.
