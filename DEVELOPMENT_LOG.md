@@ -962,6 +962,26 @@
 - Remaining evidence gate: a real-camera production calibration must still be rerun to confirm the observed hardware
   no longer fails; deterministic tests do not establish the user's live camera result.
 
+## 2026-08-13 - Narrow calibration validity to posture evidence
+
+- Source: continued investigation of the user-reported startup failure reporting both a preferred-stage sample
+  shortage and body-keypoint quality failure.
+- Root cause found in the calibration boundary: `CalibrationAccumulator.add()` counted any finite calibration value,
+  including environment-only distance/scale values. A frame could therefore increase the valid-sample counter even
+  after all posture features had been removed by face, shoulder, hip, or ear quality gates. Finalization then reported
+  a generic feature/quality failure that did not describe the frame-level evidence.
+- Fix:
+  - Stage counters now advance only when at least one posture feature is usable; environment-only values are audited as
+    `no_posture_features` and do not satisfy the five-sample requirement.
+  - Low face quality removes only the face-derived ratio. Independent shoulder/lateral/torso evidence can still be
+    collected when its own landmarks meet the quality floor.
+  - Added localized diagnostics for `no_posture_features` in Chinese and English.
+- Verification: `runtime\\python311\\python.exe test_posture_science.py`, `test_vision_worker.py`, and
+  `test_vision_tracking.py` all pass; source compiles and `git diff --check` passes.
+- Evidence boundary: the local bundled MediaPipe install is missing
+  `mediapipe/modules/face_landmark/face_landmark_front_cpu.binarypb`, so a real-camera rerun is still blocked by the
+  runtime artifact and is not claimed as complete.
+
 ## 2026-08-12 - Prevent relaxed-anchor startup exposure and noise amplification
 
 - Source: user observed that the Debug UI did not clearly distinguish the two anchor stages and that monitoring entered

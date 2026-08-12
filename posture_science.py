@@ -288,8 +288,12 @@ class CalibrationAccumulator:
             if name in CALIBRATION_FEATURES
             and (numeric := _finite_float(value)) is not None
         }
-        if not usable:
-            self.skip(timestamp, "no_numeric_features")
+        # A calibration sample is only useful when it contains at least one
+        # posture feature.  Distance/environment measurements alone must not
+        # advance the stage counter and later turn into a misleading
+        # ``no_feature_separates_above_mdc`` failure.
+        if not any(name in POSTURE_FEATURES for name in usable):
+            self.skip(timestamp, "no_posture_features")
             return stage
         self._sample_counts[stage] += 1
         for name, value in usable.items():
@@ -767,6 +771,12 @@ def calibration_measurement_values(
     plan = plan or CalibrationPlan()
     values = measurement_values(sample)
     floor = plan.min_pose_quality
+    face_quality = _finite_float(getattr(sample, "face_quality", None))
+    if face_quality is not None and face_quality < plan.min_face_quality:
+        # Face-derived evidence must not survive its own detector quality
+        # gate. Shoulder/lateral evidence can still be retained when its
+        # landmark confidence is independently usable.
+        values.pop("face_shoulder_ratio", None)
     shoulders_ok = _confidences_meet_floor(
         sample,
         ("left_shoulder_confidence", "right_shoulder_confidence"),
@@ -906,10 +916,9 @@ def calibration_rejection_reason(
         or not getattr(sample, "pose_detected", False)
     ):
         return "keypoints_missing"
+    values = calibration_measurement_values(sample, plan)
     face_quality = _finite_float(getattr(sample, "face_quality", None))
     pose_quality = _finite_float(getattr(sample, "pose_quality", None))
-    if face_quality is not None and face_quality < plan.min_face_quality:
-        return "face_quality_low"
     shoulder_confidences = [
         _finite_float(getattr(sample, name, None))
         for name in ("left_shoulder_confidence", "right_shoulder_confidence")
@@ -920,9 +929,15 @@ def calibration_rejection_reason(
     elif pose_quality is not None and pose_quality < plan.min_pose_quality:
         # Backends without landmark-level confidence retain the aggregate gate.
         return "pose_quality_low"
+    if face_quality is not None and face_quality < plan.min_face_quality:
+        if "face_shoulder_ratio" not in values:
+            # A low-quality face does not invalidate independent shoulder and
+            # trunk evidence. Reject only when no posture evidence remains.
+            if not any(name in POSTURE_FEATURES for name in values):
+                return "face_quality_low"
     motion = _finite_float(getattr(sample, "target_motion", None))
     if motion is not None and motion > plan.max_target_motion:
         return "target_moving"
-    if not calibration_measurement_values(sample, plan):
-        return "no_numeric_features"
+    if not any(name in POSTURE_FEATURES for name in values):
+        return "no_posture_features"
     return None

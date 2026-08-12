@@ -102,6 +102,24 @@ def test_low_quality_abstention_preserves_valid_samples() -> None:
     print("test_low_quality_abstention_preserves_valid_samples OK")
 
 
+def test_environment_only_values_do_not_count_as_posture_samples() -> None:
+    accumulator = CalibrationAccumulator(CalibrationPlan(min_samples_per_stage=5))
+    for index in range(4):
+        stage = accumulator.add(
+            index * 0.2,
+            {
+                "interpupillary_px": 60.0,
+                "shoulder_width_px": 220.0,
+            },
+        )
+        assert stage == "preferred"
+    assert accumulator.stage_counts["preferred"] == 0
+    assert accumulator.rejection_counts == {"preferred:no_posture_features": 4}
+    accumulator.add(1.0, anchor_values(0.0))
+    assert accumulator.stage_counts["preferred"] == 1
+    print("test_environment_only_values_do_not_count_as_posture_samples OK")
+
+
 def test_zero_person_dropout_abstains_but_multiple_people_contaminate() -> None:
     missing = SimpleNamespace(
         face_count=0,
@@ -165,6 +183,33 @@ def test_low_hip_visibility_does_not_reject_upper_body_evidence() -> None:
     assert "torso_shoulder_ratio" not in values
     assert "trunk_lean_deg" not in values
     print("test_low_hip_visibility_does_not_reject_upper_body_evidence OK")
+
+
+def test_low_face_quality_preserves_independent_pose_evidence() -> None:
+    sample = SimpleNamespace(
+        face_count=1,
+        person_count=1,
+        target_state="TARGET_LOCKED",
+        face_detected=True,
+        pose_detected=True,
+        face_quality=0.40,
+        pose_quality=0.80,
+        target_motion=0.0,
+        interpupillary_px=60.0,
+        shoulder_width_px=200.0,
+        signed_shoulder_diff_px=4.0,
+        torso_height_px=180.0,
+        trunk_lean_deg=2.0,
+        left_shoulder_confidence=0.80,
+        right_shoulder_confidence=0.82,
+        left_hip_confidence=0.80,
+        right_hip_confidence=0.81,
+    )
+    values = calibration_measurement_values(sample)
+    assert "face_shoulder_ratio" not in values
+    assert "torso_shoulder_ratio" in values
+    assert calibration_rejection_reason(sample) is None
+    print("test_low_face_quality_preserves_independent_pose_evidence OK")
 
 
 def test_feature_quality_uses_only_scored_landmarks() -> None:
@@ -437,8 +482,10 @@ if __name__ == "__main__":
     test_two_anchor_segmentation_and_noise_floor()
     test_invalid_sample_resets_only_current_stage()
     test_low_quality_abstention_preserves_valid_samples()
+    test_environment_only_values_do_not_count_as_posture_samples()
     test_zero_person_dropout_abstains_but_multiple_people_contaminate()
     test_low_hip_visibility_does_not_reject_upper_body_evidence()
+    test_low_face_quality_preserves_independent_pose_evidence()
     test_feature_quality_uses_only_scored_landmarks()
     test_stage_sample_shortage_fails()
     test_explicit_phase_timing_and_bounded_extension()
