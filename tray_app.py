@@ -717,11 +717,18 @@ class TrayMonitor:
         self.calibration_dialog.close()
         self.calibration_dialog = None
 
-        # The worker preserves the fixed 2s/3s stages and requires at least
-        # five valid observations in each stage.
+        # The visible five seconds measured only the preferred posture. Close
+        # that UI first, then tell the user they may relax while the worker
+        # ignores the transition and silently collects the relaxed anchor.
         self._awaiting_calibration = self._calibration_prompt_context or ("startup", False)
         self._calibration_prompt_context = None
-        self.worker.finalize_calibration(self.calibrated_distance_cm, sample_count=5)
+        self.worker.complete_preferred_calibration(self.calibrated_distance_cm)
+        self.tray.showMessage(
+            "EchoPosture",
+            _t("tm_calib_relax_now"),
+            QSystemTrayIcon.Information,
+            2200,
+        )
 
     def _start_monitoring(self) -> None:
         if self._monitoring_started:
@@ -737,7 +744,7 @@ class TrayMonitor:
 
     def pause_monitoring(self) -> bool:
         """暂停监测并清理覆盖层；启动流程拒绝操作时返回 False。"""
-        if self._stopping:
+        if self._stopping or self._awaiting_calibration is not None:
             return False
         if self.onboarding_toast is not None or self.calibration_dialog is not None:
             return False
@@ -750,7 +757,7 @@ class TrayMonitor:
 
     def resume_monitoring(self) -> bool:
         """恢复监测；若启动流程尚未结束则返回 False。"""
-        if self._stopping:
+        if self._stopping or self._awaiting_calibration is not None:
             return False
         if self.onboarding_toast is not None or self.calibration_dialog is not None:
             return False

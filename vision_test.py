@@ -424,6 +424,8 @@ class HighPrecisionPostureAnalyzer(PostureAnalyzer):
         self.exposure_accumulator = ExposureAccumulator(self.posture_policy)
         self.legacy_calibration_used = False
         self._camera_drifted = False
+        self._preferred_reentry_required = False
+        self._preferred_reentry_started_at: Optional[datetime] = None
         # 运行时功能开关（UI 主线程写、工作线程读；GIL 下 bool 读写原子，
         # evaluate 每帧读取一次即可生效）。默认全开，与历史行为一致。
         self.precision_enabled = True        # False → 回退到基础阈值判定
@@ -493,6 +495,12 @@ class HighPrecisionPostureAnalyzer(PostureAnalyzer):
         self._camera_drifted = False
         self.exposure_accumulator.reset()
         self._reset_risk_state()
+        # Calibration finishes while the user is deliberately holding the
+        # relaxed anchor. Do not reinterpret that expected ending posture as
+        # exposure: monitoring activates only after a stable return to the
+        # preferred anchor.
+        self._preferred_reentry_required = True
+        self._preferred_reentry_started_at = None
         return True
 
     def reset_baseline(self) -> None:
@@ -501,6 +509,8 @@ class HighPrecisionPostureAnalyzer(PostureAnalyzer):
         self.legacy_calibration_used = False
         self._camera_drifted = False
         self.exposure_accumulator.reset()
+        self._preferred_reentry_required = False
+        self._preferred_reentry_started_at = None
 
     def evaluate(self, sample: VisionSample) -> PostureDecision:
         if not self.precision_enabled:
@@ -590,6 +600,8 @@ class HighPrecisionPostureAnalyzer(PostureAnalyzer):
 
         suppressed = self._suppressed_presence_decision(sample)
         if suppressed is not None:
+            if self._preferred_reentry_required:
+                self._preferred_reentry_started_at = None
             exposure = self.exposure_accumulator.pause(sample.timestamp)
             return PostureDecision(
                 suppressed.status,
@@ -607,6 +619,8 @@ class HighPrecisionPostureAnalyzer(PostureAnalyzer):
             )
 
         if activity_state == "MOVING":
+            if self._preferred_reentry_required:
+                self._preferred_reentry_started_at = None
             exposure = self.exposure_accumulator.pause(sample.timestamp)
             return PostureDecision(
                 "WATCH",
@@ -623,6 +637,8 @@ class HighPrecisionPostureAnalyzer(PostureAnalyzer):
         if sample.camera_drift:
             self._camera_drifted = True
         if self._camera_drifted:
+            if self._preferred_reentry_required:
+                self._preferred_reentry_started_at = None
             exposure = self.exposure_accumulator.pause(sample.timestamp)
             return PostureDecision(
                 "UNKNOWN",
@@ -649,6 +665,8 @@ class HighPrecisionPostureAnalyzer(PostureAnalyzer):
             head_turned = head_turned or self._eye_width_ratio(sample) < 0.75
 
         if head_turned:
+            if self._preferred_reentry_required:
+                self._preferred_reentry_started_at = None
             exposure = self.exposure_accumulator.pause(sample.timestamp)
             return PostureDecision(
                 "WATCH",
@@ -663,6 +681,8 @@ class HighPrecisionPostureAnalyzer(PostureAnalyzer):
             )
 
         if not score.features:
+            if self._preferred_reentry_required:
+                self._preferred_reentry_started_at = None
             exposure = self.exposure_accumulator.pause(sample.timestamp)
             return PostureDecision(
                 "UNKNOWN",
@@ -677,11 +697,56 @@ class HighPrecisionPostureAnalyzer(PostureAnalyzer):
             )
 
         if confidence < self.posture_policy.quality_floor:
+            if self._preferred_reentry_required:
+                self._preferred_reentry_started_at = None
             exposure = self.exposure_accumulator.pause(sample.timestamp)
             status = "WATCH" if exposure.exposure_seconds > 0.0 else "UNKNOWN"
             return PostureDecision(
                 status,
                 f"measurement_quality_low={confidence:.2f}",
+                True,
+                risk_score=score.deviation * 100.0,
+                sustained_seconds=exposure.exposure_seconds,
+                posture_deviation=score.deviation,
+                exposure_seconds=exposure.exposure_seconds,
+                confidence=confidence,
+                calibration_quality=profile.calibration_quality,
+                activity_state=activity_state,
+            )
+
+        if self._preferred_reentry_required:
+            exposure = self.exposure_accumulator.pause(sample.timestamp)
+            if score.deviation <= self.posture_policy.preferred_reentry_max_deviation:
+                if self._preferred_reentry_started_at is None:
+                    self._preferred_reentry_started_at = sample.timestamp
+                stable_seconds = max(
+                    0.0,
+                    (sample.timestamp - self._preferred_reentry_started_at).total_seconds(),
+                )
+                if stable_seconds >= self.posture_policy.preferred_reentry_seconds:
+                    self._preferred_reentry_required = False
+                    self._preferred_reentry_started_at = None
+                    # Start exposure timing from the activation frame. The
+                    # calibration/reentry interval must never be integrated.
+                    self.exposure_accumulator.reset()
+                    self.exposure_accumulator.pause(sample.timestamp)
+                    return PostureDecision(
+                        "GOOD",
+                        "preferred_posture_monitoring_activated",
+                        True,
+                        risk_score=score.deviation * 100.0,
+                        sustained_seconds=0.0,
+                        posture_deviation=score.deviation,
+                        exposure_seconds=0.0,
+                        confidence=confidence,
+                        calibration_quality=profile.calibration_quality,
+                        activity_state=activity_state,
+                    )
+            else:
+                self._preferred_reentry_started_at = None
+            return PostureDecision(
+                "UNKNOWN",
+                "post_calibration_return_to_preferred",
                 True,
                 risk_score=score.deviation * 100.0,
                 sustained_seconds=exposure.exposure_seconds,
@@ -1506,14 +1571,10 @@ class VisionEngine:
             float(right.visibility),
             float(left_hip.visibility),
             float(right_hip.visibility),
-            float(
-                min(
-                    left.visibility,
-                    right.visibility,
-                    left_hip.visibility,
-                    right_hip.visibility,
-                )
-            ),
+            # Aggregate pose quality represents the required upper-body core.
+            # Hip visibility is propagated separately and gates only features
+            # that actually depend on hips (torso ratio and trunk lean).
+            float(min(left.visibility, right.visibility)),
         )
 
 

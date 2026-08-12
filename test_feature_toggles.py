@@ -82,9 +82,10 @@ def scientific_analyzer() -> HighPrecisionPostureAnalyzer:
     for index in range(5):
         sample = scientific_sample(T0 + timedelta(seconds=index * 0.2), 0.0)
         accumulator.add(index * 0.2, measurement_values(sample))
+    accumulator.begin_transition(5.0)
     for index in range(5):
-        sample = scientific_sample(T0 + timedelta(seconds=2.1 + index * 0.2), 1.0)
-        accumulator.add(2.1 + index * 0.2, measurement_values(sample))
+        sample = scientific_sample(T0 + timedelta(seconds=6.0 + index), 1.0)
+        accumulator.add(6.0 + index, measurement_values(sample))
     analyzer = HighPrecisionPostureAnalyzer(
         auto_calibrate=False,
         calibrated_distance_cm=60.0,
@@ -236,16 +237,46 @@ def test_identity_toggle():
 
 def test_scientific_continuous_scoring_exposure_and_abstention():
     analyzer = scientific_analyzer()
-    preferred = analyzer.evaluate(scientific_sample(T0, 0.0))
-    assert preferred.status == "GOOD", preferred
-    assert preferred.posture_deviation == 0.0
 
-    midpoint = analyzer.evaluate(scientific_sample(T0 + timedelta(seconds=1), 0.5))
+    # Calibration ends at the relaxed anchor. Remaining there must never be
+    # reinterpreted as a fresh static-exposure episode, even after a minute.
+    ending_posture = analyzer.evaluate(scientific_sample(T0, 1.0))
+    assert ending_posture.status == "UNKNOWN", ending_posture
+    assert ending_posture.reason == "post_calibration_return_to_preferred"
+    assert ending_posture.exposure_seconds == 0.0
+    still_relaxed = analyzer.evaluate(scientific_sample(T0 + timedelta(seconds=60), 1.0))
+    assert still_relaxed.status == "UNKNOWN", still_relaxed
+    assert still_relaxed.exposure_seconds == 0.0
+
+    # Monitoring activates only after the preferred anchor is held stably.
+    returning = analyzer.evaluate(scientific_sample(T0 + timedelta(seconds=61), 0.0))
+    assert returning.status == "UNKNOWN", returning
+    activated = analyzer.evaluate(scientific_sample(T0 + timedelta(seconds=63.1), 0.0))
+    assert activated.status == "GOOD", activated
+    assert activated.reason == "preferred_posture_monitoring_activated"
+    assert activated.posture_deviation == 0.0
+    assert activated.exposure_seconds == 0.0
+
+    preferred = analyzer.evaluate(scientific_sample(T0 + timedelta(seconds=64), 0.0))
+    assert preferred.status == "GOOD", preferred
+    assert preferred.exposure_seconds == 0.0
+
+    # Remaining in the chosen preferred posture must stay safe over the same
+    # multi-minute horizon reported in the field. Ordinary sub-noise jitter
+    # cannot open WATCH or integrate exposure after activation.
+    for seconds, jitter in ((120, 0.02), (180, 0.0), (240, 0.03), (300, 0.01)):
+        stable = analyzer.evaluate(
+            scientific_sample(T0 + timedelta(seconds=seconds), jitter)
+        )
+        assert stable.status == "GOOD", stable
+        assert stable.exposure_seconds == 0.0, stable
+
+    midpoint = analyzer.evaluate(scientific_sample(T0 + timedelta(seconds=301), 0.5))
     assert 0.45 <= midpoint.posture_deviation <= 0.65, midpoint
     assert midpoint.status == "WATCH", midpoint
 
-    analyzer.evaluate(scientific_sample(T0 + timedelta(seconds=2), 1.0))
-    alert = analyzer.evaluate(scientific_sample(T0 + timedelta(seconds=14), 1.0))
+    analyzer.evaluate(scientific_sample(T0 + timedelta(seconds=302), 1.0))
+    alert = analyzer.evaluate(scientific_sample(T0 + timedelta(seconds=314), 1.0))
     assert alert.status == "BAD", alert
     assert alert.exposure_seconds >= 12.0
     assert alert.risk_score == alert.posture_deviation * 100.0
@@ -253,13 +284,13 @@ def test_scientific_continuous_scoring_exposure_and_abstention():
 
     before = alert.exposure_seconds
     low_quality = analyzer.evaluate(
-        scientific_sample(T0 + timedelta(seconds=20), 1.0, quality=0.40)
+        scientific_sample(T0 + timedelta(seconds=320), 1.0, quality=0.40)
     )
     assert low_quality.status in {"UNKNOWN", "WATCH"}, low_quality
     assert low_quality.exposure_seconds == before
 
     moving = replace(
-        scientific_sample(T0 + timedelta(seconds=25), 1.0),
+        scientific_sample(T0 + timedelta(seconds=325), 1.0),
         target_motion=0.5,
         activity_state="MOVING",
     )

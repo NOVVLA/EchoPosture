@@ -11,10 +11,13 @@ import threading
 import time
 from dataclasses import replace
 from datetime import datetime, timedelta
+from types import SimpleNamespace
 
+from posture_science import CalibrationPlan, TRANSITION
 from vision_test import (
     CameraBlackFrameError,
     HighPrecisionPostureAnalyzer,
+    VisionEngine,
     VisionSample,
     calibration_sample_is_complete,
     calibration_sample_missing_fields,
@@ -149,6 +152,15 @@ def test_average_matches_legacy_semantics():
     assert not calibration_sample_is_complete(
         replace(make_sample(), person_count=2, target_state="TARGET_LOCKED")
     )
+    assert calibration_sample_missing_fields(
+        replace(make_sample(), target_state="TARGET_AMBIGUOUS")
+    ) == ("single_person",)
+    assert average_calibration_sample(
+        [make_sample(60.0), make_sample(80.0, face_count=2)]
+    ) is not None
+    assert average_calibration_sample([make_sample(face_count=2)]) is None
+    assert average_calibration_sample([], fallback=make_sample(face_count=2)) is None
+    print("test_average_matches_legacy_semantics OK")
 
 
 def make_dual_sample(ts: datetime, relaxed: float = 0.0, face_count: int = 1) -> VisionSample:
@@ -163,15 +175,26 @@ def make_dual_sample(ts: datetime, relaxed: float = 0.0, face_count: int = 1) ->
         target_motion=0.0,
         activity_state="STATIC",
     )
-    assert calibration_sample_missing_fields(
-        replace(make_sample(), target_state="TARGET_AMBIGUOUS")
-    ) == ("single_person",)
-    assert average_calibration_sample(
-        [make_sample(60.0), make_sample(80.0, face_count=2)]
-    ) is not None
-    assert average_calibration_sample([make_sample(face_count=2)]) is None
-    assert average_calibration_sample([], fallback=make_sample(face_count=2)) is None
-    print("test_average_matches_legacy_semantics OK")
+
+
+def test_pose_quality_uses_shoulders_not_optional_hips() -> None:
+    landmarks = [SimpleNamespace(x=0.5, y=0.5, visibility=1.0) for _ in range(33)]
+    landmarks[11] = SimpleNamespace(x=0.35, y=0.4, visibility=0.55)
+    landmarks[12] = SimpleNamespace(x=0.65, y=0.4, visibility=0.58)
+    landmarks[23] = SimpleNamespace(x=0.4, y=0.75, visibility=0.40)
+    landmarks[24] = SimpleNamespace(x=0.6, y=0.75, visibility=0.45)
+    result = SimpleNamespace(
+        pose_landmarks=SimpleNamespace(landmark=landmarks),
+    )
+    engine = object.__new__(VisionEngine)
+
+    values = engine._measure_pose_points(result, 640, 480)
+
+    assert values is not None
+    assert values[-1] == 0.55
+    assert values[5] is None and values[6] is None
+    assert values[8] is None
+    print("test_pose_quality_uses_shoulders_not_optional_hips OK")
 
 
 def test_multi_person_resets_calibration_window():
@@ -256,13 +279,19 @@ def test_dual_anchor_worker_calibration_and_stage_counts():
     )
     worker = VisionWorker(engine_factory=lambda: engine, analyzer=analyzer)
     worker._calibration_accumulator = None
+    start = datetime(2026, 1, 1, 12, 0, 0)
     for index in range(5):
         worker._collect_calibration_sample(
-            make_dual_sample(datetime(2026, 1, 1, 12, 0, 0) + timedelta(seconds=index * 0.2))
+            make_dual_sample(start + timedelta(seconds=index))
         )
+    assert worker._calibration_accumulator is not None
+    worker._calibration_accumulator.begin_transition(start + timedelta(seconds=5))
+    worker._collect_calibration_sample(make_dual_sample(start + timedelta(seconds=5.5), 0.5))
+    assert worker._calibration_accumulator.phase == TRANSITION
+    assert worker._calibration_accumulator.stage_counts == {"preferred": 5, "relaxed": 0}
     for index in range(5):
         worker._collect_calibration_sample(
-            make_dual_sample(datetime(2026, 1, 1, 12, 0, 2, 100000) + timedelta(seconds=index * 0.2), 1.0)
+            make_dual_sample(start + timedelta(seconds=6 + index), 1.0)
         )
     worker._finalize_dual_anchor_calibration(60.0, 1)
     result = worker.take_calibration_result()
@@ -295,15 +324,133 @@ def test_dual_anchor_worker_rejects_multi_person_and_short_stage():
         worker._collect_calibration_sample(
             make_dual_sample(start + timedelta(seconds=1.0 + index * 0.2))
         )
+    assert worker._calibration_accumulator is not None
+    worker._calibration_accumulator.begin_transition(start + timedelta(seconds=5.0))
     for index in range(4):
         worker._collect_calibration_sample(
-            make_dual_sample(start + timedelta(seconds=2.1 + index * 0.2), 1.0)
+            make_dual_sample(start + timedelta(seconds=6.0 + index), 1.0)
         )
     worker._finalize_dual_anchor_calibration(60.0, 2)
     result = worker.take_calibration_result()
     assert result is not None and not result.ok
     assert any("relaxed_samples" in field for field in result.missing_fields)
     print("test_dual_anchor_worker_rejects_multi_person_and_short_stage OK")
+
+
+def test_dual_anchor_worker_skips_quality_dropout_without_resetting_stage() -> None:
+    engine = FakeEngine()
+    analyzer = HighPrecisionPostureAnalyzer(auto_calibrate=False, require_dual_anchor=True)
+    worker = VisionWorker(engine_factory=lambda: engine, analyzer=analyzer)
+    start = datetime(2026, 1, 1, 12, 0, 0)
+    for index in range(4):
+        worker._collect_calibration_sample(
+            make_dual_sample(start + timedelta(seconds=index * 0.5))
+        )
+    assert worker._calibration_accumulator is not None
+    worker._collect_calibration_sample(
+        replace(
+            make_dual_sample(start + timedelta(seconds=2.1)),
+            pose_quality=0.40,
+        )
+    )
+    assert worker._calibration_accumulator.stage_counts["preferred"] == 4
+    worker._collect_calibration_sample(make_dual_sample(start + timedelta(seconds=2.5)))
+    assert worker._calibration_accumulator.stage_counts["preferred"] == 5
+    assert worker._calibration_accumulator.rejection_counts == {
+        "preferred:pose_quality_low": 1
+    }
+    print("test_dual_anchor_worker_skips_quality_dropout_without_resetting_stage OK")
+
+
+def test_dual_anchor_worker_skips_zero_person_dropout_without_resetting_stage() -> None:
+    engine = FakeEngine()
+    analyzer = HighPrecisionPostureAnalyzer(auto_calibrate=False, require_dual_anchor=True)
+    worker = VisionWorker(engine_factory=lambda: engine, analyzer=analyzer)
+    start = datetime(2026, 1, 1, 12, 0, 0)
+    for index in range(4):
+        worker._collect_calibration_sample(
+            make_dual_sample(start + timedelta(seconds=index * 0.5))
+        )
+    assert worker._calibration_accumulator is not None
+    worker._collect_calibration_sample(
+        replace(
+            make_dual_sample(start + timedelta(seconds=2.1)),
+            face_count=0,
+            person_count=0,
+            face_detected=False,
+            pose_detected=False,
+            target_state="TARGET_OCCLUDED",
+        )
+    )
+    assert worker._calibration_accumulator.stage_counts["preferred"] == 4
+    assert worker._calibration_accumulator.reset_reasons == ()
+    worker._collect_calibration_sample(make_dual_sample(start + timedelta(seconds=2.5)))
+    assert worker._calibration_accumulator.stage_counts["preferred"] == 5
+    print("test_dual_anchor_worker_skips_zero_person_dropout_without_resetting_stage OK")
+
+
+def test_dual_anchor_worker_uses_bounded_relaxed_extension() -> None:
+    engine = FakeEngine()
+    analyzer = HighPrecisionPostureAnalyzer(auto_calibrate=False, require_dual_anchor=True)
+    worker = VisionWorker(engine_factory=lambda: engine, analyzer=analyzer)
+    worker._calibration_plan = CalibrationPlan(
+        preferred_seconds=5.0,
+        transition_seconds=1.0,
+        relaxed_seconds=5.0,
+        relaxed_max_extension_seconds=2.0,
+    )
+    start = datetime(2026, 1, 1, 12, 0, 0)
+    for index in range(5):
+        worker._collect_calibration_sample(make_dual_sample(start + timedelta(seconds=index)))
+    assert worker._calibration_accumulator is not None
+    worker._calibration_accumulator.begin_transition(start + timedelta(seconds=5))
+    worker._dual_calibration_request = (60.0, 7)
+
+    # Four valid relaxed samples by the nominal five-second target do not fail.
+    for index in range(4):
+        worker._collect_calibration_sample(
+            make_dual_sample(start + timedelta(seconds=6 + index), 1.0)
+        )
+    worker._collect_calibration_sample(
+        replace(
+            make_dual_sample(start + timedelta(seconds=11), 1.0),
+            pose_quality=0.1,
+        )
+    )
+    assert worker.take_calibration_result() is None
+    assert worker._calibration_accumulator is not None
+
+    for index in range(5):
+        worker._collect_calibration_sample(
+            make_dual_sample(start + timedelta(seconds=11.1 + index * 0.1), 1.0)
+        )
+    result = worker.take_calibration_result()
+    assert result is not None and result.ok, result
+    assert dict(result.stage_counts) == {"preferred": 5, "relaxed": 5}
+
+    # A second run with persistent rejection fails at the extension deadline.
+    analyzer.reset_baseline()
+    worker._calibration_accumulator = None
+    worker._calibration_missing_fields = set()
+    for index in range(5):
+        worker._collect_calibration_sample(make_dual_sample(start + timedelta(seconds=index)))
+    assert worker._calibration_accumulator is not None
+    worker._calibration_accumulator.begin_transition(start + timedelta(seconds=5))
+    worker._dual_calibration_request = (60.0, 8)
+    for index in range(4):
+        worker._collect_calibration_sample(
+            make_dual_sample(start + timedelta(seconds=6 + index), 1.0)
+        )
+    worker._collect_calibration_sample(
+        replace(
+            make_dual_sample(start + timedelta(seconds=13), 1.0),
+            pose_quality=0.1,
+        )
+    )
+    failed = worker.take_calibration_result()
+    assert failed is not None and not failed.ok
+    assert any("relaxed_samples" in field for field in failed.missing_fields)
+    print("test_dual_anchor_worker_uses_bounded_relaxed_extension OK")
 
 
 def test_monitoring_error_pauses_worker():
@@ -350,6 +497,7 @@ def test_set_capture_fps_roundtrip():
 
 if __name__ == "__main__":
     test_average_matches_legacy_semantics()
+    test_pose_quality_uses_shoulders_not_optional_hips()
     test_multi_person_resets_calibration_window()
     test_target_manager_presence_resets_calibration_window()
     test_thread_affinity_and_mailbox()
@@ -357,6 +505,9 @@ if __name__ == "__main__":
     test_calibration_failure_reports_missing_fields()
     test_dual_anchor_worker_calibration_and_stage_counts()
     test_dual_anchor_worker_rejects_multi_person_and_short_stage()
+    test_dual_anchor_worker_skips_quality_dropout_without_resetting_stage()
+    test_dual_anchor_worker_skips_zero_person_dropout_without_resetting_stage()
+    test_dual_anchor_worker_uses_bounded_relaxed_extension()
     test_monitoring_error_pauses_worker()
     test_start_failure_propagates_to_caller()
     test_set_capture_fps_roundtrip()

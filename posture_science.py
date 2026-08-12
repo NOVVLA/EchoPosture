@@ -15,7 +15,9 @@ from typing import Mapping, Optional, Sequence
 
 
 PREFERRED = "preferred"
+TRANSITION = "transition"
 RELAXED = "relaxed"
+COMPLETE = "complete"
 
 FORWARD_FEATURES = (
     "face_shoulder_ratio",
@@ -38,6 +40,11 @@ ENVIRONMENT_FEATURES = (
     "head_turn_ratio",
 )
 CALIBRATION_FEATURES = POSTURE_FEATURES + ENVIRONMENT_FEATURES
+
+# Only observations that can mix another person into an anchor invalidate
+# already accepted samples. Ordinary measurement failures abstain for that
+# frame and leave prior evidence intact.
+CALIBRATION_CONTAMINATION_REASONS = frozenset({"single_person", "target_ambiguous"})
 
 
 def _elapsed_seconds(current, previous) -> float:
@@ -93,32 +100,45 @@ class FeatureStatistics:
 
 @dataclass(frozen=True)
 class CalibrationPlan:
-    """Fixed one-page calibration schedule."""
+    """Adjustable product timing for the production two-anchor flow.
 
-    preferred_seconds: float = 2.0
-    relaxed_seconds: float = 3.0
+    The visible countdown covers only ``preferred_seconds``.  The caller must
+    explicitly end that stage after closing the countdown.  Samples are then
+    ignored for ``transition_seconds`` before the silent relaxed window starts.
+    A short bounded extension lets a nearly-complete relaxed window recover
+    from rejected samples without turning calibration into an unbounded wait.
+    These durations are interaction policy, not physiological standards.
+    """
+
+    preferred_seconds: float = 5.0
+    transition_seconds: float = 1.0
+    relaxed_seconds: float = 5.0
+    relaxed_max_extension_seconds: float = 2.0
     min_samples_per_stage: int = 5
     min_face_quality: float = 0.65
-    min_pose_quality: float = 0.65
+    # Match the MediaPipe landmark usability floor. Reliability is assessed
+    # per feature by SEM/MDC; an unvalidated 0.65 whole-frame cutoff caused
+    # otherwise usable 0.50-0.64 shoulder observations to be discarded.
+    min_pose_quality: float = 0.50
     max_target_motion: float = 0.20
 
     def __post_init__(self) -> None:
         if self.preferred_seconds <= 0 or self.relaxed_seconds <= 0:
             raise ValueError("calibration stages must have positive durations")
+        if self.transition_seconds < 0 or self.relaxed_max_extension_seconds < 0:
+            raise ValueError("calibration transition and extension cannot be negative")
         if self.min_samples_per_stage < 1:
             raise ValueError("min_samples_per_stage must be positive")
 
     @property
     def total_seconds(self) -> float:
-        return self.preferred_seconds + self.relaxed_seconds
+        """Nominal elapsed time, excluding the optional relaxed extension."""
 
-    def stage_at(self, timestamp, started_at) -> Optional[str]:
-        elapsed = max(0.0, _elapsed_seconds(timestamp, started_at))
-        if elapsed < self.preferred_seconds:
-            return PREFERRED
-        if elapsed < self.total_seconds:
-            return RELAXED
-        return None
+        return self.preferred_seconds + self.transition_seconds + self.relaxed_seconds
+
+    @property
+    def maximum_total_seconds(self) -> float:
+        return self.total_seconds + self.relaxed_max_extension_seconds
 
 
 @dataclass(frozen=True)
@@ -133,6 +153,8 @@ class CalibrationProfile:
     stage_counts: Mapping[str, int]
     created_at: datetime
     reset_reasons: tuple[str, ...] = ()
+    rejection_counts: Mapping[str, int] = field(default_factory=dict)
+    runtime_noise_floors: Mapping[str, float] = field(default_factory=dict)
 
     @property
     def scientific_ready(self) -> bool:
@@ -148,26 +170,37 @@ class CalibrationProfile:
             "stage_counts": dict(self.stage_counts),
             "created_at": self.created_at.isoformat(),
             "reset_reasons": list(self.reset_reasons),
+            "rejection_counts": dict(self.rejection_counts),
+            "runtime_noise_floors": dict(self.runtime_noise_floors),
         }
 
 
 class CalibrationAccumulator:
-    """Collect fixed-time, quality-gated preferred and relaxed anchors.
+    """Collect explicitly phased, quality-gated preferred and relaxed anchors.
 
-    An invalid observation clears the current stage window.  The schedule does
-    not slide or extend, so a contaminated stage fails instead of being hidden
-    by later averaging.
+    A contamination observation clears only the active anchor window. Low
+    quality, missing-keypoint, motion, and temporary target failures abstain
+    for that frame without erasing earlier accepted samples. Transition
+    observations are always ignored and cannot contaminate either anchor.
     """
 
-    def __init__(self, plan: Optional[CalibrationPlan] = None) -> None:
+    def __init__(
+        self,
+        plan: Optional[CalibrationPlan] = None,
+        policy: Optional["PosturePolicy"] = None,
+    ) -> None:
         self.plan = plan or CalibrationPlan()
+        self.policy = policy
         self.started_at = None
+        self._phase = PREFERRED
+        self._phase_started_at = None
         self._values: dict[str, dict[str, list[float]]] = {
             PREFERRED: {},
             RELAXED: {},
         }
         self._sample_counts = {PREFERRED: 0, RELAXED: 0}
         self._reset_reasons: list[str] = []
+        self._rejection_counts: dict[str, int] = {}
 
     @property
     def stage_counts(self) -> dict[str, int]:
@@ -177,24 +210,78 @@ class CalibrationAccumulator:
     def reset_reasons(self) -> tuple[str, ...]:
         return tuple(self._reset_reasons)
 
-    def _stage(self, timestamp) -> Optional[str]:
+    @property
+    def rejection_counts(self) -> dict[str, int]:
+        return dict(self._rejection_counts)
+
+    @property
+    def phase(self) -> str:
+        return self._phase
+
+    def stage_at(self, timestamp) -> str:
         if self.started_at is None:
             self.started_at = timestamp
-        return self.plan.stage_at(timestamp, self.started_at)
+        if self._phase == TRANSITION:
+            if self._phase_started_at is None:
+                self._phase_started_at = timestamp
+            elapsed = max(0.0, _elapsed_seconds(timestamp, self._phase_started_at))
+            if elapsed >= self.plan.transition_seconds:
+                self._phase = RELAXED
+                self._phase_started_at = timestamp
+        return self._phase
 
-    def reject(self, timestamp, reason: str) -> Optional[str]:
-        stage = self._stage(timestamp)
-        if stage is None:
-            return None
+    def begin_transition(self, timestamp=None) -> None:
+        """Finish preferred collection and begin the sample-free relax pause."""
+
+        if self._phase != PREFERRED:
+            raise ValueError(f"cannot begin transition from {self._phase}")
+        self._phase = TRANSITION
+        self._phase_started_at = timestamp
+
+    def relaxed_elapsed(self, timestamp) -> float:
+        phase = self.stage_at(timestamp)
+        if phase != RELAXED or self._phase_started_at is None:
+            return 0.0
+        return max(0.0, _elapsed_seconds(timestamp, self._phase_started_at))
+
+    def relaxed_target_reached(self, timestamp) -> bool:
+        return self.relaxed_elapsed(timestamp) >= self.plan.relaxed_seconds
+
+    def relaxed_deadline_reached(self, timestamp) -> bool:
+        maximum = self.plan.relaxed_seconds + self.plan.relaxed_max_extension_seconds
+        return self.relaxed_elapsed(timestamp) >= maximum
+
+    def ready_to_finalize(self, timestamp) -> bool:
+        return (
+            self.relaxed_target_reached(timestamp)
+            and self._sample_counts[RELAXED] >= self.plan.min_samples_per_stage
+        )
+
+    def reject(self, timestamp, reason: str) -> str:
+        """Reset the active anchor after a genuine contamination event."""
+
+        stage = self.stage_at(timestamp)
+        if stage not in (PREFERRED, RELAXED):
+            return stage
         self._values[stage].clear()
         self._sample_counts[stage] = 0
         self._reset_reasons.append(f"{stage}:{reason}")
         return stage
 
-    def add(self, timestamp, values: Mapping[str, float]) -> Optional[str]:
-        stage = self._stage(timestamp)
-        if stage is None:
-            return None
+    def skip(self, timestamp, reason: str) -> str:
+        """Audit an abstained observation without erasing accepted samples."""
+
+        stage = self.stage_at(timestamp)
+        if stage not in (PREFERRED, RELAXED):
+            return stage
+        key = f"{stage}:{reason}"
+        self._rejection_counts[key] = self._rejection_counts.get(key, 0) + 1
+        return stage
+
+    def add(self, timestamp, values: Mapping[str, float]) -> str:
+        stage = self.stage_at(timestamp)
+        if stage not in (PREFERRED, RELAXED):
+            return stage
         usable = {
             name: numeric
             for name, value in values.items()
@@ -202,7 +289,7 @@ class CalibrationAccumulator:
             and (numeric := _finite_float(value)) is not None
         }
         if not usable:
-            self.reject(timestamp, "no_numeric_features")
+            self.skip(timestamp, "no_numeric_features")
             return stage
         self._sample_counts[stage] += 1
         for name, value in usable.items():
@@ -233,8 +320,10 @@ class CalibrationAccumulator:
                 if len(values) >= minimum:
                     stage_stats[stage][name] = FeatureStatistics.from_values(values)
 
+        policy = self.policy or PosturePolicy()
         enabled: list[str] = []
         disabled: dict[str, str] = {}
+        runtime_noise_floors: dict[str, float] = {}
         for name in POSTURE_FEATURES:
             preferred = stage_stats[PREFERRED].get(name)
             relaxed = stage_stats[RELAXED].get(name)
@@ -242,8 +331,14 @@ class CalibrationAccumulator:
                 disabled[name] = "insufficient_valid_samples"
                 continue
             separation = abs(relaxed.mean - preferred.mean)
-            noise_floor = max(preferred.mdc, relaxed.mdc, 1e-9)
-            if separation <= noise_floor:
+            noise_floor = runtime_noise_floor(preferred, relaxed, policy, name)
+            runtime_noise_floors[name] = noise_floor
+            required_separation = noise_floor * policy.runtime_min_signal_to_noise_ratio
+            if separation <= required_separation:
+                # Keep the established audit code for report consumers. The
+                # governing floor now includes MDC and within-anchor runtime
+                # repeatability, so this legacy name is conservative rather
+                # than an exact description of the expanded test.
                 disabled[name] = "anchor_separation_not_above_mdc"
                 continue
             enabled.append(name)
@@ -264,6 +359,8 @@ class CalibrationAccumulator:
             stage_counts=self.stage_counts,
             created_at=created_at or datetime.now(),
             reset_reasons=self.reset_reasons,
+            rejection_counts=self.rejection_counts,
+            runtime_noise_floors=runtime_noise_floors,
         )
 
 
@@ -286,6 +383,19 @@ class PosturePolicy:
     camera_scale_jump_ratio: float = 0.18
     within_group_corroboration: float = 0.12
     between_group_corroboration: float = 0.10
+    # Runtime decisions operate on individual observations, so their noise
+    # band is based on within-anchor standard deviation rather than SEM alone.
+    # These are adjustable reliability/product parameters, not physiology.
+    runtime_noise_std_multiplier: float = 1.96
+    runtime_min_signal_to_noise_ratio: float = 1.25
+    # Calibration smoothing can make observed std/MDC unrealistically close
+    # to zero. These conservative feature-unit floors prevent a tiny stage
+    # drift from becoming a complete 0-to-1 posture axis. They are adjustable
+    # product reliability parameters, not physiological thresholds.
+    runtime_ratio_noise_floor: float = 0.015
+    runtime_angle_noise_floor_deg: float = 1.5
+    preferred_reentry_max_deviation: float = 0.40
+    preferred_reentry_seconds: float = 2.0
 
     def __post_init__(self) -> None:
         if not (0.0 <= self.watch_exit < self.watch_enter <= 1.0):
@@ -294,6 +404,18 @@ class PosturePolicy:
             raise ValueError("alert hysteresis must satisfy exit < enter")
         if self.recovery_half_life_seconds <= 0:
             raise ValueError("recovery_half_life_seconds must be positive")
+        if self.runtime_noise_std_multiplier <= 0:
+            raise ValueError("runtime_noise_std_multiplier must be positive")
+        if self.runtime_min_signal_to_noise_ratio <= 1.0:
+            raise ValueError("runtime_min_signal_to_noise_ratio must be greater than one")
+        if self.runtime_ratio_noise_floor < 0.0:
+            raise ValueError("runtime_ratio_noise_floor cannot be negative")
+        if self.runtime_angle_noise_floor_deg < 0.0:
+            raise ValueError("runtime_angle_noise_floor_deg cannot be negative")
+        if not (0.0 <= self.preferred_reentry_max_deviation < self.watch_enter):
+            raise ValueError("preferred reentry must be below watch entry")
+        if self.preferred_reentry_seconds < 0.0:
+            raise ValueError("preferred_reentry_seconds cannot be negative")
 
 
 @dataclass(frozen=True)
@@ -304,6 +426,8 @@ class FeatureDeviation:
     preferred: float
     relaxed: float
     mdc: float
+    runtime_noise: float = 0.0
+    signal_reliability: float = 1.0
 
 
 @dataclass(frozen=True)
@@ -320,13 +444,30 @@ def normalized_feature_deviation(
     current: float,
     preferred: FeatureStatistics,
     relaxed: FeatureStatistics,
+    policy: Optional[PosturePolicy] = None,
+    runtime_noise_floor: Optional[float] = None,
 ) -> FeatureDeviation:
-    """Project a current value from preferred toward relaxed after MDC."""
+    """Project one observation toward relaxed after repeatability filtering.
 
+    MDC is retained for reporting, but SEM-derived MDC is not a suitable
+    single-observation tolerance because it shrinks as calibration sample count
+    grows.  The runtime acceptance band therefore also includes within-anchor
+    standard deviation. Features whose anchor span is only marginally above
+    that band are excluded at calibration time so a near-zero usable
+    denominator cannot amplify ordinary frame jitter.
+    """
+
+    policy = policy or PosturePolicy()
     anchor_delta = relaxed.mean - preferred.mean
     direction = 1.0 if anchor_delta >= 0.0 else -1.0
     anchor_span = abs(anchor_delta)
-    noise_floor = max(preferred.mdc, relaxed.mdc, 1e-9)
+    mdc = max(preferred.mdc, relaxed.mdc, 1e-9)
+    noise_floor = (
+        max(float(runtime_noise_floor), mdc)
+        if runtime_noise_floor is not None
+        else _runtime_noise_floor_for_feature(preferred, relaxed, policy, feature)
+    )
+    signal_reliability = 1.0 if anchor_span > noise_floor else 0.0
     if anchor_span <= noise_floor:
         deviation = 0.0
     else:
@@ -340,7 +481,45 @@ def normalized_feature_deviation(
         current=float(current),
         preferred=preferred.mean,
         relaxed=relaxed.mean,
-        mdc=noise_floor,
+        mdc=mdc,
+        runtime_noise=noise_floor,
+        signal_reliability=signal_reliability,
+    )
+
+
+def runtime_noise_floor(
+    preferred: FeatureStatistics,
+    relaxed: FeatureStatistics,
+    policy: Optional[PosturePolicy] = None,
+    feature: Optional[str] = None,
+) -> float:
+    """Return the product-policy noise band for one runtime observation."""
+
+    return _runtime_noise_floor_for_feature(preferred, relaxed, policy, feature)
+
+
+def _runtime_noise_floor_for_feature(
+    preferred: FeatureStatistics,
+    relaxed: FeatureStatistics,
+    policy: Optional[PosturePolicy] = None,
+    feature: Optional[str] = None,
+) -> float:
+    """Implementation kept separate from the public compatibility keyword."""
+
+    policy = policy or PosturePolicy()
+    multiplier = policy.runtime_noise_std_multiplier
+    absolute_floor = 0.0
+    if feature in FORWARD_FEATURES:
+        absolute_floor = policy.runtime_ratio_noise_floor
+    elif feature in LATERAL_FEATURES:
+        absolute_floor = policy.runtime_angle_noise_floor_deg
+    return max(
+        preferred.mdc,
+        relaxed.mdc,
+        multiplier * preferred.std,
+        multiplier * relaxed.std,
+        absolute_floor,
+        1e-9,
     )
 
 
@@ -367,7 +546,14 @@ def score_posture_deviation(
         if current is None or preferred is None or relaxed is None:
             continue
         feature_results.append(
-            normalized_feature_deviation(name, current, preferred, relaxed)
+            normalized_feature_deviation(
+                name,
+                current,
+                preferred,
+                relaxed,
+                policy,
+                profile.runtime_noise_floors.get(name),
+            )
         )
 
     by_name = {result.feature: result.deviation for result in feature_results}
@@ -536,6 +722,53 @@ def measurement_values(sample) -> dict[str, float]:
     return values
 
 
+def _confidences_meet_floor(sample, names: Sequence[str], floor: float) -> bool:
+    confidences = [_finite_float(getattr(sample, name, None)) for name in names]
+    # Compatibility backends may not expose landmark-level confidence. Their
+    # existing detected/value completeness checks remain the fallback.
+    if all(value is None for value in confidences):
+        return True
+    return all(value is not None and value >= floor for value in confidences)
+
+
+def calibration_measurement_values(
+    sample,
+    plan: Optional[CalibrationPlan] = None,
+) -> dict[str, float]:
+    """Extract only features whose own required landmarks meet the quality gate."""
+
+    plan = plan or CalibrationPlan()
+    values = measurement_values(sample)
+    floor = plan.min_pose_quality
+    shoulders_ok = _confidences_meet_floor(
+        sample,
+        ("left_shoulder_confidence", "right_shoulder_confidence"),
+        floor,
+    )
+    hips_ok = _confidences_meet_floor(
+        sample,
+        ("left_hip_confidence", "right_hip_confidence"),
+        floor,
+    )
+    if not shoulders_ok:
+        for name in (
+            "face_shoulder_ratio",
+            "torso_shoulder_ratio",
+            "ear_shoulder_ratio",
+            "shoulder_asymmetry_deg",
+            "shoulder_width_px",
+            "signed_shoulder_diff_px",
+        ):
+            values.pop(name, None)
+    if not hips_ok:
+        for name in ("torso_shoulder_ratio", "trunk_lean_deg", "torso_height_px"):
+            values.pop(name, None)
+    for side in ("left", "right"):
+        if not _confidences_meet_floor(sample, (f"{side}_ear_confidence",), floor):
+            values.pop("ear_shoulder_ratio", None)
+    return values
+
+
 def aggregate_sample_quality(sample) -> float:
     qualities: list[float] = []
     face_quality = _finite_float(getattr(sample, "face_quality", None))
@@ -552,10 +785,11 @@ def calibration_rejection_reason(
     plan: Optional[CalibrationPlan] = None,
 ) -> Optional[str]:
     plan = plan or CalibrationPlan()
-    if getattr(sample, "face_count", 0) != 1:
+    face_count = getattr(sample, "face_count", 0)
+    if face_count > 1:
         return "single_person"
     person_count = getattr(sample, "person_count", None)
-    if person_count is not None and person_count != 1:
+    if person_count is not None and person_count > 1:
         return "single_person"
     if getattr(sample, "target_state", None) in {"MULTI_PRESENT", "TARGET_AMBIGUOUS"}:
         return "target_ambiguous"
@@ -567,17 +801,30 @@ def calibration_rejection_reason(
         "PROFILE_MISMATCH",
     }:
         return "target_uncertain"
-    if not getattr(sample, "face_detected", False) or not getattr(sample, "pose_detected", False):
+    if (
+        face_count < 1
+        or (person_count is not None and person_count < 1)
+        or not getattr(sample, "face_detected", False)
+        or not getattr(sample, "pose_detected", False)
+    ):
         return "keypoints_missing"
     face_quality = _finite_float(getattr(sample, "face_quality", None))
     pose_quality = _finite_float(getattr(sample, "pose_quality", None))
     if face_quality is not None and face_quality < plan.min_face_quality:
         return "face_quality_low"
-    if pose_quality is not None and pose_quality < plan.min_pose_quality:
+    shoulder_confidences = [
+        _finite_float(getattr(sample, name, None))
+        for name in ("left_shoulder_confidence", "right_shoulder_confidence")
+    ]
+    if all(value is not None for value in shoulder_confidences):
+        if min(value for value in shoulder_confidences if value is not None) < plan.min_pose_quality:
+            return "pose_quality_low"
+    elif pose_quality is not None and pose_quality < plan.min_pose_quality:
+        # Backends without landmark-level confidence retain the aggregate gate.
         return "pose_quality_low"
     motion = _finite_float(getattr(sample, "target_motion", None))
     if motion is not None and motion > plan.max_target_motion:
         return "target_moving"
-    if not measurement_values(sample):
+    if not calibration_measurement_values(sample, plan):
         return "no_numeric_features"
     return None

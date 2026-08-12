@@ -1,9 +1,9 @@
 """Collect a metrics-only two-anchor reliability report from a camera.
 
 The command is intentionally explicit.  It never writes frames, face crops,
-identity vectors, or video.  The first 40 percent of samples are treated as
-the preferred anchor and the remainder as the relaxed anchor; keep the first
-part comfortable and the second part naturally relaxed while running it.
+identity vectors, or video. It collects two equal numeric sample blocks with a
+short transition between them. This reliability protocol is separate from the
+production UI timing path.
 """
 
 from __future__ import annotations
@@ -12,6 +12,7 @@ import argparse
 import json
 import platform
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -27,6 +28,7 @@ from posture_science import (  # noqa: E402
     FeatureStatistics,
     PosturePolicy,
     measurement_values,
+    runtime_noise_floor,
 )
 from vision_test import VisionEngine  # noqa: E402
 
@@ -50,10 +52,22 @@ def collect(frames: int, camera_id: int, width: int, height: int) -> dict:
     }
     dropped_frames = 0
     samples = 0
-    split = max(1, round(frames * 0.4))
+    split = frames // 2
+    relaxed_prompted = False
     try:
         engine.start()
+        print(
+            f"Hold the preferred comfortable posture for {split} samples.",
+            file=sys.stderr,
+        )
         while samples < frames:
+            if samples == split and not relaxed_prompted:
+                relaxed_prompted = True
+                print(
+                    "Preferred block complete. Relax naturally; relaxed sampling starts in 1 second.",
+                    file=sys.stderr,
+                )
+                time.sleep(1.0)
             try:
                 sample = engine.read_sample()
             except Exception:
@@ -76,14 +90,32 @@ def collect(frames: int, camera_id: int, width: int, height: int) -> dict:
     for name in sorted(set(preferred) & set(relaxed)):
         preferred_stats = preferred[name]
         relaxed_stats = relaxed[name]
+        preferred_measurement = FeatureStatistics(**preferred_stats)
+        relaxed_measurement = FeatureStatistics(**relaxed_stats)
         delta = abs(relaxed_stats["mean"] - preferred_stats["mean"])
-        noise_floor = max(preferred_stats["mdc"], relaxed_stats["mdc"])
-        policy_change = delta * policy.watch_enter
+        mdc_floor = max(preferred_stats["mdc"], relaxed_stats["mdc"])
+        single_observation_noise = runtime_noise_floor(
+            preferred_measurement,
+            relaxed_measurement,
+            policy,
+            name,
+        )
+        required_separation = (
+            single_observation_noise * policy.runtime_min_signal_to_noise_ratio
+        )
+        credible_span = max(0.0, delta - single_observation_noise)
+        watch_change = single_observation_noise + policy.watch_enter * credible_span
+        alert_change = single_observation_noise + policy.alert_enter * credible_span
         separation[name] = {
             "anchor_delta": delta,
-            "noise_floor_mdc": noise_floor,
-            "watch_policy_change": policy_change,
-            "watch_change_below_mdc": policy_change <= noise_floor,
+            "noise_floor_mdc": mdc_floor,
+            "single_observation_noise_floor": single_observation_noise,
+            "required_anchor_separation": required_separation,
+            "anchor_separates_runtime_noise": delta > required_separation,
+            "watch_enter_raw_change": watch_change,
+            "alert_enter_raw_change": alert_change,
+            "watch_change_below_mdc": watch_change <= mdc_floor,
+            "watch_change_below_runtime_noise": watch_change <= single_observation_noise,
         }
 
     return {
@@ -112,6 +144,12 @@ def collect(frames: int, camera_id: int, width: int, height: int) -> dict:
             "watch_enter": policy.watch_enter,
             "alert_enter": policy.alert_enter,
             "critical_deviation": policy.severe_deviation,
+            "runtime_noise_std_multiplier": policy.runtime_noise_std_multiplier,
+            "runtime_min_signal_to_noise_ratio": (
+                policy.runtime_min_signal_to_noise_ratio
+            ),
+            "runtime_ratio_noise_floor": policy.runtime_ratio_noise_floor,
+            "runtime_angle_noise_floor_deg": policy.runtime_angle_noise_floor_deg,
             "note": "Product interaction parameters, not physiological standards.",
         },
         "unverified_items": [

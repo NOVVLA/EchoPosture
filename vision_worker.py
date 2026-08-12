@@ -45,10 +45,14 @@ from identity_verifier import (
 )
 from vision_tracking import TargetManager, TargetUpdate
 from posture_science import (
+    CALIBRATION_CONTAMINATION_REASONS,
     CalibrationAccumulator,
     CalibrationPlan,
+    PREFERRED,
+    RELAXED,
+    TRANSITION,
+    calibration_measurement_values,
     calibration_rejection_reason,
-    measurement_values,
 )
 
 MODE_PAUSED = "paused"
@@ -129,7 +133,8 @@ class VisionWorker:
 
     主线程接口：start/stop、pause/resume、is_monitoring_active、
     latest（信箱）、take_error / take_calibration_result（一次性回执）、
-    begin_calibration_sampling / finalize_calibration、set/get_capture_fps。
+    begin_calibration_sampling / complete_preferred_calibration /
+    finalize_calibration、set/get_capture_fps。
     """
 
     CALIBRATION_INTERVAL_S = 0.18   # 与旧 calibration_timer 的 180ms 一致
@@ -171,6 +176,8 @@ class VisionWorker:
         self._calibration_missing_fields: set[str] = set()
         self._calibration_plan = CalibrationPlan()
         self._calibration_accumulator: Optional[CalibrationAccumulator] = None
+        self._dual_calibration_request: Optional[tuple[float, int]] = None
+        self._preferred_cutoff_at = None
         self._calib_request_seq = 0
         self._identity_future = None
         self._last_identity_state: Optional[str] = None
@@ -218,13 +225,40 @@ class VisionWorker:
         self._mode = MODE_PAUSED
 
     def begin_calibration_sampling(self) -> None:
-        """Enter the fixed 2s preferred + 3s relaxed calibration schedule."""
+        """Begin the visible five-second preferred-posture stage."""
+        self._preferred_cutoff_at = None
         self._mode = MODE_CALIBRATING
         self._commands.put(("begin_calib",))
         self._wake.set()
 
+    def complete_preferred_calibration(self, distance_cm: float) -> int:
+        """Close the preferred stage, pause, then silently collect relaxed data.
+
+        The result is published asynchronously after the five-second relaxed
+        target window, or after its bounded extension when more valid samples
+        are needed. The caller must close the visible countdown before calling
+        this method.
+        """
+
+        # Stop starting new reads before the UI tells the user to relax. The
+        # worker command below installs the transition boundary and resumes
+        # calibration on its next command drain.
+        transition_started_at = datetime.now()
+        self._preferred_cutoff_at = transition_started_at
+        self._mode = MODE_PAUSED
+        self._calib_request_seq += 1
+        request_id = self._calib_request_seq
+        self._commands.put(
+            ("complete_preferred_calib", float(distance_cm), request_id, transition_started_at)
+        )
+        self._wake.set()
+        return request_id
+
     def finalize_calibration(self, distance_cm: float, sample_count: int = 1) -> int:
-        """请求定基线：不足 sample_count 时先补采，平均后 set_baseline。
+        """Legacy debug/self-test baseline request.
+
+        不足 sample_count 时先补采，平均后 set_baseline。生产科学校准必须走
+        begin_calibration_sampling() + complete_preferred_calibration() 的双锚点路径。
 
         返回 request_id；结果经 take_calibration_result() 回执。
         完成后 worker 进入 paused，由主线程决定是否 resume。
@@ -348,8 +382,38 @@ class VisionWorker:
                 self._last_usable_sample = None
                 self._calibration_missing_fields = set()
                 self._calibration_accumulator = CalibrationAccumulator(self._calibration_plan)
+                self._dual_calibration_request = None
                 if self.target_manager is not None:
                     self.target_manager.reset()
+            elif kind == "complete_preferred_calib":
+                _, distance_cm, request_id, transition_started_at = command
+                accumulator = self._calibration_accumulator
+                if accumulator is None:
+                    self._mode = MODE_PAUSED
+                    self._publish_calibration(
+                        CalibrationResult(
+                            request_id,
+                            False,
+                            ("calibration_not_started",),
+                            failure_reason="calibration_not_started",
+                        )
+                    )
+                    continue
+                try:
+                    accumulator.begin_transition(transition_started_at)
+                except ValueError as exc:
+                    self._mode = MODE_PAUSED
+                    self._publish_calibration(
+                        CalibrationResult(
+                            request_id,
+                            False,
+                            (str(exc),),
+                            failure_reason=str(exc),
+                        )
+                    )
+                    continue
+                self._dual_calibration_request = (distance_cm, request_id)
+                self._mode = MODE_CALIBRATING
             elif kind == "finalize_calib":
                 _, distance_cm, sample_count, request_id = command
                 self._finalize_calibration(engine, distance_cm, sample_count, request_id)
@@ -360,18 +424,32 @@ class VisionWorker:
             if accumulator is None:
                 accumulator = CalibrationAccumulator(self._calibration_plan)
                 self._calibration_accumulator = accumulator
+            phase = accumulator.stage_at(sample.timestamp)
+            cutoff = self._preferred_cutoff_at
+            if phase == PREFERRED and cutoff is not None and sample.timestamp >= cutoff:
+                return
+            if phase == TRANSITION:
+                return
             rejection = calibration_rejection_reason(sample, self._calibration_plan)
             if rejection is not None:
-                accumulator.reject(sample.timestamp, rejection)
+                if rejection in CALIBRATION_CONTAMINATION_REASONS:
+                    accumulator.reject(sample.timestamp, rejection)
+                    self._calib_samples = []
+                    self._last_usable_sample = None
+                else:
+                    accumulator.skip(sample.timestamp, rejection)
                 self._calibration_missing_fields.add(rejection)
-                self._calib_samples = []
-                self._last_usable_sample = None
+                self._maybe_finish_dual_anchor(sample.timestamp)
                 return
-            accumulator.add(sample.timestamp, measurement_values(sample))
+            accumulator.add(
+                sample.timestamp,
+                calibration_measurement_values(sample, self._calibration_plan),
+            )
             self._last_usable_sample = sample
             self._calib_samples.append(sample)
             if len(self._calib_samples) > self.SAMPLE_CAP:
                 self._calib_samples = self._calib_samples[-self.SAMPLE_CAP:]
+            self._maybe_finish_dual_anchor(sample.timestamp)
             return
 
         missing_fields = calibration_sample_missing_fields(sample)
@@ -389,6 +467,19 @@ class VisionWorker:
             self._calib_samples.append(sample)
             if len(self._calib_samples) > self.SAMPLE_CAP:
                 self._calib_samples = self._calib_samples[-self.SAMPLE_CAP:]
+
+    def _maybe_finish_dual_anchor(self, timestamp) -> None:
+        accumulator = self._calibration_accumulator
+        request = self._dual_calibration_request
+        if accumulator is None or request is None or accumulator.phase != RELAXED:
+            return
+        if not (
+            accumulator.ready_to_finalize(timestamp)
+            or accumulator.relaxed_deadline_reached(timestamp)
+        ):
+            return
+        distance_cm, request_id = request
+        self._finalize_dual_anchor_calibration(distance_cm, request_id)
 
     def _finalize_calibration(self, engine, distance_cm: float,
                               sample_count: int, request_id: int) -> None:
@@ -482,6 +573,8 @@ class VisionWorker:
         self._calib_samples = []
         self._last_usable_sample = None
         self._calibration_accumulator = None
+        self._dual_calibration_request = None
+        self._preferred_cutoff_at = None
         self._mode = MODE_PAUSED
         self._publish_calibration(
             CalibrationResult(

@@ -17,6 +17,7 @@ class _Worker:
         self.pause_calls = 0
         self.resume_calls = 0
         self.begin_calibration_calls = 0
+        self.complete_preferred_calls = 0
         self.finalize_calibration_calls = 0
 
     def is_monitoring_active(self) -> bool:
@@ -37,6 +38,10 @@ class _Worker:
         del sample_count
         self.finalize_calibration_calls += 1
 
+    def complete_preferred_calibration(self, _distance) -> int:
+        self.complete_preferred_calls += 1
+        return self.complete_preferred_calls
+
 
 class _Overlay:
     def __init__(self) -> None:
@@ -54,9 +59,20 @@ class _Timer:
         raise AssertionError("timer was already active")
 
 
+class _CountdownTimer:
+    def __init__(self) -> None:
+        self.stop_calls = 0
+
+    def stop(self) -> None:
+        self.stop_calls += 1
+
+
 class _Tray:
+    def __init__(self) -> None:
+        self.messages = []
+
     def showMessage(self, *_args) -> None:
-        pass
+        self.messages.append(_args)
 
 
 class _MonitorDouble:
@@ -69,10 +85,12 @@ class _MonitorDouble:
         self._manual_effect_until = object()
         self.onboarding_toast = None
         self.calibration_dialog = None
+        self._calibration_prompt_context = None
         self.calibrated_distance_cm = 60.0
         self.worker = _Worker()
         self.overlay = _Overlay()
         self.timer = _Timer()
+        self.countdown_timer = _CountdownTimer()
         self.tray = _Tray()
 
     def _start_monitoring(self) -> None:
@@ -158,7 +176,63 @@ class StartupGuardTests(unittest.TestCase):
 
         self.assertEqual(monitor.worker.begin_calibration_calls, 0)
         self.assertEqual(monitor.worker.finalize_calibration_calls, 0)
+        self.assertEqual(monitor.worker.complete_preferred_calls, 0)
         self.assertIsNone(monitor._awaiting_calibration)
+
+    def test_countdown_closes_before_silent_relaxed_collection(self) -> None:
+        events = []
+
+        class Dialog:
+            def step(self) -> bool:
+                events.append("countdown_finished")
+                return True
+
+            def close(self) -> None:
+                events.append("dialog_closed")
+
+        class Worker(_Worker):
+            def complete_preferred_calibration(self, _distance) -> int:
+                events.append("relaxed_requested")
+                return super().complete_preferred_calibration(_distance)
+
+        class Tray(_Tray):
+            def showMessage(self, *_args) -> None:
+                events.append("relax_prompted")
+                super().showMessage(*_args)
+
+        monitor = _MonitorDouble()
+        monitor.calibration_dialog = Dialog()
+        monitor.worker = Worker()
+        monitor.tray = Tray()
+        monitor._calibration_prompt_context = ("startup", False)
+
+        TrayMonitor._countdown_step(monitor)
+
+        self.assertEqual(
+            events,
+            [
+                "countdown_finished",
+                "dialog_closed",
+                "relaxed_requested",
+                "relax_prompted",
+            ],
+        )
+        self.assertIsNone(monitor.calibration_dialog)
+        self.assertEqual(monitor.worker.complete_preferred_calls, 1)
+        self.assertEqual(monitor.worker.finalize_calibration_calls, 0)
+        self.assertEqual(monitor._awaiting_calibration, ("startup", False))
+
+    def test_silent_relaxed_collection_keeps_controls_guarded(self) -> None:
+        monitor = _MonitorDouble()
+        monitor._awaiting_calibration = ("recal", True)
+
+        self.assertFalse(TrayMonitor.pause_monitoring(monitor))
+        self.assertFalse(TrayMonitor.resume_monitoring(monitor))
+        TrayMonitor.recalibrate_now(monitor)
+
+        self.assertEqual(monitor.worker.pause_calls, 0)
+        self.assertEqual(monitor.worker.resume_calls, 0)
+        self.assertEqual(monitor.worker.begin_calibration_calls, 0)
 
     def test_prestarted_worker_is_resumed_after_startup_calibration(self) -> None:
         monitor = _MonitorDouble()
