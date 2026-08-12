@@ -5,8 +5,8 @@
 - Source: completion audit of the unchanged-upright-posture false alert after the preceding shared-shoulder-scale
   fixes. The audit enumerated every production writer of `camera_drift` and found that no current backend ever sets
   it to true, so the existing camera-drift abstention branch did not protect the live pipeline.
-- Git: commit `pending`, branch `codex/pr2-phase1-calibration-safety`, tag `none`; delivery target remains the existing
-  PR `#23`, with no new PR.
+- Git: commit `9b7acba5c453d68c4d2b5435aefb37069c21241c`, branch
+  `codex/pr2-phase1-calibration-safety`, tag `none`; delivery target remains the existing PR `#23`, with no new PR.
 - Reproduction: a deterministic rigid transform rotated the same eye, ear, shoulder, hip, and torso geometry by
   eight degrees without changing any body-segment length. Before this fix the image-axis shoulder and trunk angles
   corroborated each other, entered `WATCH` immediately, and reached `BAD` after 12 equivalent seconds. This is a
