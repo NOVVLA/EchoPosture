@@ -46,6 +46,7 @@ from PyQt5.QtWidgets import (
     QLabel,
     QMainWindow,
     QMessageBox,
+    QProgressBar,
     QPushButton,
     QCheckBox,
     QDoubleSpinBox,
@@ -425,6 +426,16 @@ class DebugWindow(QMainWindow):
         self.video_label.setAlignment(Qt.AlignCenter)
         self.video_label.setMinimumSize(640, 480)
         self.video_label.setStyleSheet("background: #111; color: #ccc;")
+        self.calibration_camera_prompt = QLabel(self.video_label)
+        self.calibration_camera_prompt.setObjectName("calibrationCameraPrompt")
+        self.calibration_camera_prompt.setAlignment(Qt.AlignCenter)
+        self.calibration_camera_prompt.setWordWrap(True)
+        self.calibration_camera_prompt.hide()
+        self.calibration_camera_prompt_timer = QTimer(self)
+        self.calibration_camera_prompt_timer.setSingleShot(True)
+        self.calibration_camera_prompt_timer.timeout.connect(
+            self.calibration_camera_prompt.hide
+        )
 
         self.status_label = QLabel(_t("debug_status_init"))
         self.status_label.setFont(QFont("Microsoft YaHei", 20, QFont.Bold))
@@ -446,18 +457,32 @@ class DebugWindow(QMainWindow):
         self.calibration_stage_card = QFrame()
         self.calibration_stage_card.setObjectName("calibrationStageCard")
         stage_layout = QVBoxLayout(self.calibration_stage_card)
-        stage_layout.setContentsMargins(12, 10, 12, 10)
-        stage_layout.setSpacing(4)
+        stage_layout.setContentsMargins(18, 14, 18, 14)
+        stage_layout.setSpacing(8)
+        stage_heading = QHBoxLayout()
+        stage_heading.setSpacing(14)
+        self.calibration_stage_badge = QLabel()
+        self.calibration_stage_badge.setObjectName("calibrationStageBadge")
+        self.calibration_stage_badge.setAlignment(Qt.AlignCenter)
+        self.calibration_stage_badge.setMinimumSize(92, 62)
         self.calibration_stage_title = QLabel()
         self.calibration_stage_title.setObjectName("calibrationStageTitle")
-        self.calibration_stage_title.setFont(QFont("Microsoft YaHei", 18, QFont.Bold))
+        self.calibration_stage_title.setFont(QFont("Microsoft YaHei", 21, QFont.Bold))
         self.calibration_stage_title.setWordWrap(True)
+        stage_heading.addWidget(self.calibration_stage_badge, 0, Qt.AlignVCenter)
+        stage_heading.addWidget(self.calibration_stage_title, 1)
         self.calibration_stage_detail = QLabel()
         self.calibration_stage_detail.setObjectName("calibrationStageDetail")
         self.calibration_stage_detail.setWordWrap(True)
-        self.calibration_stage_card.setMinimumHeight(86)
-        stage_layout.addWidget(self.calibration_stage_title)
+        self.calibration_stage_progress = QProgressBar()
+        self.calibration_stage_progress.setObjectName("calibrationStageProgress")
+        self.calibration_stage_progress.setTextVisible(False)
+        self.calibration_stage_progress.setRange(0, 100)
+        self.calibration_stage_progress.setFixedHeight(12)
+        self.calibration_stage_card.setMinimumHeight(136)
+        stage_layout.addLayout(stage_heading)
         stage_layout.addWidget(self.calibration_stage_detail)
+        stage_layout.addWidget(self.calibration_stage_progress)
         self._calibration_visual_phase = "idle"
         self._set_calibration_stage_visual("idle")
 
@@ -615,8 +640,19 @@ class DebugWindow(QMainWindow):
                 border-radius: 8px;
                 background: #f8fafc;
             }
-            QLabel#calibrationStageTitle { font-size: 18px; font-weight: 700; }
-            QLabel#calibrationStageDetail { font-size: 14px; }
+            QLabel#calibrationStageBadge {
+                border-radius: 6px;
+                color: white;
+                font-size: 24px;
+                font-weight: 800;
+            }
+            QLabel#calibrationStageTitle { font-size: 21px; font-weight: 800; }
+            QLabel#calibrationStageDetail { font-size: 15px; font-weight: 600; }
+            QProgressBar#calibrationStageProgress {
+                border: none;
+                border-radius: 4px;
+                background: rgba(255, 255, 255, 0.55);
+            }
             """
         )
 
@@ -716,6 +752,7 @@ class DebugWindow(QMainWindow):
         self.dual_calibration_timer.start(int(round(silent_seconds * 1000.0)) + 250)
         self._set_calibration_stage_visual("transition")
         self._set_calibration_message("debug_dual_calib_relax_now")
+        self._show_calibration_camera_prompt()
 
     def cancel_dual_anchor_calibration(self) -> None:
         if self._dual_calibration_accumulator is None:
@@ -723,6 +760,8 @@ class DebugWindow(QMainWindow):
         self._dual_calibration_accumulator = None
         self._dual_calibration_last_rejection = None
         self.dual_calibration_timer.stop()
+        self.calibration_camera_prompt_timer.stop()
+        self.calibration_camera_prompt.hide()
         self._restore_calibration_controls()
         self._set_calibration_stage_visual("idle")
         self._set_calibration_message("debug_dual_calib_cancelled")
@@ -787,6 +826,8 @@ class DebugWindow(QMainWindow):
             return
         self._dual_calibration_accumulator = None
         self.dual_calibration_timer.stop()
+        self.calibration_camera_prompt_timer.stop()
+        self.calibration_camera_prompt.hide()
         self._restore_calibration_controls()
 
         try:
@@ -988,47 +1029,78 @@ class DebugWindow(QMainWindow):
                 "debug_stage_idle_detail",
                 "#f8fafc",
                 "#64748b",
+                "debug_stage_badge_idle",
+                0,
+                "#172033",
             ),
             "preferred": (
                 "debug_stage_preferred_title",
                 "debug_stage_preferred_detail",
-                "#e8f5ee",
-                "#16803a",
+                "#17633a",
+                "#0d3d24",
+                "debug_stage_badge_preferred",
+                20,
+                "white",
             ),
             "transition": (
                 "debug_stage_transition_title",
                 "debug_stage_transition_detail",
-                "#fff4df",
-                "#c26a00",
+                "#9a4f00",
+                "#5f3000",
+                "debug_stage_badge_transition",
+                50,
+                "white",
             ),
             "relaxed": (
                 "debug_stage_relaxed_title",
                 "debug_stage_relaxed_detail",
-                "#f2eafe",
-                "#7c3aed",
+                "#6d35ad",
+                "#3f1c68",
+                "debug_stage_badge_relaxed",
+                80,
+                "white",
             ),
             "reentry": (
                 "debug_stage_reentry_title",
                 "debug_stage_reentry_detail",
-                "#e8f1ff",
-                "#1d4ed8",
+                "#255eb8",
+                "#15366a",
+                "debug_stage_badge_reentry",
+                90,
+                "white",
             ),
             "active": (
                 "debug_stage_active_title",
                 "debug_stage_active_detail",
-                "#e8f5ee",
-                "#16803a",
+                "#17633a",
+                "#0d3d24",
+                "debug_stage_badge_active",
+                100,
+                "white",
             ),
             "failed": (
                 "debug_stage_failed_title",
                 "debug_stage_failed_detail",
-                "#fff0f0",
-                "#b42318",
+                "#a12d25",
+                "#631b17",
+                "debug_stage_badge_failed",
+                0,
+                "white",
             ),
         }
-        title_key, detail_key, background, border = visual.get(phase, visual["idle"])
+        (
+            title_key,
+            detail_key,
+            background,
+            border,
+            badge_key,
+            progress,
+            text_color,
+        ) = visual.get(phase, visual["idle"])
         self._calibration_visual_phase = phase
         self.calibration_stage_card.setProperty("calibrationPhase", phase)
+        self.calibration_stage_badge.setText(_t(badge_key))
+        self.calibration_stage_progress.setValue(progress)
         title = _t(title_key)
         remaining = self._calibration_stage_seconds_remaining(phase)
         if remaining is not None:
@@ -1038,8 +1110,36 @@ class DebugWindow(QMainWindow):
         self.calibration_stage_card.setStyleSheet(
             "QFrame#calibrationStageCard {"
             f"background: {background}; border: 3px solid {border}; border-radius: 8px;"
-            "} QLabel { background: transparent; }"
+            f"}} QLabel {{ background: transparent; color: {text_color}; }}"
+            f" QLabel#calibrationStageBadge {{ background: {border}; }}"
+            f" QProgressBar#calibrationStageProgress::chunk {{ background: {border}; }}"
         )
+
+    def _show_calibration_camera_prompt(self) -> None:
+        self.calibration_camera_prompt.setText(_t("debug_stage_camera_relax_prompt"))
+        self.calibration_camera_prompt.setStyleSheet(
+            "QLabel#calibrationCameraPrompt {"
+            "background: rgba(146, 64, 14, 235); color: white;"
+            "border: 4px solid white; border-radius: 8px;"
+            "font-size: 30px; font-weight: 800; padding: 20px;"
+            "}"
+        )
+        self._position_calibration_camera_prompt()
+        self.calibration_camera_prompt.show()
+        self.calibration_camera_prompt.raise_()
+        duration_ms = max(1000, int(round(self.calibration_plan.transition_seconds * 1000.0)))
+        self.calibration_camera_prompt_timer.start(duration_ms)
+
+    def _position_calibration_camera_prompt(self) -> None:
+        width = min(max(360, self.video_label.width() - 80), 680)
+        height = 150
+        left = max(0, (self.video_label.width() - width) // 2)
+        top = max(0, (self.video_label.height() - height) // 2)
+        self.calibration_camera_prompt.setGeometry(left, top, width, height)
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._position_calibration_camera_prompt()
 
     @staticmethod
     def _calibration_reason_text(reason: Optional[str]) -> str:
@@ -1283,6 +1383,8 @@ class DebugWindow(QMainWindow):
             )
         )
         self.legacy_calibrate_button.setText(_t("debug_calibrate_btn"))
+        if not self.calibration_camera_prompt.isHidden():
+            self.calibration_camera_prompt.setText(_t("debug_stage_camera_relax_prompt"))
         self._set_calibration_stage_visual(self._calibration_visual_phase)
         self.precision_checkbox.setText(_t("debug_precision_cb"))
         self.performance_checkbox.setText(_t("debug_performance_cb"))

@@ -995,6 +995,50 @@
   movement, and lens-drift conditions. No live-camera pass, successful screenshot-based text/font review, consented
   recording, or external-validity result is claimed.
 
+## 2026-08-12 - Harden runtime posture evidence and debug calibration cues
+
+- Source: continued investigation after the user reported calibration failures and unclear dual-anchor stage changes;
+  manual follow-up to the incomplete PR review.
+- Git: commits `pending`, branch `codex/pr2-phase1-calibration-safety`, existing PR `#23`, tag `none`.
+- Runtime root causes and fixes:
+  - Production scoring called unfiltered `measurement_values()`, so a hip pair at confidence `0.20` could still let a
+    noisy `torso_shoulder_ratio` drive `WATCH`, `BAD`, and `CRITICAL` while aggregate shoulder quality remained `0.95`.
+    Runtime extraction now applies the same feature-local shoulder/hip/ear gates as calibration, and decision
+    confidence is computed only from the features that actually reached scoring. Low-quality hip-dependent evidence
+    now abstains and cannot accumulate exposure.
+  - A normalized anchor span of `0.020` with a `0.015` runtime noise floor left only a `0.005` scoring denominator.
+    The product reliability margin now requires anchor separation of at least `2.0` runtime-noise bands; narrower
+    features are disabled instead of amplifying frame jitter.
+  - `ExposureAccumulator` previously integrated throughout WATCH hysteresis, so deviation `0.60` could preload minutes
+    of exposure below the `0.70` alert threshold. Integration now occurs only while alert hysteresis is active; WATCH
+    remains an observation state and recovery still decays existing exposure exponentially.
+- Debug UI behavior:
+  - The full production-equivalent dual-anchor control remains the primary action; the legacy single-frame comparison
+    remains secondary and explicitly labelled.
+  - The stage area is now a 136px-or-taller full-color card with localized `1/2`, relax, `2/2`, return, active, and retry
+    badges plus a stable progress bar. When the preferred five-second stage ends, a high-contrast one-second prompt is
+    overlaid in the center of the camera area before silent relaxed sampling starts.
+- Verification passed from `C:\Users\aaabb\Documents\ICC驼背项目`:
+  - `runtime\python311\python.exe -m py_compile posture_science.py vision_test.py debug_ui.py i18n.py tools\collect_posture_reliability.py test_posture_science.py test_feature_toggles.py test_debug_ui.py test_vision_replay.py`
+  - `ruff check .`
+  - All tracked root logic scripts: `test_posture_science.py`, `test_feature_toggles.py`, `test_vision_worker.py`,
+    `test_vision_tracking.py`, `test_startup_guards.py`, `test_debug_ui.py`, `test_vision_replay.py`,
+    `test_tray_flyout.py`, `test_identity_model_adapters.py`, `test_identity_verifier.py`,
+    `test_ai_pr_review_guards.py`, and `test_ai_maintainer_manual_flows.py`.
+  - `runtime\python311\python.exe tools\collect_posture_reliability.py --help`.
+  - `git diff --check` passed with only the repository's existing LF/CRLF conversion warnings.
+  - Offscreen Qt validation at `1020 x 700`: stage card `678 x 141`, camera `678 x 521`, centered prompt
+    `598 x 150` fully inside the camera area, phase badge `放松`, progress `50`, and nonblank window render.
+- Verification note: the bundled Qt runtime continues to report its existing missing-font-directory warning. The
+  deterministic tests verify localized strings and geometry, but do not establish packaged font rendering fidelity.
+- Backup: `git stash create` captured all tracked changes at object
+  `84dac123f71cce8bf3d8eeb6767251af4c65c300`; untracked models, review folders, posters, and local artifacts were not
+  included or staged.
+- Gaps: real-camera calibration, cross-device SEM/MDC, user-visible packaged UI, consented recording, and external
+  validity remain independent evidence gates. No medical or hardware-level validation is claimed.
+- Conclusion: runtime false-exposure paths and Debug UI stage visibility are covered by deterministic regression tests;
+  ready for delivery to the existing PR branch.
+
 ## 2026-08-11 - AI review findings routed into the vision plan
 
 - Source: user request after manual audit of the AI review posted on PR #23.

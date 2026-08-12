@@ -106,6 +106,10 @@ def test_debug_panel_runs_full_dual_anchor_calibration() -> None:
         window.dual_calibration_timer.stop()
         preferred_style = window.calibration_stage_card.styleSheet()
         assert window._calibration_visual_phase == "preferred"
+        assert "background: #17633a" in preferred_style
+        assert "color: white" in preferred_style
+        assert window.calibration_stage_badge.text() == "1/2"
+        assert window.calibration_stage_progress.value() == 20
         assert "阶段 1/2" in window.calibration_stage_title.text()
         assert "5s" in window.calibration_stage_title.text()
         assert "现在不要放松" in window.calibration_stage_detail.text()
@@ -121,7 +125,15 @@ def test_debug_panel_runs_full_dual_anchor_calibration() -> None:
         assert window.calibration_label.text().startswith("舒适坐姿阶段完成")
         transition_style = window.calibration_stage_card.styleSheet()
         assert window._calibration_visual_phase == "transition"
+        assert "background: #9a4f00" in transition_style
+        assert window.calibration_stage_badge.text() == "放松"
+        assert window.calibration_stage_progress.value() == 50
         assert "现在可以自然放松" in window.calibration_stage_title.text()
+        assert not window.calibration_camera_prompt.isHidden()
+        assert "现在可以自然放松" in window.calibration_camera_prompt.text()
+        assert window.calibration_camera_prompt.parent() is window.video_label
+        prompt_geometry = window.calibration_camera_prompt.geometry()
+        assert window.video_label.rect().contains(prompt_geometry)
         assert transition_style != preferred_style
         backend.sample = make_sample(T0 + timedelta(seconds=5.5), relaxed=0.5)
         window.update_frame()
@@ -134,6 +146,11 @@ def test_debug_panel_runs_full_dual_anchor_calibration() -> None:
         window.update_frame()
         relaxed_style = window.calibration_stage_card.styleSheet()
         assert window._calibration_visual_phase == "relaxed"
+        assert "background: #6d35ad" in relaxed_style
+        window.calibration_camera_prompt_timer.stop()
+        window.calibration_camera_prompt.hide()
+        assert window.calibration_stage_badge.text() == "2/2"
+        assert window.calibration_stage_progress.value() == 80
         assert "阶段 2/2" in window.calibration_stage_title.text()
         assert "5s" in window.calibration_stage_title.text()
         assert "静默采样中" in window.calibration_stage_detail.text()
@@ -153,6 +170,7 @@ def test_debug_panel_runs_full_dual_anchor_calibration() -> None:
         }
         assert window.calibration_label.text().startswith("校准完成")
         assert window._calibration_visual_phase == "reentry"
+        assert window.calibration_stage_badge.text() == "回正"
         assert "请回到舒适坐姿" in window.calibration_stage_title.text()
         assert "不累计静态暴露" in window.calibration_stage_detail.text()
         assert window.calibration_stage_card.styleSheet() not in {
@@ -166,6 +184,8 @@ def test_debug_panel_runs_full_dual_anchor_calibration() -> None:
         backend.sample = make_sample(T0 + timedelta(seconds=15.1), relaxed=0.0)
         window.update_frame()
         assert window._calibration_visual_phase == "active"
+        assert window.calibration_stage_badge.text() == "监测"
+        assert window.calibration_stage_progress.value() == 100
         assert "正式监测中" in window.calibration_stage_title.text()
         assert window.target_state_label.text() == "目标已锁定"
         assert window.target_track_label.text() == "1"
@@ -199,8 +219,10 @@ def test_debug_panel_places_stage_card_above_camera() -> None:
         stage_geometry = window.calibration_stage_card.geometry()
         video_geometry = window.video_label.geometry()
         assert stage_geometry.width() == video_geometry.width()
-        assert stage_geometry.height() >= 86
+        assert stage_geometry.height() >= 136
         assert stage_geometry.bottom() < video_geometry.top()
+        assert window.calibration_stage_badge.width() >= 92
+        assert window.calibration_stage_progress.width() > 0
     finally:
         window.close()
         app.processEvents()
