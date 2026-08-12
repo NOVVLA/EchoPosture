@@ -719,7 +719,7 @@ class TrayMonitor:
 
         # The visible five seconds measured only the preferred posture. Close
         # that UI first, then tell the user they may relax while the worker
-        # ignores the transition and silently collects the relaxed anchor.
+        # ignores the transition and collects the relaxed anchor in the background.
         self._awaiting_calibration = self._calibration_prompt_context or ("startup", False)
         self._calibration_prompt_context = None
         self.worker.complete_preferred_calibration(self.calibrated_distance_cm)

@@ -113,6 +113,9 @@ def test_debug_panel_runs_full_dual_anchor_calibration() -> None:
         assert "阶段 1/2" in window.calibration_stage_title.text()
         assert "5s" in window.calibration_stage_title.text()
         assert "现在不要放松" in window.calibration_stage_detail.text()
+        assert not window.calibration_camera_stage_banner.isHidden()
+        assert "阶段 1/2" in window.calibration_camera_stage_banner.text()
+        assert "坐直姿势" in window.calibration_camera_stage_banner.text()
         for index in range(5):
             backend.sample = make_sample(T0 + timedelta(seconds=index))
             window.update_frame()
@@ -132,6 +135,7 @@ def test_debug_panel_runs_full_dual_anchor_calibration() -> None:
         assert not window.calibration_camera_prompt.isHidden()
         assert "现在可以自然放松" in window.calibration_camera_prompt.text()
         assert window.calibration_camera_prompt.parent() is window.video_label
+        assert "阶段切换" in window.calibration_camera_stage_banner.text()
         prompt_geometry = window.calibration_camera_prompt.geometry()
         assert window.video_label.rect().contains(prompt_geometry)
         assert transition_style != preferred_style
@@ -153,7 +157,12 @@ def test_debug_panel_runs_full_dual_anchor_calibration() -> None:
         assert window.calibration_stage_progress.value() == 80
         assert "阶段 2/2" in window.calibration_stage_title.text()
         assert "5s" in window.calibration_stage_title.text()
-        assert "静默采样中" in window.calibration_stage_detail.text()
+        assert "保持自然放松" in window.calibration_stage_detail.text()
+        assert not window.calibration_camera_stage_banner.isHidden()
+        assert "阶段 2/2" in window.calibration_camera_stage_banner.text()
+        assert "自然放松姿势" in window.calibration_camera_stage_banner.text()
+        banner_geometry = window.calibration_camera_stage_banner.geometry()
+        assert window.video_label.rect().contains(banner_geometry)
         assert relaxed_style not in {preferred_style, transition_style}
         for index in range(4):
             backend.sample = make_sample(
@@ -168,20 +177,17 @@ def test_debug_panel_runs_full_dual_anchor_calibration() -> None:
             "preferred": 5,
             "relaxed": 5,
         }
-        assert window.calibration_label.text().startswith("校准完成")
-        assert window._calibration_visual_phase == "reentry"
-        assert window.calibration_stage_badge.text() == "回正"
-        assert "请回到舒适坐姿" in window.calibration_stage_title.text()
-        assert "不累计静态暴露" in window.calibration_stage_detail.text()
+        assert window.calibration_label.text().startswith("双锚点科学校准完成")
+        assert window._calibration_visual_phase == "active"
+        assert window.calibration_stage_badge.text() == "监测"
+        assert "正式监测中" in window.calibration_stage_title.text()
+        assert window.calibration_camera_stage_banner.isHidden()
         assert window.calibration_stage_card.styleSheet() not in {
             preferred_style,
             transition_style,
             relaxed_style,
         }
-        backend.sample = make_sample(T0 + timedelta(seconds=13), relaxed=0.0)
-        window.update_frame()
-        assert window._calibration_visual_phase == "reentry"
-        backend.sample = make_sample(T0 + timedelta(seconds=15.1), relaxed=0.0)
+        backend.sample = make_sample(T0 + timedelta(seconds=13), relaxed=1.0)
         window.update_frame()
         assert window._calibration_visual_phase == "active"
         assert window.calibration_stage_badge.text() == "监测"
@@ -223,6 +229,11 @@ def test_debug_panel_places_stage_card_above_camera() -> None:
         assert stage_geometry.bottom() < video_geometry.top()
         assert window.calibration_stage_badge.width() >= 92
         assert window.calibration_stage_progress.width() > 0
+        window.start_dual_anchor_calibration()
+        window.dual_calibration_timer.stop()
+        app.processEvents()
+        banner_geometry = window.calibration_camera_stage_banner.geometry()
+        assert window.video_label.rect().contains(banner_geometry)
     finally:
         window.close()
         app.processEvents()

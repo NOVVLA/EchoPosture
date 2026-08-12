@@ -159,8 +159,6 @@ REASON_TEXT: Dict[str, str] = {
     "target_presence_check_disabled": "reason.target_presence_check_disabled",
     "dual_anchor_calibration_required": "reason.dual_anchor_calibration_required",
     "dual_anchor_calibration_collecting": "reason.dual_anchor_calibration_collecting",
-    "post_calibration_return_to_preferred": "reason.post_calibration_return_to_preferred",
-    "preferred_posture_monitoring_activated": "reason.preferred_posture_monitoring_activated",
     "activity_moving_exposure_paused": "reason.activity_moving_exposure_paused",
     "camera_drift_recalibration_required": "reason.camera_drift_recalibration_required",
     "head_turn_measurement_abstained": "reason.head_turn_measurement_abstained",
@@ -436,6 +434,11 @@ class DebugWindow(QMainWindow):
         self.calibration_camera_prompt_timer.timeout.connect(
             self.calibration_camera_prompt.hide
         )
+        self.calibration_camera_stage_banner = QLabel(self.video_label)
+        self.calibration_camera_stage_banner.setObjectName("calibrationCameraStageBanner")
+        self.calibration_camera_stage_banner.setAlignment(Qt.AlignCenter)
+        self.calibration_camera_stage_banner.setWordWrap(True)
+        self.calibration_camera_stage_banner.hide()
 
         self.status_label = QLabel(_t("debug_status_init"))
         self.status_label.setFont(QFont("Microsoft YaHei", 20, QFont.Bold))
@@ -696,9 +699,6 @@ class DebugWindow(QMainWindow):
             )
         else:
             decision = self.analyzer.evaluate(sample)
-            if decision.reason == "preferred_posture_monitoring_activated":
-                self._set_calibration_stage_visual("active")
-                self._set_calibration_message("debug_dual_calib_active")
         self._show_frame(frame, raw_sample)
         self._show_metrics(sample, decision)
         if target_update is not None:
@@ -869,8 +869,15 @@ class DebugWindow(QMainWindow):
             return
 
         self._scientific_profile = profile
-        self._set_calibration_stage_visual("reentry")
-        self._set_calibration_message("debug_dual_calib_reentry")
+        counts = profile.stage_counts
+        self._set_calibration_stage_visual("active")
+        self._set_calibration_message(
+            "debug_dual_calib_ok",
+            preferred=counts.get("preferred", 0),
+            relaxed=counts.get("relaxed", 0),
+            quality=profile.calibration_quality,
+            features=len(profile.enabled_features),
+        )
         self.baseline_label.setText(format_calibration_profile(profile))
         if self.current_sample is not None:
             decision = self.analyzer.evaluate(self.current_sample)
@@ -1060,20 +1067,11 @@ class DebugWindow(QMainWindow):
                 80,
                 "white",
             ),
-            "reentry": (
-                "debug_stage_reentry_title",
-                "debug_stage_reentry_detail",
-                "#255eb8",
-                "#15366a",
-                "debug_stage_badge_reentry",
-                90,
-                "white",
-            ),
             "active": (
                 "debug_stage_active_title",
                 "debug_stage_active_detail",
-                "#17633a",
-                "#0d3d24",
+                "#145da0",
+                "#0b355d",
                 "debug_stage_badge_active",
                 100,
                 "white",
@@ -1114,6 +1112,41 @@ class DebugWindow(QMainWindow):
             f" QLabel#calibrationStageBadge {{ background: {border}; }}"
             f" QProgressBar#calibrationStageProgress::chunk {{ background: {border}; }}"
         )
+        self._set_calibration_camera_stage_banner(phase)
+
+    def _set_calibration_camera_stage_banner(self, phase: str) -> None:
+        visual = {
+            "preferred": (
+                "debug_stage_camera_preferred_banner",
+                "rgba(13, 92, 52, 238)",
+                "#86efac",
+            ),
+            "transition": (
+                "debug_stage_camera_transition_banner",
+                "rgba(154, 79, 0, 238)",
+                "#fed7aa",
+            ),
+            "relaxed": (
+                "debug_stage_camera_relaxed_banner",
+                "rgba(91, 33, 182, 238)",
+                "#ddd6fe",
+            ),
+        }
+        config = visual.get(phase)
+        if config is None:
+            self.calibration_camera_stage_banner.hide()
+            return
+        text_key, background, border = config
+        self.calibration_camera_stage_banner.setText(_t(text_key))
+        self.calibration_camera_stage_banner.setStyleSheet(
+            "QLabel#calibrationCameraStageBanner {"
+            f"background: {background}; color: white; border: 4px solid {border};"
+            "border-radius: 8px; font-size: 24px; font-weight: 800; padding: 12px;"
+            "}"
+        )
+        self._position_calibration_camera_overlays()
+        self.calibration_camera_stage_banner.show()
+        self.calibration_camera_stage_banner.raise_()
 
     def _show_calibration_camera_prompt(self) -> None:
         self.calibration_camera_prompt.setText(_t("debug_stage_camera_relax_prompt"))
@@ -1124,13 +1157,22 @@ class DebugWindow(QMainWindow):
             "font-size: 30px; font-weight: 800; padding: 20px;"
             "}"
         )
-        self._position_calibration_camera_prompt()
+        self._position_calibration_camera_overlays()
         self.calibration_camera_prompt.show()
         self.calibration_camera_prompt.raise_()
         duration_ms = max(1000, int(round(self.calibration_plan.transition_seconds * 1000.0)))
         self.calibration_camera_prompt_timer.start(duration_ms)
 
-    def _position_calibration_camera_prompt(self) -> None:
+    def _position_calibration_camera_overlays(self) -> None:
+        banner_width = min(max(420, self.video_label.width() - 40), 760)
+        banner_height = 108
+        banner_left = max(0, (self.video_label.width() - banner_width) // 2)
+        self.calibration_camera_stage_banner.setGeometry(
+            banner_left,
+            18,
+            banner_width,
+            banner_height,
+        )
         width = min(max(360, self.video_label.width() - 80), 680)
         height = 150
         left = max(0, (self.video_label.width() - width) // 2)
@@ -1139,7 +1181,7 @@ class DebugWindow(QMainWindow):
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
-        self._position_calibration_camera_prompt()
+        self._position_calibration_camera_overlays()
 
     @staticmethod
     def _calibration_reason_text(reason: Optional[str]) -> str:
