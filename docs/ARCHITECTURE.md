@@ -149,12 +149,16 @@ evaluated per feature through SEM/MDC rather than an unvalidated stricter whole-
 resulting `CalibrationProfile` only after the target manager locks one unambiguous track.
 `set_baseline_from_sample()` remains available only for explicit legacy debugging/self-test.
 
-The posture score uses scale-relative face/shoulder and torso/shoulder ratios, optional ear/shoulder position, shoulder
-asymmetry angle, and trunk lean. Runtime extraction repeats the feature-local landmark gate used during calibration:
+The posture score uses scale-relative face/shoulder and torso/shoulder ratios, optional ear/shoulder position,
+pelvis-relative shoulder asymmetry, and pelvis-relative trunk lean. Using the pelvis rather than the image axes keeps
+lateral posture evidence unchanged when the whole camera frame rolls. Runtime extraction repeats the feature-local
+landmark gate used during calibration:
 shoulder evidence may remain usable while low-confidence hips remove only torso/hip-dependent features, and decision
 confidence is computed from the features that actually reached scoring. Raw shoulder width and distance remain
-separate environment prompts. Turned-head, low-confidence, moving, ambiguous, and camera-drift observations produce
-`UNKNOWN`/`WATCH` and pause exposure instead of forcing a `BAD` result.
+separate environment prompts. Turned-head, low-confidence, moving, and ambiguous observations pause exposure. The
+current compatibility backend does not claim general camera-motion estimation: it explicitly abstains on supported
+numeric failure signatures, including correlated raw-scale jumps, shared shoulder-denominator drift, and
+same-direction eye/pelvis reference roll. These cases produce `UNKNOWN` and never force a `BAD` result.
 
 The preferred and relaxed anchors are both user-accepted postures. For each enabled feature, the calibrated interval
 between them is a personal normal band with deviation `0.0`; scoring begins only after an observation passes the

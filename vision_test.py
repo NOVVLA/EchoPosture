@@ -692,6 +692,21 @@ class HighPrecisionPostureAnalyzer(PostureAnalyzer):
                 activity_state=activity_state,
             )
 
+        if self._camera_roll_measurement_unstable(values, profile):
+            self._reset_post_calibration_validation_window()
+            exposure = self.exposure_accumulator.pause(sample.timestamp)
+            return PostureDecision(
+                "UNKNOWN",
+                "camera_roll_measurement_abstained",
+                True,
+                sustained_seconds=exposure.exposure_seconds,
+                posture_deviation=0.0,
+                exposure_seconds=exposure.exposure_seconds,
+                confidence=0.0,
+                calibration_quality=profile.calibration_quality,
+                activity_state=activity_state,
+            )
+
         if shared_scale_measurement_unstable(
             values,
             profile,
@@ -1171,6 +1186,52 @@ class HighPrecisionPostureAnalyzer(PostureAnalyzer):
             return False
         return abs((ipd_ratio + width_ratio) / 2.0 - 1.0) >= (
             self.posture_policy.camera_scale_jump_ratio
+        )
+
+    def _camera_roll_measurement_unstable(
+        self,
+        values: dict[str, float],
+        profile: CalibrationProfile,
+    ) -> bool:
+        """Abstain when independent horizontal references roll together.
+
+        Eye and pelvis lines belong to different detectors and body regions.
+        A same-direction shift in both is therefore strong evidence that the
+        image coordinate frame moved, not enough evidence to accuse the user
+        of a new lateral posture. The threshold is an adjustable product
+        reliability parameter, not an anatomical standard.
+        """
+
+        def axis_delta(current: float, reference: float) -> float:
+            return (float(current) - float(reference) + 90.0) % 180.0 - 90.0
+
+        deltas: list[float] = []
+        minimums: list[float] = []
+        for name in ("eye_line_angle_deg", "hip_line_angle_deg"):
+            current = values.get(name)
+            preferred = profile.preferred.get(name)
+            relaxed = profile.relaxed.get(name)
+            if current is None or preferred is None or relaxed is None:
+                return False
+            anchor_deltas = (
+                axis_delta(current, preferred.mean),
+                axis_delta(current, relaxed.mean),
+            )
+            deltas.append(min(anchor_deltas, key=abs))
+            minimums.append(
+                max(
+                    self.posture_policy.camera_roll_guard_deg,
+                    self.posture_policy.runtime_noise_std_multiplier * preferred.std,
+                    self.posture_policy.runtime_noise_std_multiplier * relaxed.std,
+                    preferred.mdc,
+                    relaxed.mdc,
+                )
+            )
+        return (
+            abs(deltas[0]) >= minimums[0]
+            and abs(deltas[1]) >= minimums[1]
+            and deltas[0] * deltas[1] > 0.0
+            and abs(deltas[0] - deltas[1]) <= self.posture_policy.camera_roll_agreement_deg
         )
 
     def _shoulder_asymmetry_score(

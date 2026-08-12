@@ -36,9 +36,12 @@ ENVIRONMENT_FEATURES = (
     "interpupillary_px",
     "shoulder_width_px",
     "signed_shoulder_diff_px",
+    "shoulder_line_angle_deg",
     "torso_height_px",
     "ear_shoulder_offset_px",
     "head_turn_ratio",
+    "eye_line_angle_deg",
+    "hip_line_angle_deg",
 )
 CALIBRATION_FEATURES = POSTURE_FEATURES + ENVIRONMENT_FEATURES
 
@@ -63,6 +66,22 @@ def _finite_float(value) -> Optional[float]:
     except (TypeError, ValueError):
         return None
     return numeric if math.isfinite(numeric) else None
+
+
+def _axis_angle_deg(first, second) -> float:
+    """Return an undirected line angle in the stable [-90, 90) range."""
+
+    angle = math.degrees(
+        math.atan2(
+            float(second[1]) - float(first[1]),
+            float(second[0]) - float(first[0]),
+        )
+    )
+    while angle >= 90.0:
+        angle -= 180.0
+    while angle < -90.0:
+        angle += 180.0
+    return angle
 
 
 @dataclass(frozen=True)
@@ -407,6 +426,10 @@ class PosturePolicy:
     cooldown_seconds: float = 60.0
     moving_threshold: float = 0.20
     camera_scale_jump_ratio: float = 0.18
+    # Eye and hip lines that roll together indicate a changed image frame.
+    # These are product reliability parameters, not anatomical standards.
+    camera_roll_guard_deg: float = 3.0
+    camera_roll_agreement_deg: float = 3.0
     within_group_corroboration: float = 0.12
     between_group_corroboration: float = 0.10
     # A single noisy landmark-derived feature cannot open an intervention
@@ -456,6 +479,10 @@ class PosturePolicy:
             raise ValueError("runtime_angle_noise_floor_deg cannot be negative")
         if not (0.0 <= self.shared_shoulder_scale_guard_ratio < 1.0):
             raise ValueError("shared_shoulder_scale_guard_ratio must be in [0, 1)")
+        if self.camera_roll_guard_deg < 0.0:
+            raise ValueError("camera_roll_guard_deg cannot be negative")
+        if self.camera_roll_agreement_deg < 0.0:
+            raise ValueError("camera_roll_agreement_deg cannot be negative")
         if not (0.0 <= self.minimum_group_support_deviation <= 1.0):
             raise ValueError("minimum_group_support_deviation must be in [0, 1]")
 
@@ -889,14 +916,38 @@ def measurement_values(sample) -> dict[str, float]:
     torso_height = _finite_float(getattr(sample, "torso_height_px", None))
     signed_shoulder = _finite_float(getattr(sample, "signed_shoulder_diff_px", None))
     trunk_lean = _finite_float(getattr(sample, "trunk_lean_deg", None))
+    left_eye = getattr(sample, "left_eye_center", None)
+    right_eye = getattr(sample, "right_eye_center", None)
+    if left_eye is not None and right_eye is not None:
+        values["eye_line_angle_deg"] = _axis_angle_deg(left_eye, right_eye)
+    left_hip = getattr(sample, "left_hip_point", None)
+    right_hip = getattr(sample, "right_hip_point", None)
+    hip_line_angle = None
+    if left_hip is not None and right_hip is not None:
+        hip_line_angle = _axis_angle_deg(left_hip, right_hip)
+        values["hip_line_angle_deg"] = hip_line_angle
     if shoulder_width is not None and shoulder_width > 0.0:
         if interpupillary is not None:
             values["face_shoulder_ratio"] = interpupillary / shoulder_width
         if torso_height is not None:
             values["torso_shoulder_ratio"] = torso_height / shoulder_width
         if signed_shoulder is not None:
-            values["shoulder_asymmetry_deg"] = math.degrees(
-                math.atan2(signed_shoulder, shoulder_width)
+            left_shoulder = getattr(sample, "left_shoulder_point", None)
+            right_shoulder = getattr(sample, "right_shoulder_point", None)
+            shoulder_angle = (
+                _axis_angle_deg(left_shoulder, right_shoulder)
+                if left_shoulder is not None and right_shoulder is not None
+                else math.degrees(math.atan2(-signed_shoulder, shoulder_width))
+            )
+            values["shoulder_line_angle_deg"] = shoulder_angle
+            # Shoulder asymmetry is meaningful relative to the user's pelvis,
+            # not the camera's horizontal axis. Subtracting the hip-line angle
+            # makes a rigid camera/person roll rotation invariant while still
+            # retaining a real shoulder-versus-pelvis imbalance.
+            values["shoulder_asymmetry_deg"] = (
+                shoulder_angle - hip_line_angle
+                if hip_line_angle is not None
+                else shoulder_angle
             )
 
         ear_offsets_px: list[float] = []
@@ -910,7 +961,20 @@ def measurement_values(sample) -> dict[str, float]:
             values["ear_shoulder_offset_px"] = ear_offset_px
             values["ear_shoulder_ratio"] = ear_offset_px / shoulder_width
     if trunk_lean is not None:
-        values["trunk_lean_deg"] = trunk_lean
+        # ``trunk_lean_deg`` is expressed against the image vertical. A rigid
+        # frame roll changes it by the hip-line angle, so subtracting that
+        # angle converts it to a pelvis-relative torso lean.
+        shoulder_center = getattr(sample, "shoulder_center", None)
+        hip_center = getattr(sample, "hip_center", None)
+        if shoulder_center is not None and hip_center is not None:
+            dx = float(shoulder_center[0]) - float(hip_center[0])
+            dy = float(hip_center[1]) - float(shoulder_center[1])
+            trunk_lean = math.degrees(math.atan2(dx, max(abs(dy), 1.0)))
+        values["trunk_lean_deg"] = (
+            trunk_lean - hip_line_angle
+            if hip_line_angle is not None
+            else trunk_lean
+        )
     return values
 
 
@@ -939,6 +1003,7 @@ def calibration_measurement_values(
         # landmark confidence is independently usable.
         values.pop("face_shoulder_ratio", None)
         values.pop("interpupillary_px", None)
+        values.pop("eye_line_angle_deg", None)
     shoulders_ok = _confidences_meet_floor(
         sample,
         ("left_shoulder_confidence", "right_shoulder_confidence"),
@@ -958,11 +1023,23 @@ def calibration_measurement_values(
             "shoulder_asymmetry_deg",
             "shoulder_width_px",
             "signed_shoulder_diff_px",
+            "shoulder_line_angle_deg",
         ):
             values.pop(name, None)
     if not hips_ok:
-        for name in ("torso_shoulder_ratio", "trunk_lean_deg", "torso_height_px"):
+        for name in (
+            "torso_shoulder_ratio",
+            "trunk_lean_deg",
+            "torso_height_px",
+            "hip_line_angle_deg",
+        ):
             values.pop(name, None)
+        # Preserve shoulder-only evidence without allowing low-confidence hip
+        # points to rotate it. A single shoulder feature still cannot open
+        # WATCH because the lateral group requires independent support.
+        shoulder_line = values.get("shoulder_line_angle_deg")
+        if shoulder_line is not None:
+            values["shoulder_asymmetry_deg"] = shoulder_line
     for side in ("left", "right"):
         if not _confidences_meet_floor(sample, (f"{side}_ear_confidence",), floor):
             values.pop("ear_shoulder_ratio", None)

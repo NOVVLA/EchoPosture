@@ -124,8 +124,10 @@ single-person, quality-gated samples in both calibration stages; it does not sil
   contamination cannot be averaged away.
 - Hip visibility gates only hip-dependent torso features. Clear shoulders and face measurements can still contribute
   to calibration when the hips are less visible.
-- Recalibrate after moving the camera, chair, or monitor. A detected camera drift pauses exposure and reports that
-  recalibration is required.
+- Recalibrate after moving or rotating the camera, chair, or monitor. The compatibility backend does not promise a
+  universal camera-motion detector; it pauses exposure for the supported numeric signatures it can verify, including
+  correlated scale changes, unstable shared shoulder scale, and eye/pelvis lines rolling together. Other camera
+  moves still require manual recalibration.
 - Remain naturally relaxed until the relaxed measurement completes. The app then briefly validates that the
   target-locked measurements still fall in the two-anchor personal normal range. This validation reports `UNKNOWN`
   and pauses exposure; staying in the relaxed calibration ending pose must not create a static-exposure episode.

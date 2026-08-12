@@ -188,6 +188,99 @@ def test_low_hip_visibility_does_not_reject_upper_body_evidence() -> None:
     print("test_low_hip_visibility_does_not_reject_upper_body_evidence OK")
 
 
+def test_lateral_features_are_invariant_to_rigid_frame_roll() -> None:
+    """Camera roll changes image axes, not shoulder-versus-pelvis posture."""
+
+    def rotate(point: tuple[float, float], degrees: float) -> tuple[float, float]:
+        radians = math.radians(degrees)
+        return (
+            point[0] * math.cos(radians) - point[1] * math.sin(radians),
+            point[0] * math.sin(radians) + point[1] * math.cos(radians),
+        )
+
+    def sample(
+        degrees: float,
+        scale: float = 1.0,
+        translation: tuple[float, float] = (0.0, 0.0),
+    ):
+        points = {
+            "left_eye_center": (-30.0, -140.0),
+            "right_eye_center": (30.0, -140.0),
+            "left_shoulder_point": (-100.0, -80.0),
+            "right_shoulder_point": (100.0, -60.0),
+            "left_hip_point": (-60.0, 80.0),
+            "right_hip_point": (60.0, 80.0),
+            "shoulder_center": (0.0, -70.0),
+            "hip_center": (0.0, 80.0),
+        }
+        rotated = {
+            name: (
+                rotate(point, degrees)[0] * scale + translation[0],
+                rotate(point, degrees)[1] * scale + translation[1],
+            )
+            for name, point in points.items()
+        }
+        signed_shoulder = (
+            rotated["left_shoulder_point"][1]
+            - rotated["right_shoulder_point"][1]
+        )
+        shoulder_width = math.dist(
+            rotated["left_shoulder_point"],
+            rotated["right_shoulder_point"],
+        )
+        shoulder_center = rotated["shoulder_center"]
+        hip_center = rotated["hip_center"]
+        trunk_lean = math.degrees(
+            math.atan2(
+                shoulder_center[0] - hip_center[0],
+                max(abs(hip_center[1] - shoulder_center[1]), 1.0),
+            )
+        )
+        return SimpleNamespace(
+            interpupillary_px=60.0,
+            shoulder_width_px=shoulder_width,
+            signed_shoulder_diff_px=signed_shoulder,
+            torso_height_px=math.dist(shoulder_center, hip_center),
+            trunk_lean_deg=trunk_lean,
+            head_turn_ratio=0.01,
+            **rotated,
+        )
+
+    upright = calibration_measurement_values(sample(0.0))
+    for degrees, scale, translation in (
+        (-25.0, 0.70, (45.0, -30.0)),
+        (-8.0, 1.30, (-20.0, 55.0)),
+        (3.0, 0.90, (0.0, 0.0)),
+        (12.0, 1.00, (100.0, 100.0)),
+        (30.0, 1.15, (-75.0, 20.0)),
+    ):
+        transformed = calibration_measurement_values(
+            sample(degrees, scale, translation)
+        )
+        assert math.isclose(
+            upright["shoulder_asymmetry_deg"],
+            transformed["shoulder_asymmetry_deg"],
+            abs_tol=1e-9,
+        )
+        assert math.isclose(
+            upright["trunk_lean_deg"],
+            transformed["trunk_lean_deg"],
+            abs_tol=1e-9,
+        )
+    rolled = calibration_measurement_values(sample(12.0))
+    assert math.isclose(
+        rolled["eye_line_angle_deg"] - upright["eye_line_angle_deg"],
+        12.0,
+        abs_tol=1e-9,
+    )
+    assert math.isclose(
+        rolled["hip_line_angle_deg"] - upright["hip_line_angle_deg"],
+        12.0,
+        abs_tol=1e-9,
+    )
+    print("test_lateral_features_are_invariant_to_rigid_frame_roll OK")
+
+
 def test_low_face_quality_preserves_independent_pose_evidence() -> None:
     sample = SimpleNamespace(
         face_count=1,
@@ -682,6 +775,7 @@ if __name__ == "__main__":
     test_environment_only_values_do_not_count_as_posture_samples()
     test_zero_person_dropout_abstains_but_multiple_people_contaminate()
     test_low_hip_visibility_does_not_reject_upper_body_evidence()
+    test_lateral_features_are_invariant_to_rigid_frame_roll()
     test_low_face_quality_preserves_independent_pose_evidence()
     test_feature_quality_uses_only_scored_landmarks()
     test_low_ear_quality_removes_raw_and_normalized_ear_evidence()

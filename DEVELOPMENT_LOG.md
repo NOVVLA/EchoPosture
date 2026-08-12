@@ -1,5 +1,51 @@
 # DEVELOPMENT_LOG（Development Log，开发日志）
 
+## 2026-08-13 - Make lateral posture evidence invariant to camera roll
+
+- Source: completion audit of the unchanged-upright-posture false alert after the preceding shared-shoulder-scale
+  fixes. The audit enumerated every production writer of `camera_drift` and found that no current backend ever sets
+  it to true, so the existing camera-drift abstention branch did not protect the live pipeline.
+- Git: commit `pending`, branch `codex/pr2-phase1-calibration-safety`, tag `none`; delivery target remains the existing
+  PR `#23`, with no new PR.
+- Reproduction: a deterministic rigid transform rotated the same eye, ear, shoulder, hip, and torso geometry by
+  eight degrees without changing any body-segment length. Before this fix the image-axis shoulder and trunk angles
+  corroborated each other, entered `WATCH` immediately, and reached `BAD` after 12 equivalent seconds. This is a
+  coordinate-frame failure, not evidence that the user's posture changed.
+- Fix: when hip landmarks pass their own quality gate, shoulder asymmetry is now the shoulder-line angle relative to
+  the pelvis line, and trunk lean is the torso line relative to that same pelvis reference. These measurements remain
+  unchanged under a rigid image/camera roll. With no usable hips, the prior shoulder-only fallback is retained as
+  diagnostic evidence and cannot open `WATCH` alone.
+- Abstention: calibration records numeric eye-line, shoulder-line, and hip-line angles. If the independent eye and
+  pelvis references both move in the same direction beyond their calibrated repeatability ranges and remain within
+  three degrees of each other, the runtime returns `UNKNOWN`/`camera_roll_measurement_abstained` and pauses exposure.
+  The 3-degree floor/agreement are adjustable measurement-reliability product parameters, not anatomical or medical
+  standards.
+- Negative evidence: the unchanged skeleton remained free of `WATCH`, `BAD`, and `CRITICAL` under translation,
+  uniform scale, rigid roll, and their combined transform. Translation remained `GOOD`; scale and roll explicitly
+  abstained with zero exposure. A 30-second rigid-roll sequence accumulated zero exposure.
+- Positive evidence: two geometry-consistent posture sequences still intervene. A real forward change retains the
+  existing `WATCH` to `BAD` behavior, and a pelvis-relative lateral change from calibrated 0/5-degree shoulder and
+  0/7-degree torso anchors to 18/24 degrees also reaches `BAD` after the configured equivalent-exposure interval.
+- Verification from the repository root:
+  - Bundled Python `py_compile` passed for the changed posture, analyzer, UI, localization, and test modules.
+  - `ruff check .` passed.
+  - `test_posture_science.py`, `test_feature_toggles.py`, `test_vision_worker.py`, `test_vision_tracking.py`,
+    `test_startup_guards.py`, `test_debug_ui.py`, and `test_vision_replay.py` all passed sequentially.
+  - `git diff --check` passed. Debug UI emitted only the existing bundled Qt font-directory warning.
+- UI evidence: the same `test_debug_ui.py` run revalidated the green `1/2` preferred stage, orange no-sample
+  transition, purple `2/2` silent relaxed stage, large camera banner, stage rail, and post-calibration validation
+  state. The frozen `ui/index.html` reference is unchanged.
+- Documentation correction: `docs/ARCHITECTURE.md` now names the pelvis-relative lateral features and supported
+  numeric camera-failure signatures. `docs/TROUBLESHOOTING.md` no longer implies that the compatibility backend has a
+  universal camera-motion detector; unsupported camera moves still require manual recalibration.
+- Privacy and artifacts: all new evidence is pure numeric/synthetic geometry. No frame, image, video, face crop,
+  identity template/vector, or user biometric data was created or saved.
+- Gaps: the current camera view still has no detectable person, so a same-person live-camera dual calibration and
+  multi-minute unchanged-posture hold remains an external evidence gate. Cross-device reliability, consented
+  recording, user feedback, external validity, and medical validation remain unclaimed.
+- Conclusion: the reproducible camera-roll false-alert path is fixed and guarded by negative and positive numerical
+  evidence. Ready to update the existing PR; physical-camera incident closure still requires a live user retest.
+
 ## 2026-08-13 - Require raw forward evidence before ratio-based exposure
 
 - Source: continued investigation of the field report that an unchanged upright posture entered `WATCH` and later

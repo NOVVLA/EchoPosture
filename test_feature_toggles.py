@@ -642,6 +642,188 @@ def test_real_forward_change_with_stable_shoulder_scale_still_alerts():
     print("test_real_forward_change_with_stable_shoulder_scale_still_alerts OK")
 
 
+def test_rigid_frame_roll_never_becomes_lateral_exposure():
+    """A rolled camera/image frame cannot accuse an unchanged body posture."""
+
+    def rotate(point: tuple[float, float], degrees: float) -> tuple[float, float]:
+        center_x, center_y = 320.0, 260.0
+        radians = math.radians(degrees)
+        x = point[0] - center_x
+        y = point[1] - center_y
+        return (
+            center_x + x * math.cos(radians) - y * math.sin(radians),
+            center_y + x * math.sin(radians) + y * math.cos(radians),
+        )
+
+    def rolled_sample(timestamp: datetime, degrees: float, relaxed: float) -> VisionSample:
+        base = scientific_sample(timestamp, relaxed)
+        points = {
+            name: rotate(getattr(base, name), degrees)
+            for name in (
+                "left_eye_center",
+                "right_eye_center",
+                "face_nose_point",
+                "nose_point",
+                "left_ear_point",
+                "right_ear_point",
+                "left_shoulder_point",
+                "right_shoulder_point",
+                "left_hip_point",
+                "right_hip_point",
+                "shoulder_center",
+                "hip_center",
+            )
+        }
+        signed_shoulder = points["left_shoulder_point"][1] - points["right_shoulder_point"][1]
+        shoulder_width = math.dist(points["left_shoulder_point"], points["right_shoulder_point"])
+        shoulder_center = points["shoulder_center"]
+        hip_center = points["hip_center"]
+        trunk_lean = math.degrees(
+            math.atan2(
+                shoulder_center[0] - hip_center[0],
+                max(abs(hip_center[1] - shoulder_center[1]), 1.0),
+            )
+        )
+        return replace(
+            base,
+            **points,
+            shoulder_diff_px=abs(signed_shoulder),
+            signed_shoulder_diff_px=signed_shoulder,
+            shoulder_width_px=shoulder_width,
+            trunk_lean_deg=trunk_lean,
+            torso_height_px=math.dist(shoulder_center, hip_center),
+        )
+
+    accumulator = CalibrationAccumulator(CalibrationPlan())
+    for index in range(5):
+        preferred = rolled_sample(T0 + timedelta(seconds=index), 0.0, 0.0)
+        accumulator.add(index, measurement_values(preferred))
+    accumulator.begin_transition(5.0)
+    for index in range(5):
+        relaxed = rolled_sample(T0 + timedelta(seconds=6 + index), 0.0, 1.0)
+        accumulator.add(6.0 + index, measurement_values(relaxed))
+
+    analyzer = HighPrecisionPostureAnalyzer(
+        auto_calibrate=False,
+        calibrated_distance_cm=60.0,
+        require_dual_anchor=True,
+    )
+    assert analyzer.set_calibration_profile(accumulator.finalize(), 60.0)
+    analyzer.evaluate(rolled_sample(T0, 0.0, 1.0))
+    validated = analyzer.evaluate(rolled_sample(T0 + timedelta(seconds=2.1), 0.0, 1.0))
+    assert validated.reason == "post_calibration_normal_range_validated", validated
+
+    decisions = [
+        analyzer.evaluate(
+            rolled_sample(T0 + timedelta(seconds=3 + index), 8.0, 1.0)
+        )
+        for index in range(1, 31)
+    ]
+    assert all(decision.status not in {"WATCH", "BAD", "CRITICAL"} for decision in decisions)
+    assert all(decision.exposure_seconds == 0.0 for decision in decisions)
+    assert any(
+        decision.reason == "camera_roll_measurement_abstained"
+        for decision in decisions
+    )
+
+    # A real shoulder-versus-pelvis imbalance changes only the shoulder line;
+    # the pelvis and eyes remain stable, so the camera-roll guard must not fire.
+    genuine = rolled_sample(T0 + timedelta(seconds=40), 0.0, 1.0)
+    moved_right_shoulder = (
+        genuine.right_shoulder_point[0],
+        genuine.right_shoulder_point[1] + 40.0,
+    )
+    signed_shoulder = genuine.left_shoulder_point[1] - moved_right_shoulder[1]
+    genuine = replace(
+        genuine,
+        right_shoulder_point=moved_right_shoulder,
+        shoulder_width_px=math.dist(genuine.left_shoulder_point, moved_right_shoulder),
+        shoulder_diff_px=abs(signed_shoulder),
+        signed_shoulder_diff_px=signed_shoulder,
+    )
+    decision = analyzer.evaluate(genuine)
+    assert decision.reason != "camera_roll_measurement_abstained", decision
+    print("test_rigid_frame_roll_never_becomes_lateral_exposure OK")
+
+
+def test_real_pelvis_relative_lateral_change_still_alerts():
+    """Rotation invariance must retain a real torso/shoulder imbalance."""
+
+    def lateral_sample(
+        timestamp: datetime,
+        shoulder_degrees: float,
+        torso_degrees: float,
+    ) -> VisionSample:
+        sample = scientific_sample(timestamp, 1.0)
+        hip_center = sample.hip_center
+        assert hip_center is not None
+        torso_length = math.dist(sample.shoulder_center, hip_center)
+        torso_angle = math.radians(torso_degrees)
+        shoulder_center = (
+            hip_center[0] + torso_length * math.sin(torso_angle),
+            hip_center[1] - torso_length * math.cos(torso_angle),
+        )
+        shoulder_width = 200.0
+        shoulder_angle = math.radians(shoulder_degrees)
+        half_dx = shoulder_width / 2.0 * math.cos(shoulder_angle)
+        half_dy = shoulder_width / 2.0 * math.sin(shoulder_angle)
+        left_shoulder = (
+            shoulder_center[0] - half_dx,
+            shoulder_center[1] - half_dy,
+        )
+        right_shoulder = (
+            shoulder_center[0] + half_dx,
+            shoulder_center[1] + half_dy,
+        )
+        signed_shoulder = left_shoulder[1] - right_shoulder[1]
+        return replace(
+            sample,
+            left_shoulder_point=left_shoulder,
+            right_shoulder_point=right_shoulder,
+            shoulder_center=shoulder_center,
+            shoulder_width_px=math.dist(left_shoulder, right_shoulder),
+            shoulder_diff_px=abs(signed_shoulder),
+            signed_shoulder_diff_px=signed_shoulder,
+            trunk_lean_deg=torso_degrees,
+            torso_height_px=torso_length,
+        )
+
+    accumulator = CalibrationAccumulator(CalibrationPlan())
+    for index in range(5):
+        preferred = lateral_sample(T0 + timedelta(seconds=index), 0.0, 0.0)
+        accumulator.add(index, measurement_values(preferred))
+    accumulator.begin_transition(5.0)
+    for index in range(5):
+        relaxed = lateral_sample(T0 + timedelta(seconds=6 + index), 5.0, 7.0)
+        accumulator.add(6.0 + index, measurement_values(relaxed))
+    analyzer = HighPrecisionPostureAnalyzer(
+        auto_calibrate=False,
+        calibrated_distance_cm=60.0,
+        require_dual_anchor=True,
+    )
+    profile = accumulator.finalize()
+    assert "shoulder_asymmetry_deg" in profile.enabled_features
+    assert "trunk_lean_deg" in profile.enabled_features
+    assert analyzer.set_calibration_profile(profile, 60.0)
+    analyzer.evaluate(lateral_sample(T0, 5.0, 7.0))
+    validated = analyzer.evaluate(
+        lateral_sample(T0 + timedelta(seconds=2.1), 5.0, 7.0)
+    )
+    assert validated.reason == "post_calibration_normal_range_validated", validated
+
+    decisions = [
+        analyzer.evaluate(
+            lateral_sample(T0 + timedelta(seconds=3 + seconds), 18.0, 24.0)
+        )
+        for seconds in range(1, 17)
+    ]
+    assert decisions[0].reason != "camera_roll_measurement_abstained", decisions[0]
+    assert decisions[0].status == "WATCH", decisions[0]
+    assert decisions[-1].status == "BAD", decisions[-1]
+    assert decisions[-1].exposure_seconds >= analyzer.posture_policy.alert_exposure_seconds
+    print("test_real_pelvis_relative_lateral_change_still_alerts OK")
+
+
 if __name__ == "__main__":
     test_defaults_all_enabled()
     test_auto_calibration_requires_complete_single_person_sample()
@@ -659,4 +841,6 @@ if __name__ == "__main__":
     test_unchanged_posture_shared_shoulder_width_drift_never_accumulates_exposure()
     test_gradual_shared_scale_drift_abstains_before_watch_boundary()
     test_real_forward_change_with_stable_shoulder_scale_still_alerts()
+    test_rigid_frame_roll_never_becomes_lateral_exposure()
+    test_real_pelvis_relative_lateral_change_still_alerts()
     print("ALL TESTS PASSED")

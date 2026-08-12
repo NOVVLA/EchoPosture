@@ -161,6 +161,8 @@ REASON_TEXT: Dict[str, str] = {
     "dual_anchor_calibration_collecting": "reason.dual_anchor_calibration_collecting",
     "activity_moving_exposure_paused": "reason.activity_moving_exposure_paused",
     "camera_drift_recalibration_required": "reason.camera_drift_recalibration_required",
+    "camera_scale_jump_measurement_abstained": "reason.camera_scale_jump_measurement_abstained",
+    "camera_roll_measurement_abstained": "reason.camera_roll_measurement_abstained",
     "head_turn_measurement_abstained": "reason.head_turn_measurement_abstained",
     "shared_shoulder_scale_measurement_abstained": "reason.shared_shoulder_scale_measurement_abstained",
     "posture_features_unavailable": "reason.posture_features_unavailable",
