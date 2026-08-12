@@ -313,6 +313,27 @@ def test_mdc_normalization_and_group_deduplication() -> None:
     print("test_mdc_normalization_and_group_deduplication OK")
 
 
+def test_single_feature_excursion_is_inconclusive_for_group_scoring() -> None:
+    profile = build_profile()
+    values = anchor_values(0.0)
+    preferred = profile.preferred["face_shoulder_ratio"]
+    relaxed = profile.relaxed["face_shoulder_ratio"]
+    noise = profile.runtime_noise_floors["face_shoulder_ratio"]
+    direction = 1.0 if relaxed.mean >= preferred.mean else -1.0
+    values["face_shoulder_ratio"] = preferred.mean + direction * (
+        abs(relaxed.mean - preferred.mean) + noise * 2.0
+    )
+    # Remove every independent feature from both physical groups except the
+    # one drifting ratio. It remains useful diagnostic evidence but cannot
+    # open the intervention path by itself.
+    values = {"face_shoulder_ratio": values["face_shoulder_ratio"]}
+    score = score_posture_deviation(values, profile)
+    assert score.raw_deviation > 0.0
+    assert score.deviation == 0.0
+    assert not score.corroborated
+    print("test_single_feature_excursion_is_inconclusive_for_group_scoring OK")
+
+
 def test_runtime_noise_band_uses_single_observation_repeatability() -> None:
     preferred = FeatureStatistics.from_values([0.98, 0.99, 1.00, 1.01, 1.02] * 20)
     relaxed = FeatureStatistics.from_values([1.18, 1.19, 1.20, 1.21, 1.22] * 20)
@@ -490,6 +511,7 @@ if __name__ == "__main__":
     test_stage_sample_shortage_fails()
     test_explicit_phase_timing_and_bounded_extension()
     test_mdc_normalization_and_group_deduplication()
+    test_single_feature_excursion_is_inconclusive_for_group_scoring()
     test_runtime_noise_band_uses_single_observation_repeatability()
     test_marginal_anchor_signal_is_disabled_by_runtime_noise()
     test_near_identical_smoothed_anchors_do_not_create_false_signal()

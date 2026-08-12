@@ -318,6 +318,50 @@ def test_runtime_local_hip_quality_abstains_torso_features():
     print("test_runtime_local_hip_quality_abstains_torso_features OK")
 
 
+def test_single_feature_runtime_drift_does_not_open_watch_or_exposure():
+    analyzer = scientific_analyzer()
+    sample = scientific_sample(T0)
+    values = measurement_values(sample)
+    feature = "face_shoulder_ratio"
+    preferred = analyzer.calibration_profile.preferred[feature]
+    relaxed = analyzer.calibration_profile.relaxed[feature]
+    noise = analyzer.calibration_profile.runtime_noise_floors[feature]
+    direction = 1.0 if relaxed.mean >= preferred.mean else -1.0
+    drifted = replace(
+        sample,
+        interpupillary_px=(
+            preferred.mean + direction * (abs(relaxed.mean - preferred.mean) + noise * 2.0)
+        ) * sample.shoulder_width_px,
+    )
+    first = analyzer.evaluate(drifted)
+    assert first.status == "UNKNOWN", first
+    assert first.reason == "posture_evidence_inconclusive"
+    assert first.exposure_seconds == 0.0
+    later = analyzer.evaluate(replace(drifted, timestamp=T0 + timedelta(seconds=300)))
+    assert later.status == "UNKNOWN", later
+    assert later.exposure_seconds == 0.0
+    print("test_single_feature_runtime_drift_does_not_open_watch_or_exposure OK")
+
+
+def test_head_turn_abstains_without_static_exposure():
+    analyzer = scientific_analyzer()
+    upright = scientific_sample(T0, 0.0)
+    assert analyzer.evaluate(upright).status == "GOOD"
+    turned = replace(
+        scientific_sample(T0 + timedelta(seconds=10), 0.0),
+        head_turn_ratio=0.50,
+    )
+    decision = analyzer.evaluate(turned)
+    assert decision.status == "WATCH", decision
+    assert decision.reason == "head_turn_measurement_abstained"
+    assert decision.posture_deviation == 0.0
+    assert decision.exposure_seconds == 0.0
+    recovered = analyzer.evaluate(scientific_sample(T0 + timedelta(seconds=11), 0.0))
+    assert recovered.status == "GOOD", recovered
+    assert recovered.exposure_seconds == 0.0
+    print("test_head_turn_abstains_without_static_exposure OK")
+
+
 if __name__ == "__main__":
     test_defaults_all_enabled()
     test_auto_calibration_requires_complete_single_person_sample()
@@ -327,4 +371,6 @@ if __name__ == "__main__":
     test_identity_toggle()
     test_scientific_continuous_scoring_exposure_and_abstention()
     test_runtime_local_hip_quality_abstains_torso_features()
+    test_single_feature_runtime_drift_does_not_open_watch_or_exposure()
+    test_head_turn_abstains_without_static_exposure()
     print("ALL TESTS PASSED")

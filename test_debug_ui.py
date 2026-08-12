@@ -154,9 +154,12 @@ def test_debug_panel_runs_full_dual_anchor_calibration() -> None:
         window.calibration_camera_prompt_timer.stop()
         window.calibration_camera_prompt.hide()
         assert window.calibration_stage_badge.text() == "2/2"
-        assert window.calibration_stage_progress.value() == 80
+        assert window.calibration_stage_progress.minimum() == 0
+        assert window.calibration_stage_progress.maximum() == 0
         assert "阶段 2/2" in window.calibration_stage_title.text()
-        assert "5s" in window.calibration_stage_title.text()
+        # Relaxed collection is silent: the persistent banner identifies the
+        # active stage without presenting a second user-facing countdown.
+        assert "5s" not in window.calibration_stage_title.text()
         assert "保持自然放松" in window.calibration_stage_detail.text()
         assert not window.calibration_camera_stage_banner.isHidden()
         assert "阶段 2/2" in window.calibration_camera_stage_banner.text()

@@ -694,6 +694,25 @@ class HighPrecisionPostureAnalyzer(PostureAnalyzer):
                 activity_state=activity_state,
             )
 
+        if score.raw_deviation > 0.0 and not score.corroborated:
+            # One drifting ratio/angle is diagnostic evidence, not enough
+            # independent posture evidence to enter WATCH or accumulate
+            # exposure. Abstain for this frame and make that uncertainty
+            # visible to callers instead of silently converting it to GOOD.
+            exposure = self.exposure_accumulator.pause(sample.timestamp)
+            return PostureDecision(
+                "UNKNOWN",
+                "posture_evidence_inconclusive",
+                True,
+                risk_score=score.raw_deviation * 100.0,
+                sustained_seconds=exposure.exposure_seconds,
+                posture_deviation=0.0,
+                exposure_seconds=exposure.exposure_seconds,
+                confidence=confidence,
+                calibration_quality=profile.calibration_quality,
+                activity_state=activity_state,
+            )
+
         exposure = self.exposure_accumulator.update(sample.timestamp, score.deviation)
         reasons = [
             f"posture_deviation={score.deviation:.2f}",

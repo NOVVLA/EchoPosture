@@ -163,6 +163,7 @@ REASON_TEXT: Dict[str, str] = {
     "camera_drift_recalibration_required": "reason.camera_drift_recalibration_required",
     "head_turn_measurement_abstained": "reason.head_turn_measurement_abstained",
     "posture_features_unavailable": "reason.posture_features_unavailable",
+    "posture_evidence_inconclusive": "reason.posture_evidence_inconclusive",
     "measurement_quality_low": "reason.measurement_quality_low",
     "within_personal_posture_range": "reason.within_personal_posture_range",
     "posture_deviation": "reason.posture_deviation",
@@ -1022,9 +1023,11 @@ class DebugWindow(QMainWindow):
                 (self.current_sample.timestamp - accumulator.started_at).total_seconds(),
             )
             return max(0, int(math.ceil(self.calibration_plan.preferred_seconds - elapsed)))
+        # Relaxed collection is deliberately silent. The persistent stage
+        # banner explains that measurement is running without presenting a
+        # second countdown users might mistake for another action.
         if phase == "relaxed":
-            elapsed = accumulator.relaxed_elapsed(self.current_sample.timestamp)
-            return max(0, int(math.ceil(self.calibration_plan.relaxed_seconds - elapsed)))
+            return None
         return None
 
     def _set_calibration_stage_visual(self, phase: str) -> None:
@@ -1099,6 +1102,10 @@ class DebugWindow(QMainWindow):
         self.calibration_stage_card.setProperty("calibrationPhase", phase)
         self.calibration_stage_badge.setText(_t(badge_key))
         self.calibration_stage_progress.setValue(progress)
+        if phase == "relaxed":
+            self.calibration_stage_progress.setRange(0, 0)
+        else:
+            self.calibration_stage_progress.setRange(0, 100)
         title = _t(title_key)
         remaining = self._calibration_stage_seconds_remaining(phase)
         if remaining is not None:
@@ -1141,7 +1148,7 @@ class DebugWindow(QMainWindow):
         self.calibration_camera_stage_banner.setStyleSheet(
             "QLabel#calibrationCameraStageBanner {"
             f"background: {background}; color: white; border: 4px solid {border};"
-            "border-radius: 8px; font-size: 24px; font-weight: 800; padding: 12px;"
+            "border-radius: 8px; font-size: 28px; font-weight: 800; padding: 16px;"
             "}"
         )
         self._position_calibration_camera_overlays()
@@ -1165,7 +1172,7 @@ class DebugWindow(QMainWindow):
 
     def _position_calibration_camera_overlays(self) -> None:
         banner_width = min(max(420, self.video_label.width() - 40), 760)
-        banner_height = 108
+        banner_height = 132
         banner_left = max(0, (self.video_label.width() - banner_width) // 2)
         self.calibration_camera_stage_banner.setGeometry(
             banner_left,

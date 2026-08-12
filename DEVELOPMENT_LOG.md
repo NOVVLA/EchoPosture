@@ -1,5 +1,16 @@
 # DEVELOPMENT_LOG（Development Log，开发日志）
 
+## 2026-08-13 - Harden normal-posture exposure and clarify Debug UI stages
+
+- Source: follow-up reports that a fixed comfortable posture could enter `WATCH` and later accumulate static exposure, and that the two Debug UI calibration stages were visually too easy to confuse.
+- Git: local fix commit recorded on branch `codex/pr2-phase1-calibration-safety`; remote push is pending transport recovery. Existing PR `#23` remains the only PR.
+- Root cause: a single noisy runtime ratio or angle could open a posture group even when the other independent features stayed stable. The scientific profile also needed an explicit abstention state for that incomplete evidence.
+- Scope: posture groups now require a second independent feature to reach the product support floor before contributing to posture deviation. A lone excursion is reported as `UNKNOWN` with `posture_evidence_inconclusive`, pauses exposure, and cannot enter `BAD` or `CRITICAL`. Head-turn and moving states remain visible as `WATCH`/observation states but pause exposure and carry zero posture deviation.
+- Debug UI: preferred collection retains the full visible 5-second countdown; the approximately 1-second transition explicitly prompts relaxation; relaxed collection runs for its approximately 5-second bounded window with a persistent purple stage banner and indeterminate progress bar, without a second countdown. Stage title, badge, colors, and camera banner are distinct for preferred, transition, relaxed, active, and failed states.
+- Verification: `runtime\\python311\\python.exe test_posture_science.py`, `test_feature_toggles.py`, `test_vision_worker.py`, `test_vision_tracking.py`, `test_startup_guards.py`, `test_debug_ui.py`, `test_vision_replay.py`, bundled `py_compile`, `ruff check` on modified files, and `git diff --check` all passed. Debug UI emitted only the existing bundled Qt missing-font-directory warning.
+- Gaps: bundled MediaPipe is missing `face_landmark_front_cpu.binarypb`, so real-camera calibration, packaged font fidelity, cross-device SEM/MDC, consented recording, and external-validity evidence remain unverified. Synthetic tests do not replace those gates.
+- Conclusion: deterministic protections and stage affordances are ready to deliver through PR `#23`; only the named tracked files for this fix will be staged.
+
 ## 2026-08-12 - Correct dual-anchor normal-band semantics and calibration guidance
 
 - Source: user-reported production behavior: unchanged posture entered `WATCH` after dual-anchor calibration and later accumulated static exposure; Debug UI also made the two collection stages too easy to confuse.

@@ -391,6 +391,11 @@ class PosturePolicy:
     camera_scale_jump_ratio: float = 0.18
     within_group_corroboration: float = 0.12
     between_group_corroboration: float = 0.10
+    # A single noisy landmark-derived feature cannot open an intervention
+    # episode. At least one independent feature in the same physical group
+    # must provide meaningful support. This is a product reliability rule,
+    # not a physiological standard.
+    minimum_group_support_deviation: float = 0.25
     # Runtime decisions operate on individual observations, so their noise
     # band is based on within-anchor standard deviation rather than SEM alone.
     # These are adjustable reliability/product parameters, not physiology.
@@ -422,6 +427,8 @@ class PosturePolicy:
             raise ValueError("runtime_ratio_noise_floor cannot be negative")
         if self.runtime_angle_noise_floor_deg < 0.0:
             raise ValueError("runtime_angle_noise_floor_deg cannot be negative")
+        if not (0.0 <= self.minimum_group_support_deviation <= 1.0):
+            raise ValueError("minimum_group_support_deviation must be in [0, 1]")
 
 
 @dataclass(frozen=True)
@@ -443,6 +450,8 @@ class PostureScore:
     lateral_deviation: float
     features: tuple[FeatureDeviation, ...]
     coverage: float
+    corroborated: bool = False
+    raw_deviation: float = 0.0
 
 
 def normalized_feature_deviation(
@@ -544,13 +553,22 @@ def _runtime_noise_floor_for_feature(
     )
 
 
-def _group_score(values: Sequence[float], corroboration: float) -> float:
+def _group_score(
+    values: Sequence[float],
+    corroboration: float,
+    minimum_support: float,
+) -> tuple[float, bool]:
     ordered = sorted((max(0.0, value) for value in values), reverse=True)
     if not ordered:
-        return 0.0
+        return 0.0, False
     primary = ordered[0]
     support = ordered[1] if len(ordered) > 1 else 0.0
-    return min(1.0, primary + min(corroboration, support * corroboration))
+    # A lone feature is diagnostic evidence only. Requiring support from a
+    # second feature prevents one noisy ratio/angle from opening WATCH or
+    # accumulating static exposure for an otherwise stable posture.
+    if support < minimum_support:
+        return 0.0, False
+    return min(1.0, primary + min(corroboration, support * corroboration)), True
 
 
 def score_posture_deviation(
@@ -578,16 +596,35 @@ def score_posture_deviation(
         )
 
     by_name = {result.feature: result.deviation for result in feature_results}
-    forward = _group_score(
+    forward, forward_corroborated = _group_score(
         [by_name[name] for name in FORWARD_FEATURES if name in by_name],
         policy.within_group_corroboration,
+        policy.minimum_group_support_deviation,
     )
-    lateral = _group_score(
+    lateral, lateral_corroborated = _group_score(
         [by_name[name] for name in LATERAL_FEATURES if name in by_name],
         policy.within_group_corroboration,
+        policy.minimum_group_support_deviation,
     )
     groups = sorted((forward, lateral), reverse=True)
-    overall = min(1.0, groups[0] + min(policy.between_group_corroboration, groups[1] * policy.between_group_corroboration))
+    overall = min(
+        1.0,
+        groups[0]
+        + min(policy.between_group_corroboration, groups[1] * policy.between_group_corroboration),
+    )
+    raw_forward = max(
+        (by_name[name] for name in FORWARD_FEATURES if name in by_name),
+        default=0.0,
+    )
+    raw_lateral = max(
+        (by_name[name] for name in LATERAL_FEATURES if name in by_name),
+        default=0.0,
+    )
+    raw_deviation = min(
+        1.0,
+        max(raw_forward, raw_lateral)
+        + min(policy.between_group_corroboration, min(raw_forward, raw_lateral) * policy.between_group_corroboration),
+    )
     coverage = len(feature_results) / max(1, len(profile.enabled_features))
     return PostureScore(
         deviation=overall,
@@ -595,6 +632,8 @@ def score_posture_deviation(
         lateral_deviation=lateral,
         features=tuple(feature_results),
         coverage=coverage,
+        corroborated=forward_corroborated or lateral_corroborated,
+        raw_deviation=raw_deviation,
     )
 
 
