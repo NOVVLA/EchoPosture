@@ -32,6 +32,9 @@ class TargetManagerConfig:
     max_center_distance_ratio: float = 1.35
     association_ambiguity_margin: float = 0.08
     moving_speed_ratio_per_second: float = 0.20
+    # Activity classification is intentionally slower than association
+    # prediction so detector jitter does not become user movement.
+    motion_smoothing_seconds: float = 0.20
 
 
 @dataclass(frozen=True)
@@ -65,6 +68,7 @@ class _Track:
     last_seen_at: Timestamp
     previous_center: Tuple[float, float]
     velocity: Tuple[float, float] = (0.0, 0.0)
+    motion_velocity: Tuple[float, float] = (0.0, 0.0)
     missed_frames: int = 0
     seen_frames: int = 1
     last_match_score: Optional[float] = None
@@ -308,7 +312,7 @@ class TargetManager:
             track.observation.bbox_xyxy[2] - track.observation.bbox_xyxy[0],
             track.observation.bbox_xyxy[3] - track.observation.bbox_xyxy[1],
         )
-        return math.hypot(*track.velocity) / max(1.0, diagonal)
+        return math.hypot(*track.motion_velocity) / max(1.0, diagonal)
 
     def _timestamp(self, observations: Tuple[PersonObservation, ...]) -> Timestamp:
         if observations:
@@ -448,12 +452,25 @@ class TargetManager:
         elapsed_seconds = _elapsed_seconds(observation.timestamp, track.last_seen_at)
         track.previous_center = old_center
         if elapsed_seconds > 0:
-            track.velocity = (
+            instantaneous_velocity = (
                 (new_center[0] - old_center[0]) / elapsed_seconds,
                 (new_center[1] - old_center[1]) / elapsed_seconds,
             )
         else:
-            track.velocity = (new_center[0] - old_center[0], new_center[1] - old_center[1])
+            instantaneous_velocity = (new_center[0] - old_center[0], new_center[1] - old_center[1])
+        # Keep raw velocity for association prediction, but low-pass the
+        # activity signal.  At camera frame rates, one-pixel landmark/bbox
+        # jitter can imply a very large instantaneous pixels-per-second value.
+        track.velocity = instantaneous_velocity
+        if elapsed_seconds > 0:
+            smoothing_window = max(0.01, self.config.motion_smoothing_seconds)
+            alpha = min(1.0, elapsed_seconds / smoothing_window)
+            track.motion_velocity = tuple(
+                previous + alpha * (current - previous)
+                for previous, current in zip(track.motion_velocity, instantaneous_velocity)
+            )
+        else:
+            track.motion_velocity = instantaneous_velocity
         track.observation = observation
         track.last_seen_at = observation.timestamp
         track.missed_frames = 0

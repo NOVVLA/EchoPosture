@@ -1,5 +1,14 @@
 # DEVELOPMENT_LOG（Development Log，开发日志）
 
+## 2026-08-13 - Filter detector jitter from production activity gating
+
+- Source: production-path replay reproduced a serious false-positive path: an unchanged upright posture became `WATCH` because 72 FPS detector/landmark jitter was classified as `MOVING`.
+- Root cause: `TargetManager` used instantaneous frame-to-frame bbox velocity for both association prediction and activity classification. About one pixel of ordinary jitter therefore became a high normalized pixels-per-second value.
+- Scope: association keeps the raw velocity predictor, while activity classification now uses a configurable 0.20-second low-pass velocity (`motion_smoothing_seconds`). Genuine sustained translation remains above the existing `MOVING` product threshold.
+- Debug UI: the camera-visible calibration banner is now nearly full-width with stronger border, font, and phase-specific accessible name; the preferred and relaxed stages remain a single dual-anchor flow with only the preferred countdown.
+- Verification: `runtime\\python311\\python.exe test_vision_tracking.py`, `test_feature_toggles.py`, `test_debug_ui.py`, `test_vision_replay.py`, and modified-file `py_compile` passed. A 2,000-frame production-chain replay at 72 FPS with fixed-seed one-pixel Gaussian landmark jitter produced `GOOD=2000`, maximum normalized motion `0.0709`, posture deviation `0`, and exposure `0`.
+- Gaps: the bundled MediaPipe artifact `face_landmark_front_cpu.binarypb` is still missing, so real-camera and packaged-rendering validation remain unverified. No medical or hardware-level validation is claimed.
+
 ## 2026-08-13 - Harden normal-posture exposure and clarify Debug UI stages
 
 - Source: follow-up reports that a fixed comfortable posture could enter `WATCH` and later accumulate static exposure, and that the two Debug UI calibration stages were visually too easy to confuse.

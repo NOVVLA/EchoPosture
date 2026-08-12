@@ -106,6 +106,7 @@ def test_debug_panel_runs_full_dual_anchor_calibration() -> None:
         window.dual_calibration_timer.stop()
         preferred_style = window.calibration_stage_card.styleSheet()
         assert window._calibration_visual_phase == "preferred"
+        assert window.calibration_stage_card.accessibleName() == "calibration-stage-preferred"
         assert "background: #17633a" in preferred_style
         assert "color: white" in preferred_style
         assert window.calibration_stage_badge.text() == "1/2"
@@ -116,6 +117,8 @@ def test_debug_panel_runs_full_dual_anchor_calibration() -> None:
         assert not window.calibration_camera_stage_banner.isHidden()
         assert "阶段 1/2" in window.calibration_camera_stage_banner.text()
         assert "坐直姿势" in window.calibration_camera_stage_banner.text()
+        assert window.calibration_camera_stage_banner.width() >= window.video_label.width() - 24
+        assert window.calibration_camera_stage_banner.height() >= 166
         for index in range(5):
             backend.sample = make_sample(T0 + timedelta(seconds=index))
             window.update_frame()
@@ -150,6 +153,7 @@ def test_debug_panel_runs_full_dual_anchor_calibration() -> None:
         window.update_frame()
         relaxed_style = window.calibration_stage_card.styleSheet()
         assert window._calibration_visual_phase == "relaxed"
+        assert window.calibration_stage_card.accessibleName() == "calibration-stage-relaxed"
         assert "background: #6d35ad" in relaxed_style
         window.calibration_camera_prompt_timer.stop()
         window.calibration_camera_prompt.hide()

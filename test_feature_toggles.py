@@ -17,6 +17,8 @@ from typing import Optional
 
 from vision_test import HighPrecisionPostureAnalyzer, VisionSample
 from posture_science import CalibrationAccumulator, CalibrationPlan, measurement_values
+from vision_backend import PostureFeatureExtractor, observation_from_sample
+from vision_tracking import TargetManager
 
 T0 = datetime(2026, 1, 1, 12, 0, 0)
 
@@ -74,6 +76,18 @@ def scientific_sample(ts: datetime, relaxed: float = 0.0, quality: float = 1.0) 
         pose_quality=quality,
         target_motion=0.0,
         activity_state="STATIC",
+        left_eye_center=(290.0, 150.0),
+        right_eye_center=(350.0, 150.0),
+        face_nose_point=(320.0, 170.0),
+        nose_point=(320.0, 170.0),
+        left_ear_point=(278.0, 168.0),
+        right_ear_point=(362.0, 168.0),
+        left_shoulder_point=(220.0, 240.0),
+        right_shoulder_point=(420.0, 244.0),
+        left_hip_point=(260.0, 390.0),
+        right_hip_point=(380.0, 390.0),
+        shoulder_center=(320.0, 242.0),
+        hip_center=(320.0, 390.0),
     )
 
 
@@ -298,6 +312,62 @@ def test_scientific_continuous_scoring_exposure_and_abstention():
     print("test_scientific_continuous_scoring_exposure_and_abstention OK")
 
 
+def test_production_target_chain_ignores_high_fps_landmark_jitter():
+    """Unchanged posture must stay GOOD after target-sample replacement."""
+    analyzer = scientific_analyzer()
+    manager = TargetManager()
+    base = scientific_sample(T0)
+    first_observation = observation_from_sample(base)
+    assert first_observation
+    manager.update(first_observation, timestamp=T0)
+    assert manager.lock_calibration_target()
+
+    jitters = (0.8, -0.7, 1.1, -0.9, 0.4, -1.0, 0.6, -0.5)
+    frame_dt = timedelta(seconds=1.0 / 72.0)
+    decisions = []
+    for index in range(1, 2001):
+        jitter = jitters[index % len(jitters)]
+        shifted = replace(
+            base,
+            timestamp=T0 + frame_dt * index,
+            left_eye_center=(290.0 + jitter, 150.0 + jitter),
+            right_eye_center=(350.0 + jitter, 150.0 + jitter),
+            face_nose_point=(320.0 + jitter, 170.0 + jitter),
+            nose_point=(320.0 + jitter, 170.0 + jitter),
+            left_ear_point=(278.0 + jitter, 168.0 + jitter),
+            right_ear_point=(362.0 + jitter, 168.0 + jitter),
+            left_shoulder_point=(220.0 + jitter, 240.0 + jitter),
+            right_shoulder_point=(420.0 + jitter, 244.0 + jitter),
+            left_hip_point=(260.0 + jitter, 390.0 + jitter),
+            right_hip_point=(380.0 + jitter, 390.0 + jitter),
+            shoulder_center=(320.0 + jitter, 242.0 + jitter),
+            hip_center=(320.0 + jitter, 390.0 + jitter),
+        )
+        update = manager.update(
+            observation_from_sample(shifted),
+            timestamp=shifted.timestamp,
+        )
+        assert update.target_observation is not None
+        target_sample = PostureFeatureExtractor.to_sample(update.target_observation)
+        target_sample = replace(
+            target_sample,
+            target_track_id=update.target_track_id,
+            target_state=update.state,
+            target_observed=True,
+            person_count=update.person_count,
+            target_motion=update.target_motion,
+            activity_state=update.activity_state,
+            target_reason=update.reason,
+        )
+        decisions.append(analyzer.evaluate(target_sample))
+
+    assert all(decision.status == "GOOD" for decision in decisions[20:])
+    assert all(decision.activity_state == "STATIC" for decision in decisions[20:])
+    assert max(decision.posture_deviation for decision in decisions) == 0.0
+    assert max(decision.exposure_seconds for decision in decisions) == 0.0
+    print("test_production_target_chain_ignores_high_fps_landmark_jitter OK")
+
+
 def test_runtime_local_hip_quality_abstains_torso_features():
     analyzer = scientific_analyzer()
     analyzer.evaluate(scientific_sample(T0, 0.0))
@@ -370,6 +440,7 @@ if __name__ == "__main__":
     test_presence_toggle_resets_multi_debounce_anchor()
     test_identity_toggle()
     test_scientific_continuous_scoring_exposure_and_abstention()
+    test_production_target_chain_ignores_high_fps_landmark_jitter()
     test_runtime_local_hip_quality_abstains_torso_features()
     test_single_feature_runtime_drift_does_not_open_watch_or_exposure()
     test_head_turn_abstains_without_static_exposure()

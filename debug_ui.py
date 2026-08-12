@@ -483,7 +483,7 @@ class DebugWindow(QMainWindow):
         self.calibration_stage_progress.setTextVisible(False)
         self.calibration_stage_progress.setRange(0, 100)
         self.calibration_stage_progress.setFixedHeight(12)
-        self.calibration_stage_card.setMinimumHeight(136)
+        self.calibration_stage_card.setMinimumHeight(154)
         stage_layout.addLayout(stage_heading)
         stage_layout.addWidget(self.calibration_stage_detail)
         stage_layout.addWidget(self.calibration_stage_progress)
@@ -1100,6 +1100,7 @@ class DebugWindow(QMainWindow):
         ) = visual.get(phase, visual["idle"])
         self._calibration_visual_phase = phase
         self.calibration_stage_card.setProperty("calibrationPhase", phase)
+        self.calibration_stage_card.setAccessibleName(f"calibration-stage-{phase}")
         self.calibration_stage_badge.setText(_t(badge_key))
         self.calibration_stage_progress.setValue(progress)
         if phase == "relaxed":
@@ -1114,7 +1115,7 @@ class DebugWindow(QMainWindow):
         self.calibration_stage_detail.setText(_t(detail_key))
         self.calibration_stage_card.setStyleSheet(
             "QFrame#calibrationStageCard {"
-            f"background: {background}; border: 3px solid {border}; border-radius: 8px;"
+            f"background: {background}; border: 4px solid {border}; border-radius: 8px;"
             f"}} QLabel {{ background: transparent; color: {text_color}; }}"
             f" QLabel#calibrationStageBadge {{ background: {border}; }}"
             f" QProgressBar#calibrationStageProgress::chunk {{ background: {border}; }}"
@@ -1147,8 +1148,8 @@ class DebugWindow(QMainWindow):
         self.calibration_camera_stage_banner.setText(_t(text_key))
         self.calibration_camera_stage_banner.setStyleSheet(
             "QLabel#calibrationCameraStageBanner {"
-            f"background: {background}; color: white; border: 4px solid {border};"
-            "border-radius: 8px; font-size: 28px; font-weight: 800; padding: 16px;"
+            f"background: {background}; color: white; border: 6px solid {border};"
+            "border-radius: 8px; font-size: 30px; font-weight: 800; padding: 18px;"
             "}"
         )
         self._position_calibration_camera_overlays()
@@ -1171,12 +1172,15 @@ class DebugWindow(QMainWindow):
         self.calibration_camera_prompt_timer.start(duration_ms)
 
     def _position_calibration_camera_overlays(self) -> None:
-        banner_width = min(max(420, self.video_label.width() - 40), 760)
-        banner_height = 132
+        # The camera banner is intentionally nearly full-width: the active
+        # anchor must be unambiguous even when the operator is looking only at
+        # the video preview rather than the controls above it.
+        banner_width = max(420, self.video_label.width() - 24)
+        banner_height = 166
         banner_left = max(0, (self.video_label.width() - banner_width) // 2)
         self.calibration_camera_stage_banner.setGeometry(
             banner_left,
-            18,
+            8,
             banner_width,
             banner_height,
         )

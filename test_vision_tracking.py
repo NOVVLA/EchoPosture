@@ -573,6 +573,51 @@ def test_target_motion_and_activity_state_are_time_normalized():
     print("test_target_motion_and_activity_state_are_time_normalized OK")
 
 
+def test_high_fps_detector_jitter_stays_static():
+    """One-pixel bbox jitter must not gate unchanged posture as moving."""
+    manager = TargetManager()
+    manager.update((observation(1, T0, 100.0),), timestamp=T0)
+    assert manager.lock_target(1)
+
+    updates = []
+    frame_dt = timedelta(seconds=1.0 / 72.0)
+    for index in range(1, 240):
+        # A realistic detector can alternate by a pixel while the user is
+        # perfectly still.  The target remains at the same physical location.
+        jitter = 1.0 if index % 2 else -1.0
+        updates.append(
+            manager.update(
+                (observation(1, T0 + frame_dt * index, 100.0 + jitter),),
+                timestamp=T0 + frame_dt * index,
+            )
+        )
+
+    assert all(update.activity_state == "STATIC" for update in updates[10:])
+    assert max(update.target_motion or 0.0 for update in updates[10:]) < 0.20
+    print("test_high_fps_detector_jitter_stays_static OK")
+
+
+def test_sustained_target_motion_still_enters_moving_state():
+    manager = TargetManager()
+    manager.update((observation(1, T0, 100.0),), timestamp=T0)
+    assert manager.lock_target(1)
+
+    frame_dt = timedelta(seconds=1.0 / 72.0)
+    updates = []
+    for index in range(1, 80):
+        left = 100.0 + (100.0 * index / 72.0)
+        updates.append(
+            manager.update(
+                (observation(1, T0 + frame_dt * index, left),),
+                timestamp=T0 + frame_dt * index,
+            )
+        )
+
+    assert any(update.activity_state == "MOVING" for update in updates[10:])
+    assert updates[-1].target_motion is not None and updates[-1].target_motion > 0.20
+    print("test_sustained_target_motion_still_enters_moving_state OK")
+
+
 if __name__ == "__main__":
     test_compatibility_observation_contract()
     test_target_lock_and_multi_person_continuation()
@@ -590,4 +635,6 @@ if __name__ == "__main__":
     test_worker_compatibility_backend_publishes_target_update()
     test_worker_scores_locked_target_observation_not_global_sample()
     test_target_motion_and_activity_state_are_time_normalized()
+    test_high_fps_detector_jitter_stays_static()
+    test_sustained_target_motion_still_enters_moving_state()
     print("ALL TESTS PASSED")
