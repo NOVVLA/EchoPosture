@@ -29,6 +29,10 @@ class AIClientResponseError(AIClientError):
     """Raised when the AI response is missing or cannot be parsed."""
 
 
+class AIClientTimeoutError(AIClientResponseError):
+    """Raised when the AI endpoint does not respond before the request deadline."""
+
+
 class AIClientAccessBlockedError(AIClientResponseError):
     """Raised when a known Claude or gateway access block is detected."""
 
@@ -154,6 +158,8 @@ def _post_chat_completion(
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace")
         raise AIClientResponseError(f"AI API HTTP {exc.code}: {detail}") from exc
+    except TimeoutError as exc:
+        raise AIClientTimeoutError(f"AI API request timed out after {timeout} seconds.") from exc
     except urllib.error.URLError as exc:
         raise AIClientResponseError(f"AI API request failed: {exc}") from exc
 

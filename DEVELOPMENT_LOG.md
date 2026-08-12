@@ -999,7 +999,8 @@
 
 - Source: continued investigation after the user reported calibration failures and unclear dual-anchor stage changes;
   manual follow-up to the incomplete PR review.
-- Git: commits `pending`, branch `codex/pr2-phase1-calibration-safety`, existing PR `#23`, tag `none`.
+- Git: runtime commit `dcbcf20`, Debug UI commit `eedadfe`, branch
+  `codex/pr2-phase1-calibration-safety`, existing PR `#23`, tag `none`.
 - Runtime root causes and fixes:
   - Production scoring called unfiltered `measurement_values()`, so a hip pair at confidence `0.20` could still let a
     noisy `torso_shoulder_ratio` drive `WATCH`, `BAD`, and `CRITICAL` while aggregate shoulder quality remained `0.95`.
@@ -1061,3 +1062,24 @@
   - AI review run `31507828605` completed successfully, but the model output failed JSON parsing and the workflow safely downgraded to a confidence-0 comment at `https://github.com/NOVVLA/EchoPosture/pull/23#issuecomment-5255324440`; it did not issue a substantive corrected review.
 - Gaps: implementation, unit tests, real-camera behavior, latency measurements, privacy audit, and license approval remain open under the new and existing plan tasks.
 - Conclusion: plan update and corrective comment delivered; the AI route executed safely but did not produce a substantive correction, so the earlier `CHANGES_REQUESTED` review remains for manual handling.
+
+## 2026-08-11 - AI PR Review Timeout Recovery
+
+- Source: repeated GitHub Actions failures in `ai-pr-review` runs #69 and #70; both ended with an uncaught `TimeoutError` after the 60-second client deadline.
+- Git: implementation commit `97c34a1`, branch `fix/ai-review-timeout-recovery`, tag `none`.
+- Scope:
+  - `.github/ai-flows/common_ai_client.py`: classify socket/read timeouts as `AIClientTimeoutError`, keeping them inside the existing safe AI error contract.
+  - `.github/ai-flows/pr_review.py`: use a configurable `AI_PR_REVIEW_TIMEOUT_SECONDS` value with a 300-second default for primary and secondary review calls, while tolerating invalid or non-positive configuration.
+  - `.github/workflows/ai-pr-review.yml`: expose the timeout override through the repository variable `AI_PR_REVIEW_TIMEOUT_SECONDS`.
+  - `.github/workflows/quality-gate.yml`, `test_ai_client_timeout.py`: run lint, compile, and regression checks for the shared client and timeout fallback.
+- Risk: a longer request deadline can keep the review job waiting longer, but remains below the workflow's 20-minute job limit and leaves room for a slow non-streaming response such as the observed 73 seconds; timeout failures now produce an auditable safe comment/label instead of crashing the job.
+- Verification:
+  - `runtime\\python311\\python.exe test_ai_client_timeout.py`: passed on Python 3.11.9; timeout wrapping, the 300-second PR review default, and safe fallback all passed.
+  - `runtime\\python311\\python.exe test_ai_pr_review_guards.py`: passed.
+  - `runtime\\python311\\python.exe test_ai_maintainer_manual_flows.py`: passed.
+  - `runtime\\python311\\python.exe -m py_compile .github/ai-flows/common_ai_client.py .github/ai-flows/pr_review.py test_ai_client_timeout.py`: passed.
+  - `ruff check .github/ai-flows/common_ai_client.py .github/ai-flows/pr_review.py test_ai_client_timeout.py`: passed.
+  - `git diff --check`: passed; only existing LF-to-CRLF checkout warnings were emitted.
+- Gaps: no local provider credentials are available, so a real AI response and post-fix GitHub run require remote verification after publication. `actionlint`, PyYAML, and Ruby YAML were unavailable locally, so workflow YAML parsing is deferred to GitHub Actions.
+- Artifacts: no release or binary artifacts.
+- Conclusion: local regression validation passed; ready for remote branch CI and pull-request review.
