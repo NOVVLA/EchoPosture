@@ -3,7 +3,7 @@
 ## 2026-08-13 - Harden normal-posture exposure and clarify Debug UI stages
 
 - Source: follow-up reports that a fixed comfortable posture could enter `WATCH` and later accumulate static exposure, and that the two Debug UI calibration stages were visually too easy to confuse.
-- Git: local fix commit recorded on branch `codex/pr2-phase1-calibration-safety`; remote push is pending transport recovery. Existing PR `#23` remains the only PR.
+- Git: commit `f420ed6f3ce437a0a1ba0aad7ae50441de948037` on branch `codex/pr2-phase1-calibration-safety`, pushed to the existing PR `#23`; no new PR is created.
 - Root cause: a single noisy runtime ratio or angle could open a posture group even when the other independent features stayed stable. The scientific profile also needed an explicit abstention state for that incomplete evidence.
 - Scope: posture groups now require a second independent feature to reach the product support floor before contributing to posture deviation. A lone excursion is reported as `UNKNOWN` with `posture_evidence_inconclusive`, pauses exposure, and cannot enter `BAD` or `CRITICAL`. Head-turn and moving states remain visible as `WATCH`/observation states but pause exposure and carry zero posture deviation.
 - Debug UI: preferred collection retains the full visible 5-second countdown; the approximately 1-second transition explicitly prompts relaxation; relaxed collection runs for its approximately 5-second bounded window with a persistent purple stage banner and indeterminate progress bar, without a second countdown. Stage title, badge, colors, and camera banner are distinct for preferred, transition, relaxed, active, and failed states.
