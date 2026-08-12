@@ -37,6 +37,7 @@ ENVIRONMENT_FEATURES = (
     "shoulder_width_px",
     "signed_shoulder_diff_px",
     "torso_height_px",
+    "ear_shoulder_offset_px",
     "head_turn_ratio",
 )
 CALIBRATION_FEATURES = POSTURE_FEATURES + ENVIRONMENT_FEATURES
@@ -679,6 +680,7 @@ def shared_scale_measurement_unstable(
     values: Mapping[str, float],
     profile: CalibrationProfile,
     policy: Optional[PosturePolicy] = None,
+    score: Optional[PostureScore] = None,
 ) -> bool:
     """Detect a posture score driven by an unstable shared shoulder span.
 
@@ -703,17 +705,56 @@ def shared_scale_measurement_unstable(
     ):
         return False
 
-    reference_scale = max(abs(preferred.mean), abs(relaxed.mean), 1.0)
-    repeatability = max(
-        preferred.mdc,
-        relaxed.mdc,
-        policy.runtime_noise_std_multiplier * preferred.std,
-        policy.runtime_noise_std_multiplier * relaxed.std,
-        policy.shared_shoulder_scale_guard_ratio * reference_scale,
+    def outside_anchor_band(name: str) -> Optional[bool]:
+        observed = _finite_float(values.get(name))
+        preferred_stats = profile.preferred.get(name)
+        relaxed_stats = profile.relaxed.get(name)
+        if observed is None or preferred_stats is None or relaxed_stats is None:
+            return None
+        reference = max(
+            abs(preferred_stats.mean),
+            abs(relaxed_stats.mean),
+            1.0,
+        )
+        repeatability = max(
+            preferred_stats.mdc,
+            relaxed_stats.mdc,
+            policy.runtime_noise_std_multiplier * preferred_stats.std,
+            policy.runtime_noise_std_multiplier * relaxed_stats.std,
+            policy.shared_shoulder_scale_guard_ratio * reference,
+        )
+        lower = min(preferred_stats.mean, relaxed_stats.mean) - repeatability
+        upper = max(preferred_stats.mean, relaxed_stats.mean) + repeatability
+        return observed < lower or observed > upper
+
+    shoulder_outside = outside_anchor_band("shoulder_width_px")
+    if shoulder_outside:
+        return True
+
+    # The coarse range guard above catches large shoulder-span failures. A
+    # slower drift can still remain inside that allowance long enough for all
+    # ratios sharing the denominator to cross WATCH together. When forward
+    # scoring is active, therefore require at least one raw numerator to have
+    # moved beyond its own calibrated band. If face width, torso height, and
+    # ear-to-shoulder distance all remain stable, their changing ratios are
+    # one denominator artefact rather than independent posture evidence.
+    if score is None or score.forward_deviation <= 0.0:
+        return False
+    feature_deviation = {item.feature: item.deviation for item in score.features}
+    head_feature = max(
+        ("face_shoulder_ratio", "ear_shoulder_ratio"),
+        key=lambda name: feature_deviation.get(name, 0.0),
     )
-    lower = min(preferred.mean, relaxed.mean) - repeatability
-    upper = max(preferred.mean, relaxed.mean) + repeatability
-    return current < lower or current > upper
+    head_numerator = {
+        "face_shoulder_ratio": "interpupillary_px",
+        "ear_shoulder_ratio": "ear_shoulder_offset_px",
+    }[head_feature]
+    head_supported = outside_anchor_band(head_numerator)
+    torso_supported = outside_anchor_band("torso_height_px")
+    # Both channels were required to create the forward group, so both need
+    # evidence from their own numerator. Missing raw support is uncertainty,
+    # not permission to let the shared denominator corroborate itself.
+    return head_supported is not True or torso_supported is not True
 
 
 @dataclass(frozen=True)
@@ -858,14 +899,16 @@ def measurement_values(sample) -> dict[str, float]:
                 math.atan2(signed_shoulder, shoulder_width)
             )
 
-        ear_offsets: list[float] = []
+        ear_offsets_px: list[float] = []
         for side in ("left", "right"):
             ear = getattr(sample, f"{side}_ear_point", None)
             shoulder = getattr(sample, f"{side}_shoulder_point", None)
             if ear is not None and shoulder is not None:
-                ear_offsets.append((float(shoulder[1]) - float(ear[1])) / shoulder_width)
-        if ear_offsets:
-            values["ear_shoulder_ratio"] = sum(ear_offsets) / len(ear_offsets)
+                ear_offsets_px.append(float(shoulder[1]) - float(ear[1]))
+        if ear_offsets_px:
+            ear_offset_px = sum(ear_offsets_px) / len(ear_offsets_px)
+            values["ear_shoulder_offset_px"] = ear_offset_px
+            values["ear_shoulder_ratio"] = ear_offset_px / shoulder_width
     if trunk_lean is not None:
         values["trunk_lean_deg"] = trunk_lean
     return values
@@ -895,6 +938,7 @@ def calibration_measurement_values(
         # gate. Shoulder/lateral evidence can still be retained when its
         # landmark confidence is independently usable.
         values.pop("face_shoulder_ratio", None)
+        values.pop("interpupillary_px", None)
     shoulders_ok = _confidences_meet_floor(
         sample,
         ("left_shoulder_confidence", "right_shoulder_confidence"),
@@ -910,6 +954,7 @@ def calibration_measurement_values(
             "face_shoulder_ratio",
             "torso_shoulder_ratio",
             "ear_shoulder_ratio",
+            "ear_shoulder_offset_px",
             "shoulder_asymmetry_deg",
             "shoulder_width_px",
             "signed_shoulder_diff_px",
@@ -921,6 +966,7 @@ def calibration_measurement_values(
     for side in ("left", "right"):
         if not _confidences_meet_floor(sample, (f"{side}_ear_confidence",), floor):
             values.pop("ear_shoulder_ratio", None)
+            values.pop("ear_shoulder_offset_px", None)
     return values
 
 

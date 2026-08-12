@@ -692,7 +692,12 @@ class HighPrecisionPostureAnalyzer(PostureAnalyzer):
                 activity_state=activity_state,
             )
 
-        if shared_scale_measurement_unstable(values, profile, self.posture_policy):
+        if shared_scale_measurement_unstable(
+            values,
+            profile,
+            self.posture_policy,
+            score,
+        ):
             self._reset_post_calibration_validation_window()
             exposure = self.exposure_accumulator.pause(sample.timestamp)
             return PostureDecision(

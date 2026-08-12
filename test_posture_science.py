@@ -182,6 +182,7 @@ def test_low_hip_visibility_does_not_reject_upper_body_evidence() -> None:
     assert "face_shoulder_ratio" in values
     assert "shoulder_asymmetry_deg" in values
     assert "ear_shoulder_ratio" in values
+    assert "ear_shoulder_offset_px" in values
     assert "torso_shoulder_ratio" not in values
     assert "trunk_lean_deg" not in values
     print("test_low_hip_visibility_does_not_reject_upper_body_evidence OK")
@@ -209,6 +210,7 @@ def test_low_face_quality_preserves_independent_pose_evidence() -> None:
     )
     values = calibration_measurement_values(sample)
     assert "face_shoulder_ratio" not in values
+    assert "interpupillary_px" not in values
     assert "torso_shoulder_ratio" in values
     assert calibration_rejection_reason(sample) is None
     print("test_low_face_quality_preserves_independent_pose_evidence OK")
@@ -232,6 +234,37 @@ def test_feature_quality_uses_only_scored_landmarks() -> None:
     assert math.isclose(torso_quality, 0.20)
     assert aggregate_sample_quality(sample, ()) == 0.0
     print("test_feature_quality_uses_only_scored_landmarks OK")
+
+
+def test_low_ear_quality_removes_raw_and_normalized_ear_evidence() -> None:
+    sample = SimpleNamespace(
+        face_detected=True,
+        pose_detected=True,
+        face_quality=0.95,
+        pose_quality=0.95,
+        interpupillary_px=60.0,
+        shoulder_width_px=200.0,
+        signed_shoulder_diff_px=4.0,
+        torso_height_px=180.0,
+        trunk_lean_deg=2.0,
+        left_ear_point=(250.0, 150.0),
+        right_ear_point=(350.0, 150.0),
+        left_shoulder_point=(220.0, 240.0),
+        right_shoulder_point=(420.0, 240.0),
+        left_shoulder_confidence=0.90,
+        right_shoulder_confidence=0.90,
+        left_hip_confidence=0.90,
+        right_hip_confidence=0.90,
+        left_ear_confidence=0.20,
+        right_ear_confidence=0.20,
+        head_turn_ratio=0.01,
+    )
+    values = calibration_measurement_values(sample)
+    assert "ear_shoulder_ratio" not in values
+    assert "ear_shoulder_offset_px" not in values
+    assert "face_shoulder_ratio" in values
+    assert "torso_shoulder_ratio" in values
+    print("test_low_ear_quality_removes_raw_and_normalized_ear_evidence OK")
 
 
 def test_stage_sample_shortage_fails() -> None:
@@ -405,6 +438,76 @@ def test_shared_shoulder_scale_drift_abstains_from_ratio_scoring() -> None:
     )
     assert not shared_scale_measurement_unstable(relaxed, profile)
     print("test_shared_shoulder_scale_drift_abstains_from_ratio_scoring OK")
+
+
+def test_in_range_shoulder_drift_requires_raw_forward_support() -> None:
+    """A shared denominator cannot vote before the coarse range guard trips."""
+
+    accumulator = CalibrationAccumulator(CalibrationPlan(min_samples_per_stage=5))
+    preferred = {
+        "face_shoulder_ratio": 60.0 / 200.0,
+        "torso_shoulder_ratio": 180.0 / 200.0,
+        "ear_shoulder_ratio": 80.0 / 200.0,
+        "interpupillary_px": 60.0,
+        "torso_height_px": 180.0,
+        "ear_shoulder_offset_px": 80.0,
+        "shoulder_width_px": 200.0,
+    }
+    relaxed = {
+        "face_shoulder_ratio": 60.0 / 185.0,
+        "torso_shoulder_ratio": 180.0 / 185.0,
+        "ear_shoulder_ratio": 80.0 / 185.0,
+        "interpupillary_px": 60.0,
+        "torso_height_px": 180.0,
+        "ear_shoulder_offset_px": 80.0,
+        "shoulder_width_px": 185.0,
+    }
+    for index in range(5):
+        accumulator.add(index, preferred)
+    accumulator.begin_transition(5.0)
+    for index in range(5):
+        accumulator.add(6.0 + index, relaxed)
+    profile = accumulator.finalize()
+    unchanged_numerators = {
+        "face_shoulder_ratio": 60.0 / 175.0,
+        "torso_shoulder_ratio": 180.0 / 175.0,
+        "ear_shoulder_ratio": 80.0 / 175.0,
+        "interpupillary_px": 60.0,
+        "torso_height_px": 180.0,
+        "ear_shoulder_offset_px": 80.0,
+        "shoulder_width_px": 175.0,
+    }
+
+    score = score_posture_deviation(unchanged_numerators, profile)
+    assert score.deviation >= PosturePolicy().alert_enter, score
+    # 175 px is still on the inclusive edge of the old coarse 5% guard. The
+    # unchanged raw numerators must nevertheless expose the ratio-only drift.
+    assert shared_scale_measurement_unstable(
+        unchanged_numerators,
+        profile,
+        score=score,
+    )
+
+    one_changed_numerator = dict(unchanged_numerators)
+    one_changed_numerator["torso_height_px"] = 200.0
+    one_changed_numerator["torso_shoulder_ratio"] = 200.0 / 175.0
+    one_changed_score = score_posture_deviation(one_changed_numerator, profile)
+    assert shared_scale_measurement_unstable(
+        one_changed_numerator,
+        profile,
+        score=one_changed_score,
+    )
+
+    corroborated_raw_change = dict(one_changed_numerator)
+    corroborated_raw_change["ear_shoulder_offset_px"] = 100.0
+    corroborated_raw_change["ear_shoulder_ratio"] = 100.0 / 175.0
+    corroborated_score = score_posture_deviation(corroborated_raw_change, profile)
+    assert not shared_scale_measurement_unstable(
+        corroborated_raw_change,
+        profile,
+        score=corroborated_score,
+    )
+    print("test_in_range_shoulder_drift_requires_raw_forward_support OK")
 
 
 def test_runtime_noise_band_uses_single_observation_repeatability() -> None:
@@ -581,12 +684,14 @@ if __name__ == "__main__":
     test_low_hip_visibility_does_not_reject_upper_body_evidence()
     test_low_face_quality_preserves_independent_pose_evidence()
     test_feature_quality_uses_only_scored_landmarks()
+    test_low_ear_quality_removes_raw_and_normalized_ear_evidence()
     test_stage_sample_shortage_fails()
     test_explicit_phase_timing_and_bounded_extension()
     test_mdc_normalization_and_group_deduplication()
     test_single_feature_excursion_is_inconclusive_for_group_scoring()
     test_shared_head_shoulder_ratios_are_one_evidence_channel()
     test_shared_shoulder_scale_drift_abstains_from_ratio_scoring()
+    test_in_range_shoulder_drift_requires_raw_forward_support()
     test_runtime_noise_band_uses_single_observation_repeatability()
     test_marginal_anchor_signal_is_disabled_by_runtime_noise()
     test_near_identical_smoothed_anchors_do_not_create_false_signal()

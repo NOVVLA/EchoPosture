@@ -536,6 +536,87 @@ def test_unchanged_posture_shared_shoulder_width_drift_never_accumulates_exposur
     )
 
 
+def test_gradual_shared_scale_drift_abstains_before_watch_boundary():
+    """Slow denominator drift must pause before the coarse guard threshold."""
+
+    def sample(
+        timestamp: datetime,
+        width: float,
+        *,
+        interpupillary: float = 60.0,
+        torso_height: float = 180.0,
+        ear_y: float = 142.0,
+    ) -> VisionSample:
+        half_width = width / 2.0
+        return replace(
+            scientific_sample(timestamp, 0.0),
+            interpupillary_px=interpupillary,
+            shoulder_width_px=width,
+            torso_height_px=torso_height,
+            left_ear_point=(278.0, ear_y),
+            right_ear_point=(362.0, ear_y),
+            left_shoulder_point=(320.0 - half_width, 240.0),
+            right_shoulder_point=(320.0 + half_width, 244.0),
+        )
+
+    accumulator = CalibrationAccumulator(CalibrationPlan())
+    for index in range(5):
+        calibration_sample = sample(T0 + timedelta(seconds=index), 200.0)
+        accumulator.add(index, measurement_values(calibration_sample))
+    accumulator.begin_transition(5.0)
+    for index in range(5):
+        calibration_sample = sample(T0 + timedelta(seconds=6 + index), 185.0)
+        accumulator.add(6.0 + index, measurement_values(calibration_sample))
+
+    analyzer = HighPrecisionPostureAnalyzer(
+        auto_calibrate=False,
+        calibrated_distance_cm=60.0,
+        require_dual_anchor=True,
+    )
+    assert analyzer.set_calibration_profile(accumulator.finalize(), 60.0)
+    first = analyzer.evaluate(sample(T0, 185.0))
+    assert first.reason == "post_calibration_normal_range_validation", first
+    validated = analyzer.evaluate(sample(T0 + timedelta(seconds=2.1), 185.0))
+    assert validated.reason == "post_calibration_normal_range_validated", validated
+
+    decisions = []
+    for index in range(1, 1801):
+        fraction = min(1.0, index / 180.0)
+        width = 185.0 - 10.0 * fraction
+        decisions.append(
+            analyzer.evaluate(
+                sample(T0 + timedelta(seconds=3.0 + index / 6.0), width)
+            )
+        )
+
+    assert all(decision.status not in {"WATCH", "BAD", "CRITICAL"} for decision in decisions)
+    assert any(
+        decision.reason == "shared_shoulder_scale_measurement_abstained"
+        for decision in decisions
+    )
+    assert max(decision.posture_deviation for decision in decisions) == 0.0
+    assert max(decision.exposure_seconds for decision in decisions) == 0.0
+
+    genuine = []
+    for seconds in range(304, 321):
+        genuine.append(
+            analyzer.evaluate(
+                sample(
+                    T0 + timedelta(seconds=seconds),
+                    180.0,
+                    interpupillary=75.0,
+                    torso_height=210.0,
+                    ear_y=115.0,
+                )
+            )
+        )
+    assert genuine[0].status == "WATCH", genuine[0]
+    assert genuine[0].reason != "shared_shoulder_scale_measurement_abstained"
+    assert genuine[-1].status == "BAD", genuine[-1]
+    assert genuine[-1].exposure_seconds >= analyzer.posture_policy.alert_exposure_seconds
+    print("test_gradual_shared_scale_drift_abstains_before_watch_boundary OK")
+
+
 def test_real_forward_change_with_stable_shoulder_scale_still_alerts():
     """The reliability guard must not suppress corroborated posture change."""
 
@@ -576,5 +657,6 @@ if __name__ == "__main__":
     test_head_turn_abstains_without_static_exposure()
     test_fixed_posture_distance_scale_does_not_become_head_turn_watch()
     test_unchanged_posture_shared_shoulder_width_drift_never_accumulates_exposure()
+    test_gradual_shared_scale_drift_abstains_before_watch_boundary()
     test_real_forward_change_with_stable_shoulder_scale_still_alerts()
     print("ALL TESTS PASSED")

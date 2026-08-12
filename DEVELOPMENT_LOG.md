@@ -1,5 +1,51 @@
 # DEVELOPMENT_LOG（Development Log，开发日志）
 
+## 2026-08-13 - Require raw forward evidence before ratio-based exposure
+
+- Source: continued investigation of the field report that an unchanged upright posture entered `WATCH` and later
+  triggered static-exposure intervention. The preceding shared-scale fix stopped the original 200-to-160 px replay,
+  but completion remained unproven without auditing the guard boundary.
+- Git: commit `pending`, branch `codex/pr2-phase1-calibration-safety`, tag `none`; delivery target remains the existing
+  PR `#23`, with no new PR.
+- Remaining root cause: with preferred/relaxed shoulder spans of 200/185 px, the coarse guard allowed another 5% of
+  product reliability margin. At 175 px the face/shoulder, torso/shoulder, and ear/shoulder ratios could therefore
+  reach deviation about `0.77` before the guard rejected the frame, even while their raw face width, torso height,
+  and ear-to-shoulder pixel distance were unchanged. This was a credible slow-drift path to the delayed field alarm.
+- Fix: calibration now records the numeric mean ear-to-shoulder pixel offset alongside the existing face width,
+  torso height, and shoulder span. A forward ratio group is allowed to accumulate exposure only when both of its
+  independent channels are supported by their own raw numerator leaving the calibrated repeatability band. Stable
+  raw numerators with changing ratios are treated as one shared-denominator measurement failure and return
+  `UNKNOWN`/`shared_shoulder_scale_measurement_abstained` with exposure paused.
+- Quality chain: the new raw ear offset is removed together with its normalized ratio when either ear or shoulder
+  confidence is below its landmark gate. Low face quality also removes raw interpupillary support. Missing or weak
+  numerator evidence abstains rather than granting permission to intervene.
+- Positive behavior: two deterministic forward-change replays retain intervention ability. One keeps shoulder width
+  fixed; the other moves shoulder width within its accepted calibration range while independently changing the raw
+  head and torso geometry. Both enter `WATCH` and reach `BAD` after the configured equivalent-exposure threshold.
+  These are product interaction and reliability rules, not medical or physiological standards.
+- Verification from the repository root:
+  - A five-minute, 1,800-observation 185-to-175 px shoulder-drift replay kept all raw forward numerators fixed,
+    explicitly abstained before intervention, and produced no `WATCH`, `BAD`, `CRITICAL`, deviation, or exposure.
+  - `test_posture_science.py` and `test_feature_toggles.py` passed, including partial raw support, landmark-quality,
+    gradual-drift, and positive-intervention cases.
+  - `test_vision_worker.py`, `test_vision_tracking.py`, `test_startup_guards.py`, `test_debug_ui.py`, and
+    `test_vision_replay.py` passed. Debug UI emitted only the existing bundled Qt font-directory warning.
+  - Modified-file Ruff, bundled `py_compile`, and `git diff --check` passed before the final full-suite pass.
+- Live camera evidence: a temporary, local-only ASCII junction was used to run current source without changing the
+  release bridge. MediaPipe initialized successfully and camera 0 opened, correcting the older assumption that the
+  model resource itself was currently missing. A first read hit the intended near-black-frame guard; a subsequent
+  30-frame read completed, but detected zero faces and zero poses and returned no posture features. Cameras 1-3 did
+  not open. No live human posture decision was therefore obtained, and no frame was displayed or saved.
+- Privacy and artifacts: camera probes printed only aggregate/numeric status and immediately released each device.
+  No image, video, face crop, identity data, template/vector, or reliability report was saved. The temporary ASCII
+  junction is removed after verification and is not part of Git.
+- Gaps: the current camera view contains no detectable person, so same-person real-camera calibration and a
+  multi-minute unchanged-posture hold remain an external evidence gate. Cross-device SEM/MDC, consented recording,
+  user feedback, external validity, and medical validation also remain unclaimed.
+- Conclusion: the additional slow shared-denominator path is reproduced and fixed with negative and positive
+  deterministic evidence. Ready to update the existing PR after the full local suite; live-user confirmation remains
+  required before claiming that the original physical-camera incident is fully closed.
+
 ## 2026-08-13 - Abstain when a shared shoulder scale drifts and clarify calibration actions
 
 - Source: field report that an unchanged posture could remain in `WATCH` and later trigger static-exposure
