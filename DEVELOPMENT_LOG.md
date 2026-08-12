@@ -5,7 +5,8 @@
 - Source: continued investigation of the field report that an unchanged upright posture entered `WATCH` and later
   triggered static-exposure intervention. The preceding shared-scale fix stopped the original 200-to-160 px replay,
   but completion remained unproven without auditing the guard boundary.
-- Git: commit `pending`, branch `codex/pr2-phase1-calibration-safety`, tag `none`; delivery target remains the existing
+- Git: commit `2411be8dae11760837475516fbb3a4e500fa4e48`, branch `codex/pr2-phase1-calibration-safety`, tag `none`;
+  delivery target remains the existing
   PR `#23`, with no new PR.
 - Remaining root cause: with preferred/relaxed shoulder spans of 200/185 px, the coarse guard allowed another 5% of
   product reliability margin. At 175 px the face/shoulder, torso/shoulder, and ear/shoulder ratios could therefore
