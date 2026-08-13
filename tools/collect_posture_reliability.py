@@ -86,7 +86,7 @@ def collect(frames: int, camera_id: int, width: int, height: int) -> dict:
     preferred = {name: _stats(values) for name, values in buckets["preferred"].items() if values}
     relaxed = {name: _stats(values) for name, values in buckets["relaxed"].items() if values}
     policy = PosturePolicy()
-    separation: dict[str, dict] = {}
+    ranges: dict[str, dict] = {}
     for name in sorted(set(preferred) & set(relaxed)):
         preferred_stats = preferred[name]
         relaxed_stats = relaxed[name]
@@ -100,22 +100,29 @@ def collect(frames: int, camera_id: int, width: int, height: int) -> dict:
             policy,
             name,
         )
-        required_separation = (
-            single_observation_noise * policy.runtime_min_signal_to_noise_ratio
+        response_scale = (
+            policy.runtime_angle_response_scale_deg
+            if name in {"shoulder_asymmetry_deg", "trunk_lean_deg"}
+            else policy.runtime_ratio_response_scale
         )
-        credible_span = max(0.0, delta - single_observation_noise)
-        watch_change = single_observation_noise + policy.watch_enter * credible_span
-        alert_change = single_observation_noise + policy.alert_enter * credible_span
-        separation[name] = {
+        watch_change = single_observation_noise + policy.watch_enter * response_scale
+        alert_change = single_observation_noise + policy.alert_enter * response_scale
+        ranges[name] = {
             "anchor_delta": delta,
+            "normal_range_lower": min(preferred_stats["mean"], relaxed_stats["mean"]),
+            "normal_range_upper": max(preferred_stats["mean"], relaxed_stats["mean"]),
             "noise_floor_mdc": mdc_floor,
             "single_observation_noise_floor": single_observation_noise,
-            "required_anchor_separation": required_separation,
-            "anchor_separates_runtime_noise": delta > required_separation,
-            "watch_enter_raw_change": watch_change,
-            "alert_enter_raw_change": alert_change,
+            "anchor_delta_within_runtime_noise": delta <= single_observation_noise,
+            "response_scale": response_scale,
+            "watch_enter_outside_range": watch_change,
+            "alert_enter_outside_range": alert_change,
             "watch_change_below_mdc": watch_change <= mdc_floor,
             "watch_change_below_runtime_noise": watch_change <= single_observation_noise,
+            "note": (
+                "Anchor separation is descriptive only and never gates calibration; "
+                "both anchors define the accepted normal range."
+            ),
         }
 
     return {
@@ -139,17 +146,16 @@ def collect(frames: int, camera_id: int, width: int, height: int) -> dict:
         },
         "preferred": preferred,
         "relaxed": relaxed,
-        "anchor_separation": separation,
+        "anchor_ranges": ranges,
         "policy": {
             "watch_enter": policy.watch_enter,
             "alert_enter": policy.alert_enter,
             "critical_deviation": policy.severe_deviation,
             "runtime_noise_std_multiplier": policy.runtime_noise_std_multiplier,
-            "runtime_min_signal_to_noise_ratio": (
-                policy.runtime_min_signal_to_noise_ratio
-            ),
             "runtime_ratio_noise_floor": policy.runtime_ratio_noise_floor,
             "runtime_angle_noise_floor_deg": policy.runtime_angle_noise_floor_deg,
+            "runtime_ratio_response_scale": policy.runtime_ratio_response_scale,
+            "runtime_angle_response_scale_deg": policy.runtime_angle_response_scale_deg,
             "note": "Product interaction parameters, not physiological standards.",
         },
         "unverified_items": [

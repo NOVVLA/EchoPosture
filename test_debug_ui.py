@@ -274,6 +274,39 @@ def test_debug_panel_places_stage_card_above_camera() -> None:
     print("test_debug_panel_places_stage_card_above_camera OK")
 
 
+def test_debug_panel_accepts_identical_anchor_postures() -> None:
+    app = QApplication.instance() or QApplication([])
+    backend = FakeDebugBackend()
+    window = make_window(app, backend)
+    try:
+        window.update_frame()
+        window.start_dual_anchor_calibration()
+        window.dual_calibration_timer.stop()
+        for index in range(5):
+            backend.sample = make_sample(T0 + timedelta(seconds=index), relaxed=0.0)
+            window.update_frame()
+        window.complete_preferred_stage(T0 + timedelta(seconds=5))
+        for timestamp_seconds in (6, 7, 8, 9, 11):
+            backend.sample = make_sample(
+                T0 + timedelta(seconds=timestamp_seconds),
+                relaxed=0.0,
+            )
+            window.update_frame()
+
+        assert window.analyzer.calibration_profile is not None
+        assert window.analyzer.calibration_profile.scientific_ready
+        assert window.analyzer.calibration_profile.stage_counts == {
+            "preferred": 5,
+            "relaxed": 5,
+        }
+        assert window._calibration_visual_phase == "validating"
+        assert "双锚点科学校准完成" in window.calibration_label.text()
+    finally:
+        window.close()
+        app.processEvents()
+    print("test_debug_panel_accepts_identical_anchor_postures OK")
+
+
 def test_debug_panel_keeps_legacy_single_frame_comparison() -> None:
     app = QApplication.instance() or QApplication([])
     backend = FakeDebugBackend()
@@ -308,6 +341,9 @@ def test_debug_panel_reports_incomplete_dual_anchor_profile() -> None:
         assert window.calibration_label.text().startswith("双锚点校准失败")
         assert "有效样本不足" in window.calibration_label.text()
         assert window._calibration_visual_phase == "failed"
+        assert "有效样本不足" in window.calibration_stage_detail.text()
+        assert "坐直 3/5" in window.calibration_stage_detail.text()
+        assert "放松 0/5" in window.calibration_stage_detail.text()
         assert window.legacy_calibrate_button.isEnabled()
         assert window.precision_checkbox.isEnabled()
     finally:
@@ -319,6 +355,7 @@ def test_debug_panel_reports_incomplete_dual_anchor_profile() -> None:
 if __name__ == "__main__":
     test_debug_panel_runs_full_dual_anchor_calibration()
     test_debug_panel_places_stage_card_above_camera()
+    test_debug_panel_accepts_identical_anchor_postures()
     test_debug_panel_keeps_legacy_single_frame_comparison()
     test_debug_panel_reports_incomplete_dual_anchor_profile()
     print("ALL TESTS PASSED")

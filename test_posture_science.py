@@ -66,11 +66,58 @@ def test_two_anchor_segmentation_and_noise_floor() -> None:
     assert profile.stage_counts == {"preferred": 5, "relaxed": 5}
     assert "face_shoulder_ratio" in profile.enabled_features
     assert "trunk_lean_deg" in profile.enabled_features
-    assert profile.disabled_features["ear_shoulder_ratio"] == (
-        "anchor_separation_not_above_mdc"
+    assert "ear_shoulder_ratio" in profile.enabled_features
+    ear_at_anchor = normalized_feature_deviation(
+        "ear_shoulder_ratio",
+        0.40,
+        profile.preferred["ear_shoulder_ratio"],
+        profile.relaxed["ear_shoulder_ratio"],
+        runtime_noise_floor=profile.runtime_noise_floors["ear_shoulder_ratio"],
     )
+    assert ear_at_anchor.deviation == 0.0
     assert 0.0 < profile.calibration_quality <= 1.0
     print("test_two_anchor_segmentation_and_noise_floor OK")
+
+
+def test_similar_stable_anchors_form_a_valid_normal_range() -> None:
+    """Natural relaxation is allowed to look the same as preferred posture."""
+
+    accumulator = CalibrationAccumulator(CalibrationPlan(min_samples_per_stage=5))
+    preferred_values = [0.298, 0.301, 0.300, 0.302, 0.299]
+    relaxed_values = [0.301, 0.303, 0.302, 0.304, 0.300]
+    for index, value in enumerate(preferred_values):
+        accumulator.add(index, {"face_shoulder_ratio": value})
+    accumulator.begin_transition(5.0)
+    for index, value in enumerate(relaxed_values):
+        accumulator.add(6.0 + index, {"face_shoulder_ratio": value})
+
+    profile = accumulator.finalize()
+    assert profile.stage_counts == {"preferred": 5, "relaxed": 5}
+    assert profile.enabled_features == ("face_shoulder_ratio",)
+    assert profile.scientific_ready
+    print("test_similar_stable_anchors_form_a_valid_normal_range OK")
+
+
+def test_identical_stable_anchors_form_a_valid_normal_range() -> None:
+    accumulator = CalibrationAccumulator(CalibrationPlan(min_samples_per_stage=5))
+    for index in range(5):
+        accumulator.add(index, {"face_shoulder_ratio": 0.300})
+    accumulator.begin_transition(5.0)
+    for index in range(5):
+        accumulator.add(6.0 + index, {"face_shoulder_ratio": 0.300})
+
+    profile = accumulator.finalize()
+    assert profile.enabled_features == ("face_shoulder_ratio",)
+    noise = profile.runtime_noise_floors["face_shoulder_ratio"]
+    at_anchor = normalized_feature_deviation(
+        "face_shoulder_ratio",
+        0.300,
+        profile.preferred["face_shoulder_ratio"],
+        profile.relaxed["face_shoulder_ratio"],
+        runtime_noise_floor=noise,
+    )
+    assert at_anchor.deviation == 0.0
+    print("test_identical_stable_anchors_form_a_valid_normal_range OK")
 
 
 def test_invalid_sample_resets_only_current_stage() -> None:
@@ -376,6 +423,23 @@ def test_stage_sample_shortage_fails() -> None:
     print("test_stage_sample_shortage_fails OK")
 
 
+def test_no_common_posture_feature_is_the_only_profile_level_failure() -> None:
+    accumulator = CalibrationAccumulator(CalibrationPlan(min_samples_per_stage=5))
+    for index in range(5):
+        accumulator.add(index, {"face_shoulder_ratio": 0.30})
+    accumulator.begin_transition(5.0)
+    for index in range(5):
+        accumulator.add(6.0 + index, {"trunk_lean_deg": 2.0})
+
+    try:
+        accumulator.finalize()
+    except ValueError as exc:
+        assert str(exc) == "no_common_posture_features"
+    else:
+        raise AssertionError("disjoint stage features must not create a profile")
+    print("test_no_common_posture_feature_is_the_only_profile_level_failure OK")
+
+
 def test_explicit_phase_timing_and_bounded_extension() -> None:
     plan = CalibrationPlan(min_samples_per_stage=5)
     assert plan.preferred_seconds == 5.0
@@ -433,12 +497,68 @@ def test_mdc_normalization_and_group_deduplication() -> None:
     assert midpoint.deviation == 0.0
     assert relaxed_score.deviation == 0.0
 
-    score = score_posture_deviation(anchor_values(2.0), profile)
+    score = score_posture_deviation(anchor_values(2.5), profile)
     assert math.isclose(score.forward_deviation, 1.0)
     assert math.isclose(score.lateral_deviation, 1.0)
     assert math.isclose(score.deviation, 1.0)
     assert score.deviation <= max(score.forward_deviation, score.lateral_deviation) + 0.10
     print("test_mdc_normalization_and_group_deduplication OK")
+
+
+def test_range_deviation_is_bidirectional_and_independent_of_anchor_span() -> None:
+    policy = PosturePolicy()
+    identical = FeatureStatistics.from_values([0.300] * 5)
+    lower = normalized_feature_deviation(
+        "face_shoulder_ratio",
+        0.300 - policy.runtime_ratio_noise_floor - 0.050,
+        identical,
+        identical,
+        policy,
+    )
+    upper = normalized_feature_deviation(
+        "face_shoulder_ratio",
+        0.300 + policy.runtime_ratio_noise_floor + 0.050,
+        identical,
+        identical,
+        policy,
+    )
+    inside_noise = normalized_feature_deviation(
+        "face_shoulder_ratio",
+        0.300 + policy.runtime_ratio_noise_floor,
+        identical,
+        identical,
+        policy,
+    )
+    assert math.isclose(lower.deviation, 0.5)
+    assert math.isclose(upper.deviation, 0.5)
+    assert inside_noise.deviation == 0.0
+
+    wide_preferred = FeatureStatistics.from_values([0.250] * 5)
+    wide_relaxed = FeatureStatistics.from_values([0.350] * 5)
+    same_excursion = normalized_feature_deviation(
+        "face_shoulder_ratio",
+        0.350 + policy.runtime_ratio_noise_floor + 0.050,
+        wide_preferred,
+        wide_relaxed,
+        policy,
+    )
+    assert math.isclose(same_excursion.deviation, upper.deviation)
+    print("test_range_deviation_is_bidirectional_and_independent_of_anchor_span OK")
+
+
+def test_legacy_anchor_separation_policy_is_ignored() -> None:
+    strict_legacy_policy = PosturePolicy(runtime_min_signal_to_noise_ratio=999.0)
+    accumulator = CalibrationAccumulator(
+        CalibrationPlan(min_samples_per_stage=5),
+        policy=strict_legacy_policy,
+    )
+    for index in range(5):
+        accumulator.add(index, {"face_shoulder_ratio": 0.300})
+    accumulator.begin_transition(5.0)
+    for index in range(5):
+        accumulator.add(6.0 + index, {"face_shoulder_ratio": 0.300})
+    assert accumulator.finalize().scientific_ready
+    print("test_legacy_anchor_separation_policy_is_ignored OK")
 
 
 def test_single_feature_excursion_is_inconclusive_for_group_scoring() -> None:
@@ -534,7 +654,7 @@ def test_shared_shoulder_scale_drift_abstains_from_ratio_scoring() -> None:
 
 
 def test_in_range_shoulder_drift_requires_raw_forward_support() -> None:
-    """A shared denominator cannot vote before the coarse range guard trips."""
+    """A shared denominator cannot manufacture corroborated posture evidence."""
 
     accumulator = CalibrationAccumulator(CalibrationPlan(min_samples_per_stage=5))
     preferred = {
@@ -572,10 +692,13 @@ def test_in_range_shoulder_drift_requires_raw_forward_support() -> None:
     }
 
     score = score_posture_deviation(unchanged_numerators, profile)
-    assert score.deviation >= PosturePolicy().alert_enter, score
-    # 175 px is still on the inclusive edge of the old coarse 5% guard. The
-    # unchanged raw numerators must nevertheless expose the ratio-only drift.
-    assert shared_scale_measurement_unstable(
+    # Fixed response scales keep this small denominator drift below the
+    # two-channel support rule. It remains visible as raw diagnostic evidence,
+    # so the analyzer abstains as inconclusive without opening WATCH.
+    assert score.deviation == 0.0
+    assert score.raw_deviation > 0.0
+    assert not score.corroborated
+    assert not shared_scale_measurement_unstable(
         unchanged_numerators,
         profile,
         score=score,
@@ -585,7 +708,10 @@ def test_in_range_shoulder_drift_requires_raw_forward_support() -> None:
     one_changed_numerator["torso_height_px"] = 200.0
     one_changed_numerator["torso_shoulder_ratio"] = 200.0 / 175.0
     one_changed_score = score_posture_deviation(one_changed_numerator, profile)
-    assert shared_scale_measurement_unstable(
+    assert one_changed_score.deviation == 0.0
+    assert one_changed_score.raw_deviation > 0.0
+    assert not one_changed_score.corroborated
+    assert not shared_scale_measurement_unstable(
         one_changed_numerator,
         profile,
         score=one_changed_score,
@@ -595,6 +721,8 @@ def test_in_range_shoulder_drift_requires_raw_forward_support() -> None:
     corroborated_raw_change["ear_shoulder_offset_px"] = 100.0
     corroborated_raw_change["ear_shoulder_ratio"] = 100.0 / 175.0
     corroborated_score = score_posture_deviation(corroborated_raw_change, profile)
+    assert corroborated_score.deviation >= PosturePolicy().alert_enter
+    assert corroborated_score.corroborated
     assert not shared_scale_measurement_unstable(
         corroborated_raw_change,
         profile,
@@ -626,7 +754,7 @@ def test_runtime_noise_band_uses_single_observation_repeatability() -> None:
     print("test_runtime_noise_band_uses_single_observation_repeatability OK")
 
 
-def test_marginal_anchor_signal_is_disabled_by_runtime_noise() -> None:
+def test_marginal_anchor_range_is_valid_and_noise_bounded() -> None:
     plan = CalibrationPlan(min_samples_per_stage=5)
     accumulator = CalibrationAccumulator(plan)
     preferred_values = [0.98, 0.99, 1.00, 1.01, 1.02]
@@ -637,19 +765,33 @@ def test_marginal_anchor_signal_is_disabled_by_runtime_noise() -> None:
     for index, value in enumerate(relaxed_values):
         accumulator.add(6.0 + index, {"face_shoulder_ratio": value})
 
-    try:
-        accumulator.finalize()
-    except ValueError as exc:
-        assert str(exc) == "no_feature_separates_above_mdc"
-        stats = FeatureStatistics.from_values(preferred_values)
-        assert 0.03 > stats.mdc
-        assert 0.03 <= 1.96 * stats.std
-    else:
-        raise AssertionError("marginal single-observation signal must be disabled")
-    print("test_marginal_anchor_signal_is_disabled_by_runtime_noise OK")
+    profile = accumulator.finalize()
+    assert profile.enabled_features == ("face_shoulder_ratio",)
+    noise = profile.runtime_noise_floors["face_shoulder_ratio"]
+    stats = FeatureStatistics.from_values(preferred_values)
+    assert 0.03 > stats.mdc
+    assert 0.03 <= noise
+    upper = profile.relaxed["face_shoulder_ratio"].mean
+    inside_noise = normalized_feature_deviation(
+        "face_shoulder_ratio",
+        upper + noise,
+        profile.preferred["face_shoulder_ratio"],
+        profile.relaxed["face_shoulder_ratio"],
+        runtime_noise_floor=noise,
+    )
+    outside_noise = normalized_feature_deviation(
+        "face_shoulder_ratio",
+        upper + noise + 0.05,
+        profile.preferred["face_shoulder_ratio"],
+        profile.relaxed["face_shoulder_ratio"],
+        runtime_noise_floor=noise,
+    )
+    assert inside_noise.deviation == 0.0
+    assert math.isclose(outside_noise.deviation, 0.5)
+    print("test_marginal_anchor_range_is_valid_and_noise_bounded OK")
 
 
-def test_near_identical_smoothed_anchors_do_not_create_false_signal() -> None:
+def test_near_identical_smoothed_anchors_form_a_narrow_range() -> None:
     accumulator = CalibrationAccumulator(CalibrationPlan(min_samples_per_stage=5))
     for index in range(5):
         accumulator.add(index, {"face_shoulder_ratio": 0.300})
@@ -666,16 +808,20 @@ def test_near_identical_smoothed_anchors_do_not_create_false_signal() -> None:
         feature="face_shoulder_ratio",
     ) == PosturePolicy().runtime_ratio_noise_floor
 
-    try:
-        accumulator.finalize()
-    except ValueError as exc:
-        assert str(exc) == "no_feature_separates_above_mdc"
-    else:
-        raise AssertionError("near-identical smoothed anchors must not create posture signal")
-    print("test_near_identical_smoothed_anchors_do_not_create_false_signal OK")
+    profile = accumulator.finalize()
+    assert profile.enabled_features == ("face_shoulder_ratio",)
+    result = normalized_feature_deviation(
+        "face_shoulder_ratio",
+        0.305 + PosturePolicy().runtime_ratio_noise_floor + 0.05,
+        profile.preferred["face_shoulder_ratio"],
+        profile.relaxed["face_shoulder_ratio"],
+        runtime_noise_floor=profile.runtime_noise_floors["face_shoulder_ratio"],
+    )
+    assert math.isclose(result.deviation, 0.5)
+    print("test_near_identical_smoothed_anchors_form_a_narrow_range OK")
 
 
-def test_narrow_credible_anchor_span_is_disabled() -> None:
+def test_narrow_anchor_span_does_not_amplify_runtime_jitter() -> None:
     accumulator = CalibrationAccumulator(CalibrationPlan(min_samples_per_stage=5))
     for index in range(5):
         accumulator.add(index, {"face_shoulder_ratio": 0.300})
@@ -683,13 +829,17 @@ def test_narrow_credible_anchor_span_is_disabled() -> None:
     for index in range(5):
         accumulator.add(6.0 + index, {"face_shoulder_ratio": 0.320})
 
-    try:
-        accumulator.finalize()
-    except ValueError as exc:
-        assert str(exc) == "no_feature_separates_above_mdc"
-    else:
-        raise AssertionError("a 0.005 credible span must not amplify runtime jitter")
-    print("test_narrow_credible_anchor_span_is_disabled OK")
+    profile = accumulator.finalize()
+    noise = profile.runtime_noise_floors["face_shoulder_ratio"]
+    just_outside_range = normalized_feature_deviation(
+        "face_shoulder_ratio",
+        0.320 + noise + 0.005,
+        profile.preferred["face_shoulder_ratio"],
+        profile.relaxed["face_shoulder_ratio"],
+        runtime_noise_floor=noise,
+    )
+    assert math.isclose(just_outside_range.deviation, 0.05)
+    print("test_narrow_anchor_span_does_not_amplify_runtime_jitter OK")
 
 
 def test_exposure_uses_timestamps_pauses_and_decays() -> None:
@@ -770,6 +920,8 @@ def test_exposure_hysteresis() -> None:
 if __name__ == "__main__":
     test_statistics_sem_mdc_cv()
     test_two_anchor_segmentation_and_noise_floor()
+    test_similar_stable_anchors_form_a_valid_normal_range()
+    test_identical_stable_anchors_form_a_valid_normal_range()
     test_invalid_sample_resets_only_current_stage()
     test_low_quality_abstention_preserves_valid_samples()
     test_environment_only_values_do_not_count_as_posture_samples()
@@ -780,16 +932,19 @@ if __name__ == "__main__":
     test_feature_quality_uses_only_scored_landmarks()
     test_low_ear_quality_removes_raw_and_normalized_ear_evidence()
     test_stage_sample_shortage_fails()
+    test_no_common_posture_feature_is_the_only_profile_level_failure()
     test_explicit_phase_timing_and_bounded_extension()
     test_mdc_normalization_and_group_deduplication()
+    test_range_deviation_is_bidirectional_and_independent_of_anchor_span()
+    test_legacy_anchor_separation_policy_is_ignored()
     test_single_feature_excursion_is_inconclusive_for_group_scoring()
     test_shared_head_shoulder_ratios_are_one_evidence_channel()
     test_shared_shoulder_scale_drift_abstains_from_ratio_scoring()
     test_in_range_shoulder_drift_requires_raw_forward_support()
     test_runtime_noise_band_uses_single_observation_repeatability()
-    test_marginal_anchor_signal_is_disabled_by_runtime_noise()
-    test_near_identical_smoothed_anchors_do_not_create_false_signal()
-    test_narrow_credible_anchor_span_is_disabled()
+    test_marginal_anchor_range_is_valid_and_noise_bounded()
+    test_near_identical_smoothed_anchors_form_a_narrow_range()
+    test_narrow_anchor_span_does_not_amplify_runtime_jitter()
     test_exposure_uses_timestamps_pauses_and_decays()
     test_long_observation_gap_does_not_backfill_exposure()
     test_watch_only_deviation_does_not_preload_exposure()

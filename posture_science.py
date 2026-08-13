@@ -322,7 +322,7 @@ class CalibrationAccumulator:
         # A calibration sample is only useful when it contains at least one
         # posture feature.  Distance/environment measurements alone must not
         # advance the stage counter and later turn into a misleading
-        # ``no_feature_separates_above_mdc`` failure.
+        # common-feature failure.
         if not any(name in POSTURE_FEATURES for name in usable):
             self.skip(timestamp, "no_posture_features")
             return stage
@@ -365,21 +365,17 @@ class CalibrationAccumulator:
             if preferred is None or relaxed is None:
                 disabled[name] = "insufficient_valid_samples"
                 continue
-            separation = abs(relaxed.mean - preferred.mean)
             noise_floor = runtime_noise_floor(preferred, relaxed, policy, name)
             runtime_noise_floors[name] = noise_floor
-            required_separation = noise_floor * policy.runtime_min_signal_to_noise_ratio
-            if separation <= required_separation:
-                # Keep the established audit code for report consumers. The
-                # governing floor now includes MDC and within-anchor runtime
-                # repeatability, so this legacy name is conservative rather
-                # than an exact description of the expanded test.
-                disabled[name] = "anchor_separation_not_above_mdc"
-                continue
+            # Both anchors define accepted posture, so a small separation is
+            # a legitimate narrow personal range rather than a calibration
+            # failure. Runtime noise expands the range boundaries
+            # independently; anchor separation is never a direction
+            # requirement or a scoring denominator.
             enabled.append(name)
 
         if not enabled:
-            raise ValueError("no_feature_separates_above_mdc")
+            raise ValueError("no_common_posture_features")
 
         minimum_count = min(self._sample_counts.values())
         sample_quality = min(1.0, minimum_count / max(minimum, 1))
@@ -441,15 +437,18 @@ class PosturePolicy:
     # band is based on within-anchor standard deviation rather than SEM alone.
     # These are adjustable reliability/product parameters, not physiology.
     runtime_noise_std_multiplier: float = 1.96
-    # A two-band span leaves at least one full noise band after the acceptance
-    # band is removed, avoiding a near-zero scoring denominator.
+    # Deprecated constructor compatibility only. This value is intentionally
+    # ignored: anchor separation does not gate calibration or scale deviation.
     runtime_min_signal_to_noise_ratio: float = 2.0
-    # Calibration smoothing can make observed std/MDC unrealistically close
-    # to zero. These conservative feature-unit floors prevent a tiny stage
-    # drift from becoming a complete 0-to-1 posture axis. They are adjustable
-    # product reliability parameters, not physiological thresholds.
+    # Conservative feature-unit floors absorb boundary jitter. They are
+    # adjustable product reliability parameters, not physiological thresholds.
     runtime_ratio_noise_floor: float = 0.015
     runtime_angle_noise_floor_deg: float = 1.5
+    # Outside the accepted range and its noise band, these independent scales
+    # map raw feature units to a continuous product score. They deliberately
+    # do not depend on how far apart the user's two normal anchors happen to be.
+    runtime_ratio_response_scale: float = 0.10
+    runtime_angle_response_scale_deg: float = 10.0
     # Every normalized posture feature except trunk lean depends on the
     # detected shoulder span. If that shared denominator leaves both
     # calibrated anchor ranges by more than its repeatability allowance, the
@@ -471,12 +470,14 @@ class PosturePolicy:
             raise ValueError("post_calibration_validation_seconds cannot be negative")
         if self.runtime_noise_std_multiplier <= 0:
             raise ValueError("runtime_noise_std_multiplier must be positive")
-        if self.runtime_min_signal_to_noise_ratio <= 1.0:
-            raise ValueError("runtime_min_signal_to_noise_ratio must be greater than one")
         if self.runtime_ratio_noise_floor < 0.0:
             raise ValueError("runtime_ratio_noise_floor cannot be negative")
         if self.runtime_angle_noise_floor_deg < 0.0:
             raise ValueError("runtime_angle_noise_floor_deg cannot be negative")
+        if self.runtime_ratio_response_scale <= 0.0:
+            raise ValueError("runtime_ratio_response_scale must be positive")
+        if self.runtime_angle_response_scale_deg <= 0.0:
+            raise ValueError("runtime_angle_response_scale_deg must be positive")
         if not (0.0 <= self.shared_shoulder_scale_guard_ratio < 1.0):
             raise ValueError("shared_shoulder_scale_guard_ratio must be in [0, 1)")
         if self.camera_roll_guard_deg < 0.0:
@@ -518,59 +519,58 @@ def normalized_feature_deviation(
     policy: Optional[PosturePolicy] = None,
     runtime_noise_floor: Optional[float] = None,
 ) -> FeatureDeviation:
-    """Measure excursion beyond the user's two-anchor normal posture band.
+    """Measure bidirectional excursion beyond the two-anchor normal range.
 
     MDC is retained for reporting, but SEM-derived MDC is not a suitable
     single-observation tolerance because it shrinks as calibration sample count
-    grows.  The runtime acceptance band therefore also includes within-anchor
-    standard deviation. Features whose anchor span is only marginally above
-    that band are excluded at calibration time so a near-zero usable
-    denominator cannot amplify ordinary frame jitter.
+    grows. The runtime acceptance band therefore also includes within-anchor
+    standard deviation and a small feature-resolution floor.
 
     ``preferred`` and ``relaxed`` are both user-accepted calibration postures.
-    The interval between them is therefore a personal normal range, not a
-    zero-to-one risk axis. Deviation begins only after the observation passes
-    the relaxed boundary in the calibrated direction by more than the runtime
-    noise band. This prevents the posture explicitly requested in stage two
-    from being reclassified as high deviation immediately after calibration.
+    Their ordered means define a personal normal range; neither anchor defines
+    a bad direction or a score denominator. Deviation begins only after the
+    observation leaves either boundary by more than the runtime noise band,
+    then uses an independent per-feature product response scale. Similar or
+    identical anchors are therefore valid and cannot amplify frame jitter.
     """
 
     policy = policy or PosturePolicy()
-    anchor_delta = relaxed.mean - preferred.mean
-    direction = 1.0 if anchor_delta >= 0.0 else -1.0
-    anchor_span = abs(anchor_delta)
     mdc = max(preferred.mdc, relaxed.mdc, 1e-9)
     noise_floor = (
         max(float(runtime_noise_floor), mdc)
         if runtime_noise_floor is not None
         else _runtime_noise_floor_for_feature(preferred, relaxed, policy, feature)
     )
-    credible_anchor_span = anchor_span - noise_floor
-    minimum_credible_span = noise_floor * (
-        policy.runtime_min_signal_to_noise_ratio - 1.0
+    lower = min(preferred.mean, relaxed.mean)
+    upper = max(preferred.mean, relaxed.mean)
+    current_value = float(current)
+    outside_distance = max(lower - current_value, current_value - upper, 0.0)
+    # Treat the inclusive noise boundary as accepted. The epsilon prevents
+    # binary floating-point representation from turning an exact policy
+    # boundary into a microscopic non-zero deviation.
+    credible_excursion = (
+        0.0
+        if outside_distance <= noise_floor + 1e-12
+        else outside_distance - noise_floor
     )
-    signal_reliability = (
-        1.0
-        if credible_anchor_span >= minimum_credible_span and credible_anchor_span > 0.0
-        else 0.0
-    )
-    if signal_reliability == 0.0:
-        deviation = 0.0
-    else:
-        projected_change = (float(current) - preferred.mean) * direction
-        beyond_relaxed = projected_change - anchor_span
-        credible_excursion = max(0.0, beyond_relaxed - noise_floor)
-        deviation = max(0.0, min(1.5, credible_excursion / credible_anchor_span))
+    response_scale = _feature_response_scale(feature, policy)
+    deviation = max(0.0, min(1.5, credible_excursion / response_scale))
     return FeatureDeviation(
         feature=feature,
         deviation=deviation,
-        current=float(current),
+        current=current_value,
         preferred=preferred.mean,
         relaxed=relaxed.mean,
         mdc=mdc,
         runtime_noise=noise_floor,
-        signal_reliability=signal_reliability,
+        signal_reliability=1.0,
     )
+
+
+def _feature_response_scale(feature: str, policy: PosturePolicy) -> float:
+    if feature in LATERAL_FEATURES:
+        return policy.runtime_angle_response_scale_deg
+    return policy.runtime_ratio_response_scale
 
 
 def runtime_noise_floor(

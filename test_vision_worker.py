@@ -357,6 +357,33 @@ def test_dual_anchor_worker_calibration_and_stage_counts():
     print("test_dual_anchor_worker_calibration_and_stage_counts OK")
 
 
+def test_dual_anchor_worker_accepts_identical_anchor_postures():
+    """The production worker must not require the user to exaggerate relaxation."""
+
+    engine = FakeEngine()
+    analyzer = HighPrecisionPostureAnalyzer(auto_calibrate=False, require_dual_anchor=True)
+    worker = VisionWorker(engine_factory=lambda: engine, analyzer=analyzer)
+    start = datetime(2026, 1, 1, 12, 0, 0)
+    for index in range(5):
+        worker._collect_calibration_sample(
+            make_dual_sample(start + timedelta(seconds=index), 0.0)
+        )
+    assert worker._calibration_accumulator is not None
+    worker._calibration_accumulator.begin_transition(start + timedelta(seconds=5))
+    for index in range(5):
+        worker._collect_calibration_sample(
+            make_dual_sample(start + timedelta(seconds=6 + index), 0.0)
+        )
+
+    worker._finalize_dual_anchor_calibration(60.0, 10)
+    result = worker.take_calibration_result()
+    assert result is not None and result.ok, result
+    assert dict(result.stage_counts) == {"preferred": 5, "relaxed": 5}
+    assert analyzer.calibration_profile is not None
+    assert analyzer.calibration_profile.scientific_ready
+    print("test_dual_anchor_worker_accepts_identical_anchor_postures OK")
+
+
 def test_dual_anchor_worker_rejects_multi_person_and_short_stage():
     engine = FakeEngine()
     analyzer = HighPrecisionPostureAnalyzer(auto_calibrate=False, require_dual_anchor=True)
@@ -648,6 +675,7 @@ if __name__ == "__main__":
     test_calibration_failure_and_error_propagation()
     test_calibration_failure_reports_missing_fields()
     test_dual_anchor_worker_calibration_and_stage_counts()
+    test_dual_anchor_worker_accepts_identical_anchor_postures()
     test_dual_anchor_worker_rejects_multi_person_and_short_stage()
     test_dual_anchor_worker_skips_quality_dropout_without_resetting_stage()
     test_dual_anchor_worker_accepts_borderline_pose_quality_for_anchor_repeatability()

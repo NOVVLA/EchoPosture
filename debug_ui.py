@@ -863,18 +863,16 @@ class DebugWindow(QMainWindow):
         try:
             profile = accumulator.finalize()
         except ValueError as exc:
-            self._set_calibration_stage_visual("failed")
-            self._set_calibration_message(
-                "debug_dual_calib_failed",
-                detail=self._calibration_failure_text(str(exc)),
+            self._show_dual_calibration_failure(
+                self._calibration_failure_text(str(exc)),
+                accumulator.stage_counts,
             )
             return
 
         if self.target_manager is not None and not self.target_manager.lock_calibration_target():
-            self._set_calibration_stage_visual("failed")
-            self._set_calibration_message(
-                "debug_dual_calib_failed",
-                detail=_t("debug_target_calib_fail"),
+            self._show_dual_calibration_failure(
+                _t("debug_target_calib_fail"),
+                profile.stage_counts,
             )
             return
         if self.target_manager is not None and self.current_raw_sample is not None:
@@ -891,10 +889,9 @@ class DebugWindow(QMainWindow):
         self._ensure_scientific_analyzer()
         distance_cm = float(self.distance_input.value())
         if not self.analyzer.set_calibration_profile(profile, distance_cm):
-            self._set_calibration_stage_visual("failed")
-            self._set_calibration_message(
-                "debug_dual_calib_failed",
-                detail=_t("calib_missing_no_feature_separates_above_mdc"),
+            self._show_dual_calibration_failure(
+                _t("calib_missing_no_common_posture_features"),
+                profile.stage_counts,
             )
             return
 
@@ -1035,6 +1032,28 @@ class DebugWindow(QMainWindow):
         self._calibration_message_key = key
         self._calibration_message_kwargs = kwargs
         self.calibration_label.setText(_t(key, **kwargs))
+
+    def _show_dual_calibration_failure(
+        self,
+        detail: str,
+        counts: dict[str, int],
+    ) -> None:
+        """Show the actionable failure on both the status line and red card."""
+
+        preferred = counts.get(PREFERRED, 0)
+        relaxed = counts.get(RELAXED, 0)
+        minimum = self.calibration_plan.min_samples_per_stage
+        self._set_calibration_stage_visual("failed")
+        self.calibration_stage_detail.setText(
+            _t(
+                "debug_stage_failed_reason",
+                detail=detail,
+                preferred=preferred,
+                relaxed=relaxed,
+                minimum=minimum,
+            )
+        )
+        self._set_calibration_message("debug_dual_calib_failed", detail=detail)
 
     def _calibration_stage_seconds_remaining(self, phase: str) -> Optional[int]:
         accumulator = self._dual_calibration_accumulator
