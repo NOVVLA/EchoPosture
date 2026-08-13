@@ -25,8 +25,8 @@ The release package is a portable folder for Windows x64. It includes the embedd
 
 Both calibrated postures and the interval between them form your personal normal posture range. After calibration,
 EchoPosture briefly rechecks that the target-locked measurements reproduce this range; static exposure stays paused
-during that check. Only sustained movement beyond the relaxed boundary and the measurement-noise band can accumulate
-exposure.
+during that check. The anchors may be similar or identical; users do not need to exaggerate the relaxed posture.
+Only sustained movement beyond either side of the range and its small measurement-noise band can accumulate exposure.
 
 Windows SmartScreen may warn about unsigned builds. Only run the package if it came from the release link above and the SHA256 matches.
 

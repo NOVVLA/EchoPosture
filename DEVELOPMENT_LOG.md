@@ -1,5 +1,44 @@
 # DEVELOPMENT_LOG（Development Log，开发日志）
 
+## 2026-08-13 - Treat two anchors as a normal range without a separation gate
+
+- Source: user field report and product correction that preferred and naturally relaxed postures exist only to define
+  a personal accepted range; users must not be rejected or encouraged to slump because the two anchors look similar.
+- Git: runtime/UI commit `864d25d`, documentation/audit commit `pending`, branch
+  `codex/pr2-phase1-calibration-safety`, tag `none`; delivery target remains existing PR `#23`, with no new PR.
+- Reproduction: two five-sample stable stages with identical values, and two naturally close stages whose mean delta
+  stayed below the runtime noise band, both raised `no_feature_separates_above_mdc`. The score also used anchor span
+  and calibrated direction, so a narrow span amplified jitter and the opposite range boundary was ignored.
+- Fix: ordered anchor means now define the accepted range. Identical, close, and wide anchors all calibrate when at
+  least one posture feature has five valid values in both stages. Each boundary is extended by the larger of MDC,
+  `1.96 × std`, and the small feature floor; excursion beyond either side uses fixed product response scales of
+  `0.10` for normalized ratios and `10°` for angles, independent of anchor spacing. The old separation failure and
+  feature-disabling branch were removed.
+- UI and audit: Debug UI uses the same full production two-anchor path, removes the obsolete anchor-separation reason,
+  and places the concrete failure plus preferred/relaxed valid counts directly in the red stage card. The numeric
+  reliability report keeps anchor delta as descriptive evidence and states that it never gates calibration.
+- Risk: this changes calibration acceptance and bidirectional deviation magnitude. Existing multi-feature support,
+  confidence abstention, target/camera guards, hysteresis, exposure thresholds, and legacy-labelled single-frame path
+  remain in place. All numeric floors and response scales are product policies, not medical or physiological values.
+- Verification from the repository root:
+  - Bundled `py_compile` passed for the posture, worker, analyzer, Debug UI, localization, reliability tool, and
+    affected tests.
+  - `ruff check .` passed.
+  - `test_posture_science.py`, `test_feature_toggles.py`, `test_vision_worker.py`, `test_vision_tracking.py`,
+    `test_startup_guards.py`, `test_debug_ui.py`, and `test_vision_replay.py` passed. New production-worker and Debug
+    UI regressions both complete a 5+5 identical-anchor profile successfully.
+  - `tools\collect_posture_reliability.py --help` passed; no `--output` report was requested or saved.
+  - `git diff --check` passed. Debug UI emitted the existing bundled Qt missing-font-directory warning; deterministic
+    strings and behavior passed, but packaged font fidelity is not claimed.
+- Privacy and artifacts: tests and report-schema checks use only synthetic numeric data. No frame, image, video, face
+  crop, identity template/vector, or reliability report was saved.
+- Gaps: the user's physical-camera calibration must be retested after delivery. Cross-device SEM/MDC, consented
+  recording, user comfort, external validity, and medical validation remain unverified and unclaimed.
+- Backup: `git stash create` captured all tracked changes before staging at object
+  `52d8ab5b67cd327becb2caf416378fa8e2c09806`; unrelated untracked local artifacts were not included.
+- Conclusion: deterministic and static verification passed; ready to split code/tests and documentation into
+  reviewable commits and push both to the existing PR.
+
 ## 2026-08-13 - Make lateral posture evidence invariant to camera roll
 
 - Source: completion audit of the unchanged-upright-posture false alert after the preceding shared-shoulder-scale

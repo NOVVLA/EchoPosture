@@ -136,6 +136,12 @@ A successful debug preview with a failed tray calibration usually means one of t
 quality-gated samples, not that the tray icon itself is broken. The debug panel's one-frame button is an explicit legacy
 path and must not be used as proof of scientific calibration.
 
+The preferred and relaxed poses are not required to look visibly different. They only establish the lower and upper
+ends of each personal normal-feature range, so an identical or near-identical pair is valid. Do not deliberately slump
+to make calibration pass. A range-separation or “did not exceed noise” failure indicates stale behavior; current
+calibration fails only for insufficient stage samples, target contamination, or no posture feature with enough valid
+values in both stages. The Debug UI red failure card shows the specific reason and both valid-sample counts.
+
 ## Numeric Reliability Report
 
 To collect repeatability evidence deliberately, run the command from the repository root:
@@ -145,10 +151,11 @@ runtime\python311\python.exe tools\collect_posture_reliability.py --frames 200 -
 ```
 
 The command prompts for two equal numeric sampling blocks with a short transition between them; this validation tool
-is separate from the production UI timing path. The report contains only numeric feature statistics, anchor separation
-versus MDC, hardware/resolution/backend/model metadata, sample counts, and an explicit unverified-items list. Without
-`--output`, the JSON is printed and no report is written. This command does not establish clinical validity or
-cross-device reliability by itself.
+is separate from the production UI timing path. The report contains only numeric feature statistics, descriptive
+anchor ranges and deltas, runtime noise bands and response scales, hardware/resolution/backend/model metadata, sample
+counts, and an explicit unverified-items list. Anchor separation is reported for audit and never gates calibration.
+Without `--output`, the JSON is printed and no report is written. This command does not establish clinical validity
+or cross-device reliability by itself.
 
 ## Tray and Console
 

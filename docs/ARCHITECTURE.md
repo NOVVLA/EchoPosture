@@ -161,15 +161,17 @@ numeric failure signatures, including correlated raw-scale jumps, shared shoulde
 same-direction eye/pelvis reference roll. These cases produce `UNKNOWN` and never force a `BAD` result.
 
 The preferred and relaxed anchors are both user-accepted postures. For each enabled feature, the calibrated interval
-between them is a personal normal band with deviation `0.0`; scoring begins only after an observation passes the
-relaxed boundary in the calibrated direction by more than the runtime noise band. After the profile is accepted, the
+between their ordered means is a personal normal band with deviation `0.0`. Similar or identical anchors remain a
+valid narrow range; calibration never requires the user to manufacture posture separation. Scoring begins only after
+an observation passes either range boundary by more than the runtime noise band. After the profile is accepted, the
 target-locked runtime stream must stay inside that band for about two stable seconds before exposure is enabled. This
 validation returns `UNKNOWN`, reports zero deviation, and pauses exposure; it guards the adapter/target-replacement
 boundary and prevents the relaxed calibration ending pose from creating an exposure episode. Runtime
 single-frame tolerance uses the largest of reported MDC, `1.96 ×` within-anchor standard deviation, and a conservative
 per-feature resolution floor (`0.015` for normalized ratios, `1.5°` for angle features). SEM/MDC remains in the audit
-report, but is not treated as the full single-observation noise band. A feature needs at least two runtime-noise bands
-of anchor separation so subtracting the acceptance band cannot leave a near-zero scoring denominator. WATCH
+report, but is not treated as the full single-observation noise band or as an anchor-separation gate. Beyond the
+accepted range and noise band, normalized ratios use a fixed `0.10` response scale and angle features a fixed `10°`
+response scale. These mappings are independent of anchor spacing, so a narrow range cannot amplify ordinary jitter. WATCH
 hysteresis remains available for observation, but exposure integrates only while alert hysteresis is active at
 deviation `0.70` or above; WATCH-only drift cannot accumulate an alert budget. Observation gaps longer than two
 seconds pause integration instead of backfilling unobserved time. These floors, multipliers, and durations are
@@ -213,7 +215,7 @@ that writes a report, under the package-local `logs` directory.
 5. The dialog closes before the user is told to relax. The worker ignores an approximately one-second transition and
    samples the relaxed anchor in the background for approximately five seconds, with at most two seconds of bounded extension.
 6. `CalibrationAccumulator` builds per-feature repeatability statistics and `CalibrationProfile`; the analyzer accepts
-   it only when both stages meet the minimum and at least one posture feature separates above MDC.
+   it only when both stages meet the minimum and at least one posture feature has five valid values in both stages.
 7. A successful result starts monitoring immediately with both anchors and their interval treated as the personal
    normal posture range; a failed startup calibration shows a warning and stops the application.
 
