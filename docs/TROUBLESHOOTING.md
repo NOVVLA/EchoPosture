@@ -124,13 +124,17 @@ single-person, quality-gated samples in both calibration stages; it does not sil
   contamination cannot be averaged away.
 - Hip visibility gates only hip-dependent torso features. Clear shoulders and face measurements can still contribute
   to calibration when the hips are less visible.
-- Recalibrate after moving or rotating the camera, chair, or monitor. The compatibility backend does not promise a
-  universal camera-motion detector; it pauses exposure for the supported numeric signatures it can verify, including
-  correlated scale changes, unstable shared shoulder scale, and eye/pelvis lines rolling together. Other camera
-  moves still require manual recalibration.
+- Moving closer to or farther from the camera does not by itself require recalibration. Uniform body scale changes
+  remain measurable through normalized posture features. Recalibrate after moving or rotating the camera, chair, or
+  monitor when the viewing geometry itself changes. The compatibility backend does not promise a universal
+  camera-motion detector; supported reference/denominator failures pause exposure as `OBSERVING`, while unresolved
+  camera moves still require manual recalibration.
 - Remain naturally relaxed until the relaxed measurement completes. The app then briefly validates that the
-  target-locked measurements still fall in the two-anchor personal normal range. This validation reports `UNKNOWN`
+  target-locked measurements still fall in the two-anchor personal normal range. This validation reports `OBSERVING`
   and pauses exposure; staying in the relaxed calibration ending pose must not create a static-exposure episode.
+- Small landmark or posture changes remain normal variation. A larger corroborated change first reports
+  `ADJUSTING` for about two seconds; returning to the personal range during that interval never opens WATCH or adds
+  exposure. Only a sustained, independently supported change can enter WATCH.
 
 A successful debug preview with a failed tray calibration usually means one of the two stages did not contain enough
 quality-gated samples, not that the tray icon itself is broken. The debug panel's one-frame button is an explicit legacy

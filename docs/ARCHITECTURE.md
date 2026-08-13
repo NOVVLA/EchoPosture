@@ -107,8 +107,11 @@ freshness is more important than processing every captured frame.
 - `PostureDecision` carries posture deviation, equivalent exposure seconds, confidence, calibration quality, activity
   state, and the old `risk_score` / `sustained_seconds` compatibility aliases.
 
-The analyzer produces states such as `GOOD`, `WATCH`, `BAD`, `CRITICAL`, `UNKNOWN`, `AWAY`, `MULTI_USER`, and
-`PROFILE_MISMATCH`. These are ergonomic application states, not medical diagnoses or identity recognition.
+The analyzer produces states such as `GOOD`, `MOVING`, `ADJUSTING`, `OBSERVING`, `WATCH`, `BAD`, `CRITICAL`,
+`UNKNOWN`, `AWAY`, `MULTI_USER`, and `PROFILE_MISMATCH`. `MOVING` and `ADJUSTING` are measured activity states;
+`OBSERVING` keeps a known target visible while one frame is not eligible for exposure. `UNKNOWN` is reserved for
+genuinely unavailable posture measurements or unresolved targets. These are ergonomic application states, not
+medical diagnoses or identity recognition.
 
 ### Unified backend and target management
 
@@ -128,8 +131,9 @@ and emits `TARGET_LOCKED`, `MULTI_PRESENT`, `TARGET_OCCLUDED`, `TARGET_REACQUIRI
 continuity, while near-tied candidates enter `TARGET_AMBIGUOUS`; immutable track output carries the last match score.
 A non-target track is never promoted automatically. When a backend can keep the target observation
 separate, `MULTI_PRESENT` is attached to the immutable worker snapshot while posture scoring continues for the target.
-The locked target also publishes a time-normalized motion value and `STATIC` / `MOVING` activity state. Motion does not
-accumulate static exposure.
+The locked target also publishes a time-normalized motion value and `STATIC` / `MOVING` activity state. It combines
+smoothed box-centre translation with signed relative box-scale velocity, so forward/backward movement can be detected
+without turning alternating scale jitter into activity. Motion does not accumulate static exposure.
 
 ### Scientific calibration and measurement abstention
 
@@ -155,24 +159,30 @@ lateral posture evidence unchanged when the whole camera frame rolls. Runtime ex
 landmark gate used during calibration:
 shoulder evidence may remain usable while low-confidence hips remove only torso/hip-dependent features, and decision
 confidence is computed from the features that actually reached scoring. Raw shoulder width and distance remain
-separate environment prompts. Turned-head, low-confidence, moving, and ambiguous observations pause exposure. The
-current compatibility backend does not claim general camera-motion estimation: it explicitly abstains on supported
-numeric failure signatures, including correlated raw-scale jumps, shared shoulder-denominator drift, and
-same-direction eye/pelvis reference roll. These cases produce `UNKNOWN` and never force a `BAD` result.
+separate environment prompts. A uniform whole-person scale change preserves normalized posture evidence and remains
+measurable at the new distance. A shoulder-span change is suppressed only when it manufactures corroborated ratios
+without corresponding raw numerator changes. Turned-head, low-confidence, moving, camera-reference, and partial
+evidence observations pause exposure and use explicit `MOVING`, `ADJUSTING`, or `OBSERVING` states; they do not claim
+that the person is unrecognized. Truly absent posture features or unresolved target ownership can still use `UNKNOWN`.
 
 The preferred and relaxed anchors are both user-accepted postures. For each enabled feature, the calibrated interval
 between their ordered means is a personal normal band with deviation `0.0`. Similar or identical anchors remain a
 valid narrow range; calibration never requires the user to manufacture posture separation. Scoring begins only after
-an observation passes either range boundary by more than the runtime noise band. After the profile is accepted, the
+an observation passes either range boundary by more than the runtime measurement-noise band and natural-movement
+margin. After the profile is accepted, the
 target-locked runtime stream must stay inside that band for about two stable seconds before exposure is enabled. This
-validation returns `UNKNOWN`, reports zero deviation, and pauses exposure; it guards the adapter/target-replacement
+validation returns `OBSERVING`, reports zero deviation, and pauses exposure; it guards the adapter/target-replacement
 boundary and prevents the relaxed calibration ending pose from creating an exposure episode. Runtime
-single-frame tolerance uses the largest of reported MDC, `1.96 ×` within-anchor standard deviation, and a conservative
-per-feature resolution floor (`0.015` for normalized ratios, `1.5°` for angle features). SEM/MDC remains in the audit
+single-frame measurement noise uses the largest of reported MDC, `3.0 ×` within-anchor standard deviation, and a
+conservative per-feature resolution floor (`0.025` for normalized ratios, `2.5°` for angle features). The runtime
+acceptance boundary then adds a separate natural-movement deadband (`0.05` for normalized ratios, `3°` for angle
+features). SEM/MDC remains in the audit
 report, but is not treated as the full single-observation noise band or as an anchor-separation gate. Beyond the
-accepted range and noise band, normalized ratios use a fixed `0.10` response scale and angle features a fixed `10°`
-response scale. These mappings are independent of anchor spacing, so a narrow range cannot amplify ordinary jitter. WATCH
-hysteresis remains available for observation, but exposure integrates only while alert hysteresis is active at
+accepted range, noise band, and movement margin, normalized ratios use a fixed `0.10` response scale and angle features a fixed `10°`
+response scale. These mappings are independent of anchor spacing, so a narrow range cannot amplify ordinary jitter.
+Small uncorroborated deviations remain `GOOD`; a corroborated change must persist for about two seconds in
+`ADJUSTING` before entering WATCH, and the adjustment interval is never backfilled as exposure. WATCH hysteresis
+remains available for observation, but exposure integrates only while alert hysteresis is active at
 deviation `0.70` or above; WATCH-only drift cannot accumulate an alert budget. Observation gaps longer than two
 seconds pause integration instead of backfilling unobserved time. These floors, multipliers, and durations are
 adjustable product policy, not biological standards.

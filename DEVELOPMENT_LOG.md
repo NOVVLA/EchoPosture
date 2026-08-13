@@ -1,5 +1,50 @@
 # DEVELOPMENT_LOG（Development Log，开发日志）
 
+## 2026-08-13 - Separate normal movement from unknown measurements and debounce posture changes
+
+- Source: user field feedback that normal movement, leaning/reaching, shoulder-width change, and camera-distance
+  change were immediately shown as unrecognized or observation states, effectively requiring the user to remain
+  motionless and too close to a single calibrated position.
+- Git: commit `pending`, branch `codex/pr2-phase1-calibration-safety`, tag `none`; delivery remains the existing PR
+  `#23`, with no additional PR.
+- Root cause: the scientific analyzer used `UNKNOWN` as a generic synonym for every paused exposure frame. Runtime
+  score hysteresis also admitted a corroborated excursion on its first frame, while activity tracking measured only
+  target-box centre translation and missed centre-stable forward/backward movement. A correlated raw-scale guard then
+  permanently abstained after an otherwise valid user changed distance.
+- State fix: `MOVING` now means measured target activity, `ADJUSTING` means a new reach/lean/posture change is inside
+  a two-second product confirmation window, and `OBSERVING` means the target is known but that observation is not
+  exposure-eligible. `UNKNOWN` remains for genuinely unavailable posture features or unresolved target/identity
+  conditions. All non-intervention states keep zero current deviation and cannot trigger the tray overlay.
+- Noise and time fix: the single-observation measurement band now uses the largest of MDC, `3.0 ×` within-anchor
+  standard deviation, a `0.025` normalized-ratio floor, and a `2.5°` angle floor. A separate natural-movement
+  deadband adds `0.05` for normalized ratios and `3°` for angle features, so ordinary reaching, breathing, and seat
+  adjustment do not immediately change the user-visible state. Small uncorroborated changes remain normal variation.
+  A corroborated deviation must stay beyond the personal range for about two seconds before WATCH; the
+  confirmation interval is never backfilled into static exposure. These are adjustable product reliability and
+  interaction parameters, not medical or physiological thresholds.
+- Movement and scale fix: target activity combines smoothed centre translation with signed relative bounding-box
+  scale velocity, detecting forward/backward movement while cancelling alternating one-pixel scale jitter. Uniform
+  whole-person scale changes preserve normalized features and continue to score at the new distance. Shoulder-span
+  change abstains only when it creates ratio evidence without matching changes in raw face/torso/ear numerators.
+- UI and compatibility: Debug UI, tray/console status translation, numeric replay, and worker decisions understand
+  `MOVING`, `ADJUSTING`, and `OBSERVING`. Worker snapshots preserve the analyzer's environment reason instead of
+  overwriting it with the target-lock state. Existing `GOOD`, `WATCH`, `BAD`, `CRITICAL`, and target states remain.
+- Verification from the repository root:
+  - `test_posture_science.py`, `test_feature_toggles.py`, `test_vision_worker.py`, `test_vision_tracking.py`,
+    `test_startup_guards.py`, `test_debug_ui.py`, and `test_vision_replay.py` passed during development. New regressions
+    cover brief reach recovery, sustained confirmation, uniform distance scale, forward/backward activity, and
+    high-FPS box-scale jitter.
+  - Final `runtime\\python311\\python.exe -m py_compile ...`, `ruff check .`, `test_posture_science.py`,
+    `test_feature_toggles.py`, `test_vision_worker.py`, `test_vision_tracking.py`, `test_startup_guards.py`,
+    `test_debug_ui.py`, `test_vision_replay.py`, and `git diff --check` all passed from the repository root.
+    Debug UI emitted only the existing bundled Qt missing-font-directory warning; assertions passed.
+- Privacy and artifacts: all new evidence is synthetic numeric geometry. No image, frame, video, face crop, identity
+  vector/template, or reliability report was saved.
+- Gaps: physical-camera comfort and false-observation frequency still require user retest. Cross-device reliability,
+  consented recording, external validity, and medical validation remain unverified and unclaimed.
+- Conclusion: implementation behavior is locally guarded and ready for split commit/push; physical-camera comfort and
+  false-observation frequency remain explicit user-retest gaps.
+
 ## 2026-08-13 - Treat two anchors as a normal range without a separation gate
 
 - Source: user field report and product correction that preferred and naturally relaxed postures exist only to define
