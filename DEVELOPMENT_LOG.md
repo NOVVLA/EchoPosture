@@ -4,7 +4,7 @@
 
 - Source: user field report and product correction that preferred and naturally relaxed postures exist only to define
   a personal accepted range; users must not be rejected or encouraged to slump because the two anchors look similar.
-- Git: runtime/UI commit `864d25d`, documentation/audit commit `pending`, branch
+- Git: runtime/UI commit `864d25d`, documentation/audit commit `c47dde6`, branch
   `codex/pr2-phase1-calibration-safety`, tag `none`; delivery target remains existing PR `#23`, with no new PR.
 - Reproduction: two five-sample stable stages with identical values, and two naturally close stages whose mean delta
   stayed below the runtime noise band, both raised `no_feature_separates_above_mdc`. The score also used anchor span
