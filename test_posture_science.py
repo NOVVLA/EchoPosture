@@ -598,6 +598,45 @@ def test_single_feature_excursion_is_inconclusive_for_group_scoring() -> None:
     print("test_single_feature_excursion_is_inconclusive_for_group_scoring OK")
 
 
+def test_extreme_lone_forward_channel_is_explicit_evidence() -> None:
+    profile = build_profile()
+    torso_values = {
+        "torso_shoulder_ratio": 0.45,
+        "torso_height_px": 90.0,
+        "shoulder_width_px": 200.0,
+    }
+    score = score_posture_deviation(torso_values, profile)
+
+    assert score.forward_deviation >= PosturePolicy().lone_forward_channel_deviation
+    assert score.deviation >= PosturePolicy().severe_deviation
+    assert score.corroborated
+    assert not shared_scale_measurement_unstable(torso_values, profile, score=score)
+
+    head_values = {
+        "face_shoulder_ratio": 0.08,
+        "interpupillary_px": 16.0,
+        "shoulder_width_px": 200.0,
+    }
+    head_score = score_posture_deviation(head_values, profile)
+    assert head_score.forward_deviation >= PosturePolicy().lone_forward_channel_deviation
+    assert head_score.corroborated
+    assert not shared_scale_measurement_unstable(head_values, profile, score=head_score)
+
+    denominator_only = {
+        "torso_shoulder_ratio": 180.0 / 130.0,
+        "torso_height_px": 180.0,
+        "shoulder_width_px": 130.0,
+    }
+    drift_score = score_posture_deviation(denominator_only, profile)
+    assert drift_score.corroborated
+    assert shared_scale_measurement_unstable(
+        denominator_only,
+        profile,
+        score=drift_score,
+    )
+    print("test_extreme_lone_forward_channel_is_explicit_evidence OK")
+
+
 def test_shared_head_shoulder_ratios_are_one_evidence_channel() -> None:
     accumulator = CalibrationAccumulator(CalibrationPlan(min_samples_per_stage=5))
     for index in range(5):
@@ -621,8 +660,8 @@ def test_shared_head_shoulder_ratios_are_one_evidence_channel() -> None:
 
     score = score_posture_deviation(
         {
-            "face_shoulder_ratio": 0.60,
-            "ear_shoulder_ratio": 0.70,
+            "face_shoulder_ratio": 0.53,
+            "ear_shoulder_ratio": 0.63,
         },
         profile,
     )
@@ -759,9 +798,9 @@ def test_in_range_shoulder_drift_requires_raw_forward_support() -> None:
     one_changed_numerator["torso_height_px"] = 200.0
     one_changed_numerator["torso_shoulder_ratio"] = 200.0 / 175.0
     one_changed_score = score_posture_deviation(one_changed_numerator, profile)
-    assert one_changed_score.deviation == 0.0
-    assert one_changed_score.raw_deviation > 0.0
-    assert not one_changed_score.corroborated
+    assert one_changed_score.deviation >= PosturePolicy().severe_deviation
+    assert one_changed_score.raw_deviation >= one_changed_score.deviation
+    assert one_changed_score.corroborated
     assert not shared_scale_measurement_unstable(
         one_changed_numerator,
         profile,
@@ -1036,6 +1075,7 @@ if __name__ == "__main__":
     test_range_deviation_is_bidirectional_and_independent_of_anchor_span()
     test_legacy_anchor_separation_policy_is_ignored()
     test_single_feature_excursion_is_inconclusive_for_group_scoring()
+    test_extreme_lone_forward_channel_is_explicit_evidence()
     test_shared_head_shoulder_ratios_are_one_evidence_channel()
     test_shared_shoulder_scale_drift_abstains_from_ratio_scoring()
     test_uniform_distance_scale_change_remains_measurable()

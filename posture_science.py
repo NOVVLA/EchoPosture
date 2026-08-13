@@ -443,6 +443,19 @@ class PosturePolicy:
     # single-feature changes. This is a product reliability parameter, not an
     # anatomical limit.
     lone_trunk_lean_deviation: float = 0.65
+    # A pronounced head-to-shoulder contraction/protraction or shoulder-to-
+    # hip shortening can remain a single physical channel in a frontal view.
+    # Permit one forward channel to stand alone only at the severe end.
+    # Ordinary single-feature changes remain diagnostic-only. This is a
+    # product interaction threshold, not an anatomical or medical standard.
+    lone_forward_channel_deviation: float = 0.85
+    # Head direction normally invalidates forward-posture geometry. A
+    # moderate change therefore pauses scoring, while an extreme, stable,
+    # high-quality direction change becomes its own auditable exposure
+    # signal. These normalized FaceMesh deltas are product policy values.
+    head_turn_observe_delta: float = 0.25
+    head_turn_watch_delta: float = 0.45
+    head_turn_full_delta: float = 0.70
     # A bounded static-hold add-on may support an already corroborated WATCH
     # posture, but it can never create posture evidence from a normal frame.
     static_hold_start_seconds: float = 60.0
@@ -516,6 +529,14 @@ class PosturePolicy:
             raise ValueError("minimum_group_support_deviation must be in [0, 1]")
         if not (0.0 <= self.lone_trunk_lean_deviation <= 1.0):
             raise ValueError("lone_trunk_lean_deviation must be in [0, 1]")
+        if not (0.0 <= self.lone_forward_channel_deviation <= 1.0):
+            raise ValueError("lone_forward_channel_deviation must be in [0, 1]")
+        if not (
+            0.0 <= self.head_turn_observe_delta
+            < self.head_turn_watch_delta
+            < self.head_turn_full_delta
+        ):
+            raise ValueError("head-turn policy must satisfy observe < watch < full")
         if self.static_hold_start_seconds < 0.0:
             raise ValueError("static_hold_start_seconds cannot be negative")
         if self.static_hold_full_seconds <= self.static_hold_start_seconds:
@@ -723,6 +744,14 @@ def score_posture_deviation(
         policy.within_group_corroboration,
         policy.minimum_group_support_deviation,
     )
+    # A frontal-view shoulder shrug or strong neck protraction can move only
+    # one head/shoulder or torso/shoulder channel. Keep ordinary single-channel
+    # changes inconclusive, but retain an extreme excursion as explicit
+    # posture evidence rather than mislabelling it as normal.
+    lone_forward = max(head_shoulder, torso_shoulder)
+    if lone_forward >= policy.lone_forward_channel_deviation:
+        forward = max(forward, min(1.0, lone_forward))
+        forward_corroborated = True
     lateral, lateral_corroborated = _group_score(
         [by_name[name] for name in LATERAL_FEATURES if name in by_name],
         policy.within_group_corroboration,
@@ -840,9 +869,23 @@ def shared_scale_measurement_unstable(
     }[head_feature]
     head_supported = outside_anchor_band(head_numerator)
     torso_supported = outside_anchor_band("torso_height_px")
-    # Both channels were required to create the forward group, so both need
-    # evidence from their own numerator. Missing raw support is uncertainty,
-    # not permission to let the shared denominator corroborate itself.
+    torso_deviation = feature_deviation.get("torso_shoulder_ratio", 0.0)
+    head_deviation = feature_deviation.get(head_feature, 0.0)
+    if (
+        head_deviation >= policy.lone_forward_channel_deviation
+        and torso_deviation < policy.minimum_group_support_deviation
+    ):
+        # For the explicit lone-head exception, its raw numerator must move.
+        return head_supported is not True
+    if (
+        torso_deviation >= policy.lone_forward_channel_deviation
+        and head_deviation < policy.minimum_group_support_deviation
+    ):
+        # The same rule applies to a lone, extreme shoulder-to-hip change.
+        return torso_supported is not True
+    # Corroborated head + torso evidence must be supported by both raw
+    # numerators. Missing support is uncertainty, not permission to let the
+    # shared denominator corroborate itself.
     return head_supported is not True or torso_supported is not True
 
 

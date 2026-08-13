@@ -436,6 +436,7 @@ class HighPrecisionPostureAnalyzer(PostureAnalyzer):
         self._camera_drifted = False
         self._post_calibration_validation_required = False
         self._post_calibration_validation_started_at: Optional[datetime] = None
+        self._head_direction_active = False
         self._posture_change_candidate_started_at: Optional[datetime] = None
         self._posture_change_candidate_last_at: Optional[datetime] = None
         self._posture_change_confirmed = False
@@ -511,6 +512,7 @@ class HighPrecisionPostureAnalyzer(PostureAnalyzer):
         self._reset_risk_state()
         self._post_calibration_validation_required = True
         self._post_calibration_validation_started_at = None
+        self._head_direction_active = False
         self._reset_posture_change_candidate()
         return True
 
@@ -523,6 +525,7 @@ class HighPrecisionPostureAnalyzer(PostureAnalyzer):
         self.static_hold_accumulator.reset()
         self._post_calibration_validation_required = False
         self._post_calibration_validation_started_at = None
+        self._head_direction_active = False
         self._reset_posture_change_candidate()
 
     def evaluate(self, sample: VisionSample) -> PostureDecision:
@@ -671,16 +674,81 @@ class HighPrecisionPostureAnalyzer(PostureAnalyzer):
         quality = aggregate_sample_quality(sample, scored_features)
         confidence = max(0.0, min(1.0, quality * score.coverage))
 
-        # Head orientation is a measurement-validity gate, not posture
-        # evidence.  Use only the normalized nose/eye ratio here.  Raw
-        # interpupillary pixels change with camera distance and must never
-        # turn a fixed posture into a head-turn warning.
-        head_turned = False
+        # Head direction normally gates forward-posture geometry. Use only
+        # the normalized nose/eye ratio: raw interpupillary pixels change with
+        # camera distance. A moderate change abstains, while an extreme,
+        # high-quality static direction is handled as its own exposure signal
+        # instead of being mislabeled as normal posture.
+        head_turn_delta = None
         preferred_head_turn = profile.preferred.get("head_turn_ratio")
         if sample.head_turn_ratio is not None and preferred_head_turn is not None:
-            head_turned = abs(sample.head_turn_ratio - preferred_head_turn.mean) > 0.25
+            head_turn_delta = abs(sample.head_turn_ratio - preferred_head_turn.mean)
 
-        if head_turned:
+        if (
+            head_turn_delta is not None
+            and head_turn_delta >= self.posture_policy.head_turn_observe_delta
+        ):
+            head_turn_quality = (
+                sample.face_quality
+                if sample.face_quality is not None
+                else quality
+            )
+            if head_turn_quality < self.posture_policy.quality_floor:
+                self._reset_post_calibration_validation_window()
+                exposure = self.exposure_accumulator.pause(sample.timestamp)
+                return PostureDecision(
+                    "OBSERVING",
+                    f"head_direction_quality_low={head_turn_quality:.2f}",
+                    True,
+                    sustained_seconds=exposure.exposure_seconds,
+                    posture_deviation=0.0,
+                    exposure_seconds=exposure.exposure_seconds,
+                    confidence=head_turn_quality,
+                    calibration_quality=profile.calibration_quality,
+                    activity_state=activity_state,
+                    environment_state="HEAD_DIRECTION_LOW_QUALITY",
+                )
+            if head_turn_delta >= self.posture_policy.head_turn_watch_delta:
+                span = (
+                    self.posture_policy.head_turn_full_delta
+                    - self.posture_policy.head_turn_watch_delta
+                )
+                progress = min(
+                    1.0,
+                    max(
+                        0.0,
+                        (head_turn_delta - self.posture_policy.head_turn_watch_delta)
+                        / span,
+                    ),
+                )
+                head_turn_deviation = (
+                    self.posture_policy.alert_enter
+                    + progress * (1.0 - self.posture_policy.alert_enter)
+                )
+                if self._post_calibration_validation_required:
+                    self._reset_post_calibration_validation_window()
+                    exposure = self.exposure_accumulator.pause(sample.timestamp)
+                    return PostureDecision(
+                        "OBSERVING",
+                        "post_calibration_normal_range_validation",
+                        True,
+                        risk_score=head_turn_deviation * 100.0,
+                        sustained_seconds=exposure.exposure_seconds,
+                        posture_deviation=0.0,
+                        exposure_seconds=exposure.exposure_seconds,
+                        confidence=head_turn_quality,
+                        calibration_quality=profile.calibration_quality,
+                        activity_state=activity_state,
+                        environment_state="CALIBRATION_VALIDATION",
+                    )
+                return self._head_direction_exposure_decision(
+                    sample,
+                    deviation=head_turn_deviation,
+                    delta=head_turn_delta,
+                    confidence=head_turn_quality,
+                    activity_state=activity_state,
+                )
+
             self._reset_post_calibration_validation_window()
             exposure = self.exposure_accumulator.pause(sample.timestamp)
             return PostureDecision(
@@ -695,6 +763,8 @@ class HighPrecisionPostureAnalyzer(PostureAnalyzer):
                 activity_state=activity_state,
                 environment_state="HEAD_TURNED",
             )
+
+        self._head_direction_active = False
 
         if self._camera_roll_measurement_unstable(values, profile):
             self._reset_post_calibration_validation_window()
@@ -809,11 +879,19 @@ class HighPrecisionPostureAnalyzer(PostureAnalyzer):
                 environment_state="CALIBRATION_VALIDATION",
             )
 
-        # Debounce only a corroborated posture pattern. A lone ratio or angle
-        # is not allowed to mature into WATCH merely because it persists.
+        # Debounce ordinary corroborated posture changes. A severe, quality-
+        # valid excursion is immediately visible as WATCH, but starts exposure
+        # at this observation and still cannot bypass the 12/30-second dose,
+        # tray confirmation, or cooldown gates.
         change_evidence = score.deviation
         was_posture_change_confirmed = self._posture_change_confirmed
-        if self._posture_change_needs_confirmation(sample.timestamp, change_evidence):
+        severe_change = change_evidence >= self.posture_policy.severe_deviation
+        if severe_change and not self._posture_change_confirmed:
+            self._posture_change_candidate_started_at = sample.timestamp
+            self._posture_change_candidate_last_at = sample.timestamp
+            self._posture_change_confirmed = True
+            self.exposure_accumulator.pause(sample.timestamp)
+        elif self._posture_change_needs_confirmation(sample.timestamp, change_evidence):
             self.static_hold_accumulator.update(
                 sample.timestamp,
                 posture_deviation=0.0,
@@ -941,7 +1019,61 @@ class HighPrecisionPostureAnalyzer(PostureAnalyzer):
             static_hold_bonus=static_hold.bonus,
         )
 
+    def _head_direction_exposure_decision(
+        self,
+        sample: VisionSample,
+        *,
+        deviation: float,
+        delta: float,
+        confidence: float,
+        activity_state: str,
+    ) -> PostureDecision:
+        """Score one extreme static head-direction signal without body ratios."""
+
+        self._reset_posture_change_candidate()
+        self.static_hold_accumulator.reset()
+        if not self._head_direction_active:
+            # Start timing at the first qualifying head-direction observation.
+            # The previous frame may be many seconds old and must not be
+            # retroactively counted as head-direction exposure.
+            self.exposure_accumulator.pause(sample.timestamp)
+            self._head_direction_active = True
+        exposure = self.exposure_accumulator.update(sample.timestamp, deviation)
+        reasons = [
+            "sustained_head_direction",
+            f"head_direction_delta={delta:.2f}",
+            f"posture_deviation={deviation:.2f}",
+            f"exposure_seconds={exposure.exposure_seconds:.1f}",
+            f"confidence={confidence:.2f}",
+        ]
+        if (
+            exposure.exposure_seconds >= self.posture_policy.critical_exposure_seconds
+            and deviation >= self.posture_policy.severe_deviation
+        ):
+            status = "CRITICAL"
+        elif (
+            exposure.exposure_seconds >= self.posture_policy.alert_exposure_seconds
+            and exposure.alert_active
+        ):
+            status = "BAD"
+        else:
+            status = "WATCH"
+        return PostureDecision(
+            status,
+            ",".join(reasons),
+            True,
+            risk_score=deviation * 100.0,
+            sustained_seconds=exposure.exposure_seconds,
+            posture_deviation=deviation,
+            exposure_seconds=exposure.exposure_seconds,
+            confidence=confidence,
+            calibration_quality=self.calibration_profile.calibration_quality,
+            activity_state=activity_state,
+            environment_state="SUSTAINED_HEAD_DIRECTION",
+        )
+
     def _reset_post_calibration_validation_window(self) -> None:
+        self._head_direction_active = False
         self._reset_posture_change_candidate()
         self.static_hold_accumulator.reset()
         if self._post_calibration_validation_required:
