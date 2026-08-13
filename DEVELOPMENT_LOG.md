@@ -1488,3 +1488,48 @@
   - Real-camera validation remains unavailable because the bundled MediaPipe face-landmark model artifact is missing;
     no live-camera success is claimed.
 - Gaps: external camera/device repeatability and user-facing status wording for `UNKNOWN` remain evidence/follow-up work.
+
+## 2026-08-13 - Compatibility identity recovery and three-mode debug contract
+
+- Source: user field report that a steep side recline was reported as occlusion and that a recovered upright target
+  remained stuck in candidate state; follow-up request to expose compatibility/standard/professional modes and wire
+  the local face model without relabeling the backend.
+- Git: code commit `650c0b5`, documentation commit `pending`, branch
+  `codex/pr2-phase1-calibration-safety`, PR `#23`, tag `none`.
+- Scope:
+  - `vision_tracking.py`: high-quality short-gap face continuity repairs a compatibility torso-box jump for the
+    already locked target; independent rebinds remain `IDENTITY_UNCERTAIN`; ambiguous, low-quality, timed-out, and
+    multiple similar candidates abstain. State text now says landmarks are temporarily unavailable/rematching.
+  - `vision_modes.py`, `debug_ui.py`, `i18n.py`: add the three-mode selector and explicit backend availability;
+    current production/debug default remains `CompatibilityBackend` and unavailable standard/professional choices
+    report their missing posture backend instead of silently falling back.
+  - `vision_test.py`, `vision_backend.py`: propagate FaceMesh five-point numeric landmarks (eyes, nose, mouth corners).
+  - `face_embedding.py`, `identity_model_adapters.py`, `vision_worker.py`, `tray_app.py`: add transient 112x112 RGB
+    face crop, official ArcFace five-point similarity alignment, CVLFace tensor input, asynchronous embedding,
+    session-only enrollment and verification, and cleanup on cancellation/contamination/shutdown. No frame, crop,
+    image, or vector is persisted by this path.
+  - Tests cover the new tracking safety states, three-mode UI, crop privacy, KP-RPE five-point contract, asynchronous
+    template enrollment, late-result rejection, and contamination clearing.
+- Risk: real CVLFace/Torch weight loading and standard YOLO26n-pose/TensorRT posture backends were not run in this
+  environment; installing a face model alone does not make standard posture mode available. No medical, clinical,
+  cross-device, or external-validity claim is made.
+- Verification:
+  - `runtime\\python311\\python.exe test_face_embedding.py`: passed.
+  - `runtime\\python311\\python.exe test_identity_model_adapters.py`: passed.
+  - `runtime\\python311\\python.exe test_vision_worker.py`: passed, including session template and cleanup cases.
+  - `runtime\\python311\\python.exe test_vision_tracking.py`: passed, including side-recline and rebind safety.
+  - `runtime\\python311\\python.exe test_debug_ui.py`: passed; emitted only the existing offscreen Qt missing-font
+    directory warning.
+  - `runtime\\python311\\python.exe test_startup_guards.py`: passed.
+  - `runtime\\python311\\python.exe test_posture_science.py`: passed.
+  - `runtime\\python311\\python.exe test_feature_toggles.py`: passed.
+  - `runtime\\python311\\python.exe test_vision_replay.py`: passed after updating the synthetic candidate-present
+    contract from `TARGET_OCCLUDED` to `TARGET_REACQUIRING`.
+  - `runtime\\python311\\python.exe test_identity_verifier.py`: passed.
+  - Target-module `py_compile`: passed.
+  - `ruff check ...`: passed for all changed code/tests; `git diff --check`: passed.
+- Gaps: real-camera behavior, actual Torch/CVLFace inference on the user's installed environment, standard posture
+  backend integration, model license/weight redistribution, packaged UI font fidelity, and remote CI remain separate
+  evidence gates.
+- Conclusion: deterministic code and safety contract ready for the existing PR branch; real-model and standard-mode
+  claims remain pending explicit runtime evidence.

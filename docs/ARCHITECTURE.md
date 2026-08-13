@@ -15,7 +15,7 @@ flowchart LR
     Tray --> Flyout[tray_flyout.py]
     Tray --> Console[posture_console.py]
     Tray --> Worker[vision_worker.py / worker thread]
-    Worker --> Backend[CompatibilityBackend / unified observations]
+    Worker --> Backend[VisionBackend / selected mode]
     Backend --> Engine[VisionEngine / OpenCV + MediaPipe]
     Worker --> Target[TargetManager / tracks + target state]
     Worker --> Analyzer[HighPrecisionPostureAnalyzer]
@@ -80,7 +80,10 @@ modules alongside the executable.
 - intervention gating and calls into the overlay controller;
 - user-facing camera and screen-capture warnings.
 
-The GUI thread must not perform continuous camera capture or MediaPipe inference.
+The GUI thread must not perform continuous camera capture or model inference. The current production backend is
+`CompatibilityBackend` (MediaPipe); `vision_modes.py` defines the compatibility/standard/professional-beta contract
+and Debug UI exposes all three with explicit availability reasons. A selectable mode is not active unless its backend
+factory actually initializes.
 
 ### Vision worker thread
 
@@ -129,8 +132,10 @@ predicted motion, center distance, and bounding-box overlap; maintains track lif
 and emits `TARGET_LOCKED`, `MULTI_PRESENT`, `TARGET_OCCLUDED`, `TARGET_REACQUIRING`, `IDENTITY_UNCERTAIN`, `AWAY`, or
 `TARGET_AMBIGUOUS`. Frame association is global one-to-one: predicted motion is scored with box overlap and area
 continuity, while near-tied candidates enter `TARGET_AMBIGUOUS`; immutable track output carries the last match score.
-A non-target track is never promoted automatically. When a backend can keep the target observation
-separate, `MULTI_PRESENT` is attached to the immutable worker snapshot while posture scoring continues for the target.
+A non-target track is never promoted automatically. A short-gap, high-quality face-continuity signal can repair a
+compatibility-mode torso-box jump for the already locked target; a separately created rebind still enters
+`IDENTITY_UNCERTAIN` until the local verifier confirms it. When a backend can keep the target observation separate,
+`MULTI_PRESENT` is attached to the immutable worker snapshot while posture scoring continues for the target.
 The locked target also publishes a time-normalized motion value and `STATIC` / `MOVING` activity state. It combines
 smoothed box-centre translation with signed relative box-scale velocity, so forward/backward movement can be detected
 without turning alternating scale jitter into activity. Motion does not accumulate static exposure.
@@ -237,7 +242,10 @@ that writes a report, under the package-local `logs` directory.
 
 ### Monitoring and intervention
 
-1. The worker captures a frame, extracts a `VisionSample`, evaluates it, and replaces the mailbox snapshot.
+1. The worker captures a frame, extracts a `VisionSample`, evaluates it, and replaces the mailbox snapshot. When local
+   identity verification is enabled, `FaceEmbeddingPipeline` creates a transient in-memory face crop, applies the
+   official 112x112 five-point alignment contract, and returns only a numeric embedding; the crop is cleared after
+   inference.
 2. The GUI timer reads the newest snapshot without blocking the worker.
 3. Intervention is eligible only for a quality-valid `BAD`/`CRITICAL` scientific decision, deviation at least `0.70`,
    equivalent exposure at least `12` seconds, followed by another `3` seconds of continuous confirmation. A completed

@@ -227,6 +227,15 @@ track, and `People present = 1`. `MULTI_PRESENT`, `TARGET_OCCLUDED`,
 states, not posture scores; read the adjacent state reason before treating the
 posture result as valid.
 
+The panel's `视觉模式` selector always lists `兼容模式`, `标准模式`, and `专业模式 Beta`. In the current checkout
+the production backend is `mediapipe-compatibility`; standard and professional choices remain disabled unless an
+actual YOLO/ONNX or TensorRT backend factory is injected. The panel reports the reason rather than silently relabeling
+the compatibility backend. A face model being installed alone does not make the standard posture mode available.
+
+When identity verification is available, it runs locally and asynchronously. The camera frame is cropped and aligned
+in memory, the model returns a numeric embedding, and the crop is cleared; no image, video, face crop, or vector is
+written by this path. A fresh target rebind remains `IDENTITY_UNCERTAIN` until the local verifier confirms it.
+
 To prove the panel wiring without a camera or desktop display, run:
 
 ```powershell
