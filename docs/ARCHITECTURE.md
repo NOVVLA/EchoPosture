@@ -187,6 +187,12 @@ deviation `0.70` or above; WATCH-only drift cannot accumulate an alert budget. O
 seconds pause integration instead of backfilling unobserved time. These floors, multipliers, and durations are
 adjustable product policy, not biological standards.
 
+A pronounced pelvis-relative trunk lean may be the sole lateral evidence when the shoulder line remains parallel;
+the explicit `lone_trunk_lean_deviation` policy gate prevents small one-feature jitter from opening WATCH while
+preserving real side-reclining. Static-hold time is a bounded add-on only for an already corroborated, confirmed
+deviation. It starts after the adjustment window, ramps after about 60 seconds, caps at `0.12`, and resets on
+movement, recovery, low quality, or observation gaps; normal posture never earns static-hold score by elapsed time.
+
 ### Overlay controller and native host
 
 `gpu_blur_overlay.py` is the process boundary between the Python runtime and `BlurOverlayHost.exe`:

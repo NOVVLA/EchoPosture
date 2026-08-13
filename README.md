@@ -123,6 +123,8 @@ The posture model groups face/torso/ear-to-shoulder evidence as forward change a
 
 Visual intervention is intentionally delayed. Small single-feature changes remain normal variation; a newly corroborated excursion is shown as posture adjustment and must persist for about `2` seconds before it can enter WATCH. Equivalent exposure begins only at the alert-level `0.70` threshold after that confirmation, so reaching, shifting in the chair, and WATCH-only noise cannot preload a future alert. Product policy requires at least `12` equivalent high-deviation seconds, then adds `3` seconds of intervention confirmation. Severe exposure uses deviation `0.85` and `30` equivalent seconds. Recovery decays exposure instead of clearing it instantly, and completed intervention episodes have a `60`-second cooldown. These are adjustable interaction parameters, not medical limits or physiological doses.
 
+A pronounced pelvis-relative trunk lean is accepted as lateral posture evidence even when the shoulders remain nearly parallel, because real side-reclining does not always create shoulder asymmetry. A bounded static-hold add-on begins only after a corroborated deviation passes the two-second adjustment confirmation and remains present for about one minute. It ramps slowly, caps at `0.12`, resets on movement, recovery, low quality, or observation gaps, and cannot create a reminder from an otherwise normal posture by itself.
+
 When intervention starts, EchoPosture does not change system brightness. It uses a full-screen, topmost, click-through overlay and gradually applies dimming and blur. The native GPU blur host is preferred; if desktop capture is unavailable, the app falls back to Windows compositor blur behavior.
 
 ## Privacy

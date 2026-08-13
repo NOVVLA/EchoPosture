@@ -135,6 +135,10 @@ single-person, quality-gated samples in both calibration stages; it does not sil
 - Small landmark or posture changes remain normal variation. A larger corroborated change first reports
   `ADJUSTING` for about two seconds; returning to the personal range during that interval never opens WATCH or adds
   exposure. Only a sustained, independently supported change can enter WATCH.
+- A clear side-recline can still be detected when the shoulders stay parallel: pelvis-relative trunk lean is allowed
+  as a single lateral evidence channel only after it clears the explicit product reliability gate. If the posture is
+  already corroborated and remains static for about a minute, the Debug UI may show a small bounded static-hold add-on;
+  it is supporting evidence only and cannot turn a normal posture into a reminder.
 
 A successful debug preview with a failed tray calibration usually means one of the two stages did not contain enough
 quality-gated samples, not that the tray icon itself is broken. The debug panel's one-frame button is an explicit legacy

@@ -1,5 +1,18 @@
 # DEVELOPMENT_LOG（Development Log，开发日志）
 
+## 2026-08-13 - Preserve real side-recline evidence and bound static-hold support
+
+- Source: field report that a sustained side-recline could remain `GOOD` because the shoulder line stayed parallel,
+  and request for a limited contribution from holding an already poor posture for too long.
+- Root cause: lateral scoring required shoulder asymmetry and trunk lean to corroborate each other, so a genuine
+  pelvis-relative torso lean was discarded when shoulder asymmetry was near zero.
+- Fix: `posture_science.py` now admits pronounced `trunk_lean_deg` as a lateral evidence channel at the explicit
+  `lone_trunk_lean_deviation` product gate while retaining two-feature corroboration for ordinary lateral changes.
+  `vision_test.py` integrates `StaticHoldAccumulator` only after posture confirmation, with a 60-180 second ramp and
+  a maximum `0.12` add-on. Normal posture, movement, low quality, recovery, and observation gaps cannot earn it.
+- Verification: `test_posture_science.py` and `test_feature_toggles.py` pass, including lone-trunk side-recline and
+  normal-posture static-hold regressions. Real-camera comfort and external validity remain unverified.
+
 ## 2026-08-13 - Separate normal movement from unknown measurements and debounce posture changes
 
 - Source: user field feedback that normal movement, leaning/reaching, shoulder-width change, and camera-distance
