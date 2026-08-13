@@ -1,5 +1,51 @@
 # DEVELOPMENT_LOG（Development Log，开发日志）
 
+## 2026-08-13 - Surface pronounced posture configurations without bypassing intervention timing
+
+- Source: user live-camera report that an approximately 90-degree sustained head turn and a pronounced frontal
+  shoulder-shrug/neck-contraction posture could remain `GOOD` or move only through inconsistent observation states.
+- Git: commit `pending`, branch `codex/pr2-phase1-calibration-safety`, tag `none`; delivery remains the existing PR
+  `#23`, with no additional PR.
+- Root cause: all head turns were treated only as invalid forward-geometry measurements, so even a stable extreme
+  direction could never become explicit posture-change evidence. Forward scoring also required two independent
+  ratio channels at every magnitude; a real frontal shrug or neck protraction that strongly changed only one
+  head/shoulder or torso/shoulder channel was therefore discarded as inconclusive.
+- Fix: normalized head-direction delta now has three explicit product-policy regions: below `0.25` uses normal body
+  scoring, `0.25-0.45` remains measurement observation, and a high-quality stable delta from `0.45` upward becomes
+  a continuous `0.70-1.00` direction-deviation signal. A single forward channel may stand alone only at deviation
+  `0.85` or above and only when its own raw numerator leaves the calibrated repeatability band; denominator-only
+  shoulder-width drift still abstains. These values are interaction and measurement-reliability policies, not
+  anatomical, physiological, or medical thresholds.
+- Timing and safety: an eligible severe body configuration or extreme head direction becomes visible as `WATCH` on
+  its first qualifying static frame, while its exposure clock is explicitly anchored at that frame and starts at
+  zero. `BAD` and `CRITICAL` still require 12 and 30 equivalent exposure seconds. Movement, low face/pose quality,
+  target uncertainty, camera/reference instability, and post-calibration validation pause exposure. The production
+  tray still requires `BAD`/`CRITICAL`, at least 12 exposure seconds, an additional three-second confirmation, and
+  the existing 60-second cooldown before intervention.
+- Regression boundaries: ordinary short reaching still enters `ADJUSTING` for the two-second confirmation window;
+  natural midrange lean remains `GOOD`; moderate head turn remains `OBSERVING`; uniform distance change, high-FPS
+  jitter, and shoulder-width-only drift cannot open `WATCH` or accumulate exposure. Pronounced frontal shrug,
+  genuine forward geometry, extreme static head direction, and pronounced pelvis-relative side recline now enter
+  `WATCH` immediately without preloading exposure.
+- Verification from the repository root:
+  - `runtime\python311\python.exe test_posture_science.py`, `test_feature_toggles.py`, `test_vision_worker.py`,
+    `test_vision_tracking.py`, `test_startup_guards.py`, `test_debug_ui.py`, `test_vision_replay.py`, and
+    `test_tray_flyout.py` passed.
+  - `runtime\python311\python.exe -m py_compile posture_science.py vision_test.py debug_ui.py i18n.py
+    test_posture_science.py test_feature_toggles.py`, `ruff check .`, and `git diff --check` passed.
+  - Debug UI emitted the existing bundled Qt missing-font-directory warning; all assertions and its exit code passed.
+- Privacy and artifacts: all added regressions use synthetic numeric features. No image, video, frame, face crop,
+  identity vector/template, or reliability report was created or saved. Unrelated local screenshots, review folders,
+  model files, PDFs, `uv.lock`, and other untracked paths remain unstaged.
+- Backup: `git stash create` captured the tracked pre-commit state at object
+  `0e2c24a1107c1c2795dcc7f3a3539be5b64dc6ee`; it did not alter the working tree or include untracked local files.
+- Gaps: the original physical-camera scenarios still require user retest after delivery. Cross-camera head-direction
+  reliability, consented recording, measured false-positive/false-negative rates, external validity, and medical
+  validation remain unverified and unclaimed.
+- Conclusion: deterministic logic, UI compatibility, worker, tracking, replay, startup, tray, lint, and syntax checks
+  passed. The change is ready for split code/tests and audit commits on the existing PR; incident closure remains
+  contingent on live-camera retest.
+
 ## 2026-08-13 - Preserve real side-recline evidence and bound static-hold support
 
 - Source: field report that a sustained side-recline could remain `GOOD` because the shoulder line stayed parallel,
