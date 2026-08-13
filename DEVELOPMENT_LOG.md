@@ -1579,3 +1579,73 @@
   evidence gates.
 - Conclusion: deterministic code and safety contract ready for the existing PR branch; real-model and standard-mode
   claims remain pending explicit runtime evidence.
+
+## 2026-08-13 - Extreme seated-posture visibility and low-track-activity risk context
+
+- Source: user report that deliberately extreme head tilt and pelvis-relative upper-body translation could be shown as
+  `GOOD`, `ADJUSTING`, or `OBSERVING`; follow-up request to fix Debug UI wording first, then the production analyzer
+  path, reuse target tracking for prolonged low activity, add an honest calibrated 2D projection reference, and
+  re-audit the scientific and plan claims about isolated variables.
+- Git: commit `pending`, branch `codex/pr2-phase1-calibration-safety`, PR `#23`, tag `none`.
+- Scope and order:
+  - `debug_ui.py`, `i18n.py`: completed the requested diagnostic-first change. The panel always identifies the actual
+    active mode/backend and separates any unavailable/failure notice; returning to Compatibility clears stale
+    Standard/Professional text. It exposes target motion/activity, projected trunk axis, 2D head-trunk angle, posture
+    deviation, combined risk, exposure, and confidence. `WATCH` is now “posture deviation detected”.
+  - `posture_science.py`, `vision_test.py`: the production scientific analyzer now retains extreme, quality-valid
+    single-channel posture evidence instead of labelling it as normal or inconclusive. Ordinary isolated drift still
+    requires support. Trunk lean and head-trunk angle share one shoulder-hip projection channel and cannot corroborate
+    themselves; shoulder-pelvis asymmetry remains independent. Extreme changes enter `WATCH` immediately but start at
+    zero exposure and cannot skip the 12/30-second dose gates.
+  - `vision_tracking.py` was already wired through `TargetManager` into Debug UI and `VisionWorker`. The current
+    activity proxy uses normalized body-box centre translation plus relative scale velocity. Reliable uninterrupted
+    low track activity starts a combined-risk add-on at 60 seconds, reaches its `0.12` cap at 180 seconds, and cannot
+    by itself change posture deviation, leave `GOOD`, create posture exposure, or trigger an alert. Movement,
+    uncertainty, low quality, or an observation gap resets it. It is not proof that the user did not move.
+  - The calibrated 2D contract uses the shoulder-centre-to-hip-centre image-plane axis and the nose-to-shoulder versus
+    shoulder-to-hip projected angle. These are within-user camera projections only, not CVA, Cobb angle, 3D spine
+    curvature, or clinical spine inclination.
+  - `docs/decisions/ADR-0002-posture-detection-scientific-improvements.md` and
+    `docs/plans/EchoPosture_vision_identity_upgrade_plan.md` now record that boundary, the severe standalone-evidence
+    exception, shared scoring semantics for all planned modes, and the remaining real-evidence gates.
+- Plan audit:
+  - Under-recorded: `EP-VISION-012`, `EP-VISION-013`, `EP-ID-001`, `EP-ID-002`, and `EP-ID-006` have deterministic
+    implementation/tests and are now checked. GitHub API confirmed PR #22 was merged on 2026-08-11, so its old
+    “waiting for approval” status was stale.
+  - Ahead of plan but incomplete as full tasks: Debug UI already has the three-mode selector and this round of
+    localization, but formal product settings and real Standard/Professional posture backends do not exist; therefore
+    `EP-UI-001` and `EP-UI-003` remain unchecked.
+  - Not complete: `EP-ID-007` has session cleanup code but lacks formal runtime/privacy evidence. `EP-TRACK-006`, real
+    model inference and licenses, consented recordings, real-camera/cross-device evidence, performance budgets, and
+    Standard/Professional implementation remain open.
+- Scientific source:
+  - OSHA, “Computer Workstations eTool: Good Working Positions”:
+    https://www.osha.gov/etools/computer-workstations/positions . The page describes the head as generally in line with
+    the torso and recommends frequent posture changes even when working posture is good. It supports the product
+    direction, but supplies neither EchoPosture's thresholds nor a clinical validation of monocular projection values.
+- Verification from `C:\Users\aaabb\Documents\ICC驼背项目`:
+  - Passed: `test_debug_ui.py`, `test_posture_science.py`, `test_feature_toggles.py`, `test_vision_worker.py`,
+    `test_vision_tracking.py`, `test_vision_replay.py`, `test_identity_verifier.py`,
+    `test_identity_model_adapters.py`, `test_startup_guards.py`, and `test_tray_flyout.py`.
+  - The Worker regression preserves target `nose_point`, `shoulder_center`, and `hip_center`, then proves the same
+    extreme head-tilt sample reaches `WATCH` through the production Worker/analyzer chain.
+  - `runtime\python311\python.exe -m py_compile debug_ui.py i18n.py posture_science.py vision_test.py vision_worker.py
+    vision_tracking.py identity_verifier.py`: passed.
+  - The bundled Python has no `ruff` module (`No module named ruff`); the existing system `ruff.exe` was used instead
+    and the changed-file check passed. Full-repository Ruff and final diff checks also passed.
+  - A dedicated low-track-activity lifecycle regression accumulates more than 60 seconds, injects a low-quality frame,
+    and proves the next reliable frame restarts at zero seconds with zero add-on. The existing
+    `_reset_post_calibration_validation_window()` helper already performed the required reset; the gap was explicit
+    contract coverage rather than a missing production reset call.
+  - Several sandboxed command launches failed before execution with Windows error 1312 (“the specified logon session
+    does not exist”); identical approved retries ran and passed. Debug UI tests emitted the existing bundled Qt
+    missing-font-directory warning but exited 0.
+- Risk and privacy: no image, video, face crop, identity vector, or historical movement path is added to persistence.
+  Existing internal `static_hold_*` field names remain for compatibility, while user-visible text says “low track
+  activity” to match the actual sensor capability.
+- Gaps: no real-camera posture trial, deliberate-pose human scenario matrix, cross-device repeatability, camera-roll
+  study, consented recording, packaged EXE rebuild/self-test, Standard/Professional backend, model-license approval,
+  clinical gold-standard comparison, or external validity is claimed. Thresholds remain product reliability and
+  interaction parameters, not biological or medical standards.
+- Conclusion: deterministic Debug UI and Compatibility production paths implement the requested semantics and retain
+  explicit scientific limits; real-world and packaged-runtime evidence remains follow-up work.

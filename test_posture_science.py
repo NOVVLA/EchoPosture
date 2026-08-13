@@ -18,6 +18,7 @@ from posture_science import (
     calibration_measurement_values,
     calibration_rejection_reason,
     normalized_feature_deviation,
+    projected_axis_values,
     runtime_noise_floor,
     runtime_movement_margin,
     score_posture_deviation,
@@ -1010,7 +1011,7 @@ def test_exposure_hysteresis() -> None:
     print("test_exposure_hysteresis OK")
 
 
-def test_static_hold_is_bounded_and_requires_existing_deviation() -> None:
+def test_low_track_activity_add_on_is_bounded_and_resets_when_ineligible() -> None:
     policy = PosturePolicy(
         static_hold_start_seconds=60.0,
         static_hold_full_seconds=180.0,
@@ -1026,19 +1027,19 @@ def test_static_hold_is_bounded_and_requires_existing_deviation() -> None:
     assert normal.static_seconds == 0.0
     assert normal.bonus == 0.0
 
-    hold.update(start + timedelta(seconds=301), posture_deviation=0.8, eligible=True)
-    before_start = hold.update(start + timedelta(seconds=360), posture_deviation=0.8, eligible=True)
+    hold.update(start + timedelta(seconds=301), posture_deviation=0.0, eligible=True)
+    before_start = hold.update(start + timedelta(seconds=360), posture_deviation=0.0, eligible=True)
     assert before_start.static_seconds == 60.0
     assert before_start.bonus == 0.0
-    ramped = hold.update(start + timedelta(seconds=420), posture_deviation=0.8, eligible=True)
+    ramped = hold.update(start + timedelta(seconds=420), posture_deviation=0.0, eligible=True)
     assert 0.0 < ramped.bonus < policy.static_hold_max_bonus
-    capped = hold.update(start + timedelta(seconds=540), posture_deviation=0.8, eligible=True)
+    capped = hold.update(start + timedelta(seconds=540), posture_deviation=0.0, eligible=True)
     assert capped.bonus == policy.static_hold_max_bonus
 
     reset = hold.update(start + timedelta(seconds=541), posture_deviation=0.8, eligible=False)
     assert reset.static_seconds == 0.0
     assert reset.bonus == 0.0
-    print("test_static_hold_is_bounded_and_requires_existing_deviation OK")
+    print("test_low_track_activity_add_on_is_bounded_and_resets_when_ineligible OK")
 
 
 def test_pronounced_lone_trunk_lean_is_lateral_evidence() -> None:
@@ -1052,6 +1053,68 @@ def test_pronounced_lone_trunk_lean_is_lateral_evidence() -> None:
     assert score.deviation >= PosturePolicy().watch_enter
     assert score.corroborated
     print("test_pronounced_lone_trunk_lean_is_lateral_evidence OK")
+
+
+def test_shared_projected_axis_does_not_corroborate_itself() -> None:
+    accumulator = CalibrationAccumulator(CalibrationPlan(min_samples_per_stage=5))
+    anchor = {
+        "shoulder_asymmetry_deg": 0.0,
+        "trunk_lean_deg": 0.0,
+        "projected_head_trunk_angle_deg": 0.0,
+    }
+    for index in range(5):
+        accumulator.add(index, anchor)
+    accumulator.begin_transition(5.0)
+    for index in range(5):
+        accumulator.add(6.0 + index, anchor)
+    profile = accumulator.finalize()
+
+    score = score_posture_deviation(
+        {
+            "shoulder_asymmetry_deg": 0.0,
+            "trunk_lean_deg": 10.5,
+            # The same torso translation changes this derived angle in the
+            # opposite direction. It is not an independent second landmark
+            # event and must not satisfy the two-channel support rule.
+            "projected_head_trunk_angle_deg": -10.5,
+        },
+        profile,
+    )
+    assert math.isclose(score.raw_deviation, 0.5)
+    assert score.lateral_deviation == 0.0
+    assert score.deviation == 0.0
+    assert not score.corroborated
+    print("test_shared_projected_axis_does_not_corroborate_itself OK")
+
+
+def test_projected_axes_separate_head_tilt_from_trunk_translation() -> None:
+    upright = SimpleNamespace(
+        nose_point=(320.0, 170.0),
+        shoulder_center=(320.0, 242.0),
+        hip_center=(320.0, 390.0),
+    )
+    upright_values = projected_axis_values(upright)
+    assert math.isclose(upright_values["projected_trunk_axis_deg"], 0.0)
+    assert math.isclose(upright_values["projected_head_trunk_angle_deg"], 0.0)
+
+    head_tilt = SimpleNamespace(
+        nose_point=(370.0, 170.0),
+        shoulder_center=(320.0, 242.0),
+        hip_center=(320.0, 390.0),
+    )
+    head_values = projected_axis_values(head_tilt)
+    assert head_values["projected_head_trunk_angle_deg"] > 30.0
+    assert math.isclose(head_values["projected_trunk_axis_deg"], 0.0)
+
+    torso_shift = SimpleNamespace(
+        nose_point=(390.0, 170.0),
+        shoulder_center=(390.0, 242.0),
+        hip_center=(320.0, 390.0),
+    )
+    torso_values = projected_axis_values(torso_shift)
+    assert torso_values["projected_trunk_axis_deg"] > 20.0
+    assert math.isclose(torso_values["projected_head_trunk_angle_deg"], -torso_values["projected_trunk_axis_deg"])
+    print("test_projected_axes_separate_head_tilt_from_trunk_translation OK")
 
 
 if __name__ == "__main__":
@@ -1088,6 +1151,8 @@ if __name__ == "__main__":
     test_long_observation_gap_does_not_backfill_exposure()
     test_watch_only_deviation_does_not_preload_exposure()
     test_exposure_hysteresis()
-    test_static_hold_is_bounded_and_requires_existing_deviation()
+    test_low_track_activity_add_on_is_bounded_and_resets_when_ineligible()
     test_pronounced_lone_trunk_lean_is_lateral_evidence()
+    test_shared_projected_axis_does_not_corroborate_itself()
+    test_projected_axes_separate_head_tilt_from_trunk_translation()
     print("ALL TESTS PASSED")

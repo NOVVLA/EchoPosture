@@ -914,21 +914,25 @@ class HighPrecisionPostureAnalyzer(PostureAnalyzer):
             )
 
         if self._posture_change_confirmed and not was_posture_change_confirmed:
-            # Start the static-hold clock after the two-second adjustment
-            # confirmation window, so reaching into a posture is never counted
-            # as an already-established static hold.
+            # Start low-track-activity timing after the two-second adjustment
+            # window, so motion into a posture is not counted as prior low
+            # activity. Field names remain stable for compatibility.
             self.static_hold_accumulator.reset()
 
         if score.raw_deviation > 0.0 and not score.corroborated:
             if score.raw_deviation < self.posture_policy.watch_enter:
                 self._reset_posture_change_candidate()
-                self.static_hold_accumulator.reset()
+                static_hold = self.static_hold_accumulator.update(
+                    sample.timestamp,
+                    posture_deviation=0.0,
+                    eligible=activity_state == "STATIC",
+                )
                 exposure = self.exposure_accumulator.update(sample.timestamp, 0.0)
                 return PostureDecision(
                     "GOOD",
                     "minor_posture_variation",
                     True,
-                    risk_score=score.raw_deviation * 100.0,
+                    risk_score=min(1.0, score.raw_deviation + static_hold.bonus) * 100.0,
                     sustained_seconds=exposure.exposure_seconds,
                     posture_deviation=0.0,
                     exposure_seconds=exposure.exposure_seconds,
@@ -936,6 +940,8 @@ class HighPrecisionPostureAnalyzer(PostureAnalyzer):
                     calibration_quality=profile.calibration_quality,
                     activity_state=activity_state,
                     environment_state="MINOR_POSTURE_VARIATION",
+                    static_hold_seconds=static_hold.static_seconds,
+                    static_hold_bonus=static_hold.bonus,
                 )
             # One drifting ratio/angle is diagnostic evidence, not enough
             # independent posture evidence to enter WATCH or accumulate
@@ -960,12 +966,7 @@ class HighPrecisionPostureAnalyzer(PostureAnalyzer):
         static_hold = self.static_hold_accumulator.update(
             sample.timestamp,
             posture_deviation=score.deviation,
-            eligible=(
-                self._posture_change_confirmed
-                and score.corroborated
-                and score.deviation >= self.posture_policy.static_hold_min_deviation
-                and activity_state == "STATIC"
-            ),
+            eligible=activity_state == "STATIC",
         )
         effective_deviation = min(1.0, score.deviation + static_hold.bonus)
         exposure = self.exposure_accumulator.update(sample.timestamp, effective_deviation)

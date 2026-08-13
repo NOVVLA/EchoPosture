@@ -584,6 +584,41 @@ def test_extreme_static_head_direction_is_visible_and_time_gated():
     print("test_extreme_static_head_direction_is_visible_and_time_gated OK")
 
 
+def test_extreme_projected_head_tilt_is_posture_deviation() -> None:
+    analyzer = scientific_analyzer()
+    validate_scientific_profile(analyzer, T0)
+    tilted = replace(
+        scientific_sample(T0 + timedelta(seconds=10), 0.0),
+        nose_point=(370.0, 170.0),
+    )
+    first = analyzer.evaluate(tilted)
+    assert first.status == "WATCH", first
+    assert first.status not in {"GOOD", "ADJUSTING", "OBSERVING", "UNKNOWN"}
+    assert first.reason.startswith("posture_deviation="), first
+    assert first.posture_deviation >= analyzer.posture_policy.severe_deviation
+    assert first.exposure_seconds == 0.0
+    print("test_extreme_projected_head_tilt_is_posture_deviation OK")
+
+
+def test_extreme_projected_torso_translation_is_posture_deviation() -> None:
+    analyzer = scientific_analyzer()
+    validate_scientific_profile(analyzer, T0)
+    shifted = replace(
+        scientific_sample(T0 + timedelta(seconds=10), 0.0),
+        nose_point=(390.0, 170.0),
+        left_shoulder_point=(290.0, 240.0),
+        right_shoulder_point=(490.0, 244.0),
+        shoulder_center=(390.0, 242.0),
+        trunk_lean_deg=25.3,
+    )
+    first = analyzer.evaluate(shifted)
+    assert first.status == "WATCH", first
+    assert first.status not in {"GOOD", "ADJUSTING", "OBSERVING", "UNKNOWN"}
+    assert first.posture_deviation >= analyzer.posture_policy.severe_deviation
+    assert first.exposure_seconds == 0.0
+    print("test_extreme_projected_torso_translation_is_posture_deviation OK")
+
+
 def test_extreme_frontal_shrug_is_watch_without_bypassing_exposure():
     analyzer = scientific_analyzer()
     validate_scientific_profile(analyzer, T0)
@@ -1000,7 +1035,7 @@ def test_real_pelvis_relative_lateral_change_still_alerts():
     print("test_real_pelvis_relative_lateral_change_still_alerts OK")
 
 
-def test_static_hold_add_on_is_visible_but_bounded() -> None:
+def test_low_track_activity_add_on_is_visible_but_bounded() -> None:
     analyzer = scientific_analyzer()
     validate_scientific_profile(analyzer, T0)
 
@@ -1022,9 +1057,51 @@ def test_static_hold_add_on_is_visible_but_bounded() -> None:
             scientific_sample(T0 + timedelta(seconds=seconds), 0.0)
         )
     assert normal_decision.status == "GOOD", normal_decision
-    assert normal_decision.static_hold_seconds == 0.0
-    assert normal_decision.static_hold_bonus == 0.0
-    print("test_static_hold_add_on_is_visible_but_bounded OK")
+    assert normal_decision.posture_deviation == 0.0
+    assert normal_decision.exposure_seconds == 0.0
+    assert normal_decision.static_hold_seconds > 180.0
+    assert normal_decision.static_hold_bonus == normal.posture_policy.static_hold_max_bonus
+    assert normal_decision.risk_score == normal.posture_policy.static_hold_max_bonus * 100.0
+
+    moved = normal.evaluate(
+        replace(
+            scientific_sample(T0 + timedelta(seconds=240), 0.0),
+            target_motion=0.30,
+            activity_state="MOVING",
+        )
+    )
+    assert moved.status == "MOVING", moved
+    resumed = normal.evaluate(scientific_sample(T0 + timedelta(seconds=241), 0.0))
+    assert resumed.status == "GOOD", resumed
+    assert resumed.static_hold_seconds == 0.0
+    assert resumed.static_hold_bonus == 0.0
+    print("test_low_track_activity_add_on_is_visible_but_bounded OK")
+
+
+def test_low_measurement_quality_resets_low_track_activity() -> None:
+    analyzer = scientific_analyzer()
+    validate_scientific_profile(analyzer, T0)
+
+    for seconds in range(3, 75):
+        held = analyzer.evaluate(
+            scientific_sample(T0 + timedelta(seconds=seconds), 0.0)
+        )
+    assert held.static_hold_seconds > 60.0, held
+    assert held.static_hold_bonus > 0.0, held
+
+    low_quality = analyzer.evaluate(
+        scientific_sample(T0 + timedelta(seconds=75), 0.0, quality=0.40)
+    )
+    assert low_quality.status == "OBSERVING", low_quality
+    assert low_quality.environment_state == "LOW_MEASUREMENT_QUALITY", low_quality
+    assert low_quality.static_hold_seconds == 0.0, low_quality
+    assert low_quality.static_hold_bonus == 0.0, low_quality
+
+    resumed = analyzer.evaluate(scientific_sample(T0 + timedelta(seconds=76), 0.0))
+    assert resumed.status == "GOOD", resumed
+    assert resumed.static_hold_seconds == 0.0, resumed
+    assert resumed.static_hold_bonus == 0.0, resumed
+    print("test_low_measurement_quality_resets_low_track_activity OK")
 
 
 if __name__ == "__main__":
@@ -1044,6 +1121,8 @@ if __name__ == "__main__":
     test_single_feature_runtime_drift_does_not_open_watch_or_exposure()
     test_head_turn_abstains_without_static_exposure()
     test_extreme_static_head_direction_is_visible_and_time_gated()
+    test_extreme_projected_head_tilt_is_posture_deviation()
+    test_extreme_projected_torso_translation_is_posture_deviation()
     test_extreme_frontal_shrug_is_watch_without_bypassing_exposure()
     test_fixed_posture_distance_scale_does_not_become_head_turn_watch()
     test_unchanged_posture_shared_shoulder_width_drift_never_accumulates_exposure()
@@ -1051,5 +1130,6 @@ if __name__ == "__main__":
     test_real_forward_change_with_stable_shoulder_scale_still_alerts()
     test_rigid_frame_roll_never_becomes_lateral_exposure()
     test_real_pelvis_relative_lateral_change_still_alerts()
-    test_static_hold_add_on_is_visible_but_bounded()
+    test_low_track_activity_add_on_is_visible_but_bounded()
+    test_low_measurement_quality_resets_low_track_activity()
     print("ALL TESTS PASSED")

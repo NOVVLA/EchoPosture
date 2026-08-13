@@ -17,7 +17,7 @@ from vision_modes import (
     VISION_MODE_PROFESSIONAL_BETA,
     VISION_MODE_STANDARD,
 )
-from vision_test import VisionSample
+from vision_test import PostureDecision, VisionSample
 
 
 T0 = datetime(2026, 1, 1, 12, 0, 0)
@@ -151,11 +151,75 @@ def test_debug_panel_exposes_three_vision_modes_and_explicit_availability() -> N
         )
         assert window.vision_mode == VISION_MODE_STANDARD
         assert window.vision_mode_combo.currentData() == VISION_MODE_STANDARD
+        assert "标准模式" in window.vision_backend_label.text()
+        assert "fake-standard" in window.vision_backend_label.text()
         assert "TensorRT" in window.vision_backend_label.text()
+
+        window.vision_mode_combo.setCurrentIndex(
+            window._vision_mode_index(VISION_MODE_COMPATIBILITY)
+        )
+        assert window.vision_mode == VISION_MODE_COMPATIBILITY
+        assert "兼容模式" in window.vision_backend_label.text()
+        assert "fake-compatibility" in window.vision_backend_label.text()
+        assert "TensorRT" not in window.vision_backend_label.text()
     finally:
         window.close()
         app.processEvents()
     print("test_debug_panel_exposes_three_vision_modes_and_explicit_availability OK")
+
+
+def test_unavailable_mode_keeps_actual_compatibility_backend_visible() -> None:
+    app = QApplication.instance() or QApplication([])
+    compatibility = FakeDebugBackend()
+    window = make_window(app, compatibility)
+    try:
+        window.vision_mode_combo.setCurrentIndex(
+            window._vision_mode_index(VISION_MODE_STANDARD)
+        )
+        text = window.vision_backend_label.text()
+        assert window.vision_mode == VISION_MODE_COMPATIBILITY
+        assert window.vision_mode_combo.currentData() == VISION_MODE_COMPATIBILITY
+        assert "兼容模式" in text
+        assert "fake-compatibility" in text
+        assert "YOLO26n-pose" in text
+
+        window._switch_vision_mode(
+            window._vision_mode_index(VISION_MODE_COMPATIBILITY)
+        )
+        assert "YOLO26n-pose" not in window.vision_backend_label.text()
+        assert "兼容模式" in window.vision_backend_label.text()
+    finally:
+        window.close()
+        app.processEvents()
+    print("test_unavailable_mode_keeps_actual_compatibility_backend_visible OK")
+
+
+def test_debug_panel_exposes_projected_axes_and_target_activity() -> None:
+    app = QApplication.instance() or QApplication([])
+    backend = FakeDebugBackend()
+    window = make_window(app, backend)
+    sample = make_sample()
+    try:
+        window._show_metrics(
+            sample,
+            PostureDecision(
+                "GOOD",
+                "within_personal_posture_range",
+                True,
+                calibration_quality=1.0,
+                activity_state="STATIC",
+            ),
+        )
+        assert "0.0" in window.projected_trunk_axis_label.text()
+        assert "0.0" in window.projected_head_trunk_label.text()
+        assert window.target_motion_label.text() == "0.000 /s"
+        assert window.target_activity_label.text() == "静止"
+        assert window.risk_metric_label.text() == "姿态偏离 / 综合风险 / 暴露 / 置信度"
+        assert window.risk_label.text().startswith("0.00 / 0.00 / 0.0s / 0.00")
+    finally:
+        window.close()
+        app.processEvents()
+    print("test_debug_panel_exposes_projected_axes_and_target_activity OK")
 
 
 def test_debug_panel_runs_full_dual_anchor_calibration() -> None:
@@ -424,6 +488,8 @@ def test_debug_panel_reports_incomplete_dual_anchor_profile() -> None:
 if __name__ == "__main__":
     test_debug_panel_exposes_non_intervention_statuses()
     test_debug_panel_exposes_three_vision_modes_and_explicit_availability()
+    test_unavailable_mode_keeps_actual_compatibility_backend_visible()
+    test_debug_panel_exposes_projected_axes_and_target_activity()
     test_debug_panel_runs_full_dual_anchor_calibration()
     test_debug_panel_places_stage_card_above_camera()
     test_debug_panel_accepts_identical_anchor_postures()

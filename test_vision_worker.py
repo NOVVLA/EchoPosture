@@ -703,6 +703,25 @@ def test_production_worker_dual_anchor_requires_normal_range_before_exposure() -
     assert all(decision.status != "WATCH" for decision in decisions)
     assert max(decision.posture_deviation for decision in decisions) == 0.0
     assert max(decision.exposure_seconds for decision in decisions) == 0.0
+
+    tilted_at = start + timedelta(seconds=312.0)
+    tilted = replace(
+        make_production_dual_sample(tilted_at, 0.0),
+        nose_point=(370.0, 170.0),
+    )
+    engine.sample = tilted
+    first_tilted_sample, _ = worker._read_sample(engine)
+    analyzer.evaluate(first_tilted_sample)
+    engine.sample = replace(tilted, timestamp=tilted_at + timedelta(seconds=0.4))
+    second_tilted_sample, _ = worker._read_sample(engine)
+    tilted_decision = analyzer.evaluate(second_tilted_sample)
+
+    assert second_tilted_sample.nose_point == (370.0, 170.0)
+    assert second_tilted_sample.shoulder_center == (320.0, 242.0)
+    assert second_tilted_sample.hip_center == (320.0, 390.0)
+    assert second_tilted_sample.activity_state == "STATIC"
+    assert tilted_decision.status == "WATCH", tilted_decision
+    assert tilted_decision.posture_deviation >= analyzer.posture_policy.severe_deviation
     print("test_production_worker_dual_anchor_requires_normal_range_before_exposure OK")
 
 

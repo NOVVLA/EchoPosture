@@ -27,6 +27,7 @@ FORWARD_FEATURES = (
 LATERAL_FEATURES = (
     "shoulder_asymmetry_deg",
     "trunk_lean_deg",
+    "projected_head_trunk_angle_deg",
 )
 POSTURE_FEATURES = FORWARD_FEATURES + LATERAL_FEATURES
 
@@ -82,6 +83,45 @@ def _axis_angle_deg(first, second) -> float:
     while angle < -90.0:
         angle += 180.0
     return angle
+
+
+def _vertical_axis_angle_deg(top, bottom) -> float:
+    """Return a directed screen-plane axis angle relative to image vertical."""
+
+    dx = float(top[0]) - float(bottom[0])
+    dy = float(bottom[1]) - float(top[1])
+    return math.degrees(math.atan2(dx, max(abs(dy), 1.0)))
+
+
+def _relative_axis_angle_deg(first: float, second: float) -> float:
+    """Return the smallest directed difference between two projected axes."""
+
+    return (float(first) - float(second) + 90.0) % 180.0 - 90.0
+
+
+def projected_axis_values(sample) -> dict[str, float]:
+    """Return auditable 2D image-plane axes without implying a spine angle.
+
+    These values describe only projections in the camera image. They can be
+    compared with the same user's calibration range, but cannot recover a 3D
+    spinal curve or a clinical anatomical angle from a frontal monocular view.
+    """
+
+    values: dict[str, float] = {}
+    shoulder_center = getattr(sample, "shoulder_center", None)
+    hip_center = getattr(sample, "hip_center", None)
+    nose = getattr(sample, "nose_point", None)
+    if shoulder_center is not None and hip_center is not None:
+        trunk_axis = _vertical_axis_angle_deg(shoulder_center, hip_center)
+        values["projected_trunk_axis_deg"] = trunk_axis
+        if nose is not None:
+            head_axis = _vertical_axis_angle_deg(nose, shoulder_center)
+            values["projected_head_axis_deg"] = head_axis
+            values["projected_head_trunk_angle_deg"] = _relative_axis_angle_deg(
+                head_axis,
+                trunk_axis,
+            )
+    return values
 
 
 @dataclass(frozen=True)
@@ -443,6 +483,15 @@ class PosturePolicy:
     # single-feature changes. This is a product reliability parameter, not an
     # anatomical limit.
     lone_trunk_lean_deviation: float = 0.65
+    # A large head-to-trunk screen-plane angle is visible evidence that the
+    # head and torso are not aligned even when the shoulder/pelvis axis stays
+    # upright. This is a within-person 2D projection signal, not a spinal or
+    # clinical angle. Ordinary single-feature changes still require support.
+    lone_projected_head_trunk_deviation: float = 0.65
+    # Shoulder-versus-pelvis imbalance can also be independently implausible
+    # at the extreme end. Keep its threshold higher because arm movement and
+    # partially visible shoulders can perturb this channel more easily.
+    lone_shoulder_asymmetry_deviation: float = 0.85
     # A pronounced head-to-shoulder contraction/protraction or shoulder-to-
     # hip shortening can remain a single physical channel in a frontal view.
     # Permit one forward channel to stand alone only at the severe end.
@@ -456,11 +505,17 @@ class PosturePolicy:
     head_turn_observe_delta: float = 0.25
     head_turn_watch_delta: float = 0.45
     head_turn_full_delta: float = 0.70
-    # A bounded static-hold add-on may support an already corroborated WATCH
-    # posture, but it can never create posture evidence from a normal frame.
+    # Low track activity is an exposure-context signal, not posture geometry.
+    # It may raise the combined risk index by a bounded amount even while the
+    # calibrated posture remains normal, but it can never create WATCH/BAD or
+    # posture exposure by itself. The current compatibility tracker measures
+    # body-box translation and scale, so this is deliberately named and
+    # interpreted as low *track* activity rather than proof of no body motion.
     static_hold_start_seconds: float = 60.0
     static_hold_full_seconds: float = 180.0
     static_hold_max_bonus: float = 0.12
+    # Deprecated constructor compatibility. Eligibility is now determined by
+    # reliable low track activity, independently of posture deviation.
     static_hold_min_deviation: float = 0.50
     # Runtime decisions operate on individual observations, so their noise
     # band is based on within-anchor standard deviation rather than SEM alone.
@@ -529,6 +584,10 @@ class PosturePolicy:
             raise ValueError("minimum_group_support_deviation must be in [0, 1]")
         if not (0.0 <= self.lone_trunk_lean_deviation <= 1.0):
             raise ValueError("lone_trunk_lean_deviation must be in [0, 1]")
+        if not (0.0 <= self.lone_projected_head_trunk_deviation <= 1.0):
+            raise ValueError("lone_projected_head_trunk_deviation must be in [0, 1]")
+        if not (0.0 <= self.lone_shoulder_asymmetry_deviation <= 1.0):
+            raise ValueError("lone_shoulder_asymmetry_deviation must be in [0, 1]")
         if not (0.0 <= self.lone_forward_channel_deviation <= 1.0):
             raise ValueError("lone_forward_channel_deviation must be in [0, 1]")
         if not (
@@ -752,8 +811,16 @@ def score_posture_deviation(
     if lone_forward >= policy.lone_forward_channel_deviation:
         forward = max(forward, min(1.0, lone_forward))
         forward_corroborated = True
+    # Trunk lean and head-to-trunk angle share the same shoulder-to-hip axis.
+    # Treat them as one projected-axis channel so translating the upper body
+    # cannot manufacture two independent votes from one geometric event.
+    # Shoulder-versus-pelvis asymmetry remains the separate lateral channel.
+    trunk_lean = by_name.get("trunk_lean_deg", 0.0)
+    projected_head_trunk = by_name.get("projected_head_trunk_angle_deg", 0.0)
+    projected_axis = max(trunk_lean, projected_head_trunk)
+    shoulder_asymmetry = by_name.get("shoulder_asymmetry_deg", 0.0)
     lateral, lateral_corroborated = _group_score(
-        [by_name[name] for name in LATERAL_FEATURES if name in by_name],
+        [projected_axis, shoulder_asymmetry],
         policy.within_group_corroboration,
         policy.minimum_group_support_deviation,
     )
@@ -763,9 +830,14 @@ def score_posture_deviation(
     # lean stand on its own once it clears the explicit product reliability
     # parameter. This avoids suppressing the real posture pattern without
     # turning small single-feature jitter into an alert.
-    trunk_lean = by_name.get("trunk_lean_deg", 0.0)
     if trunk_lean >= policy.lone_trunk_lean_deviation:
         lateral = max(lateral, trunk_lean)
+        lateral_corroborated = True
+    if projected_head_trunk >= policy.lone_projected_head_trunk_deviation:
+        lateral = max(lateral, projected_head_trunk)
+        lateral_corroborated = True
+    if shoulder_asymmetry >= policy.lone_shoulder_asymmetry_deviation:
+        lateral = max(lateral, shoulder_asymmetry)
         lateral_corroborated = True
     groups = sorted((forward, lateral), reverse=True)
     overall = min(
@@ -901,7 +973,7 @@ class ExposureSnapshot:
 
 @dataclass(frozen=True)
 class StaticHoldSnapshot:
-    """Continuous static-hold evidence and its bounded posture add-on."""
+    """Continuous low-track-activity evidence and its bounded risk add-on."""
 
     static_seconds: float
     bonus: float
@@ -909,12 +981,11 @@ class StaticHoldSnapshot:
 
 
 class StaticHoldAccumulator:
-    """Track one uninterrupted, corroborated posture hold.
+    """Track one uninterrupted period with reliable low target-track motion.
 
-    The add-on is deliberately subordinate to posture evidence: callers must
-    pass ``eligible=True`` only for a corroborated posture already at the
-    WATCH boundary. A normal posture therefore never rises merely because
-    time passes. Long gaps, movement, low quality, or recovery reset the hold.
+    The add-on changes combined risk only. It is never posture evidence and
+    cannot make a normal posture enter WATCH/BAD. Long gaps, detected movement,
+    low measurement quality, or an uncertain target reset the hold.
     """
 
     def __init__(self, policy: Optional[PosturePolicy] = None) -> None:
@@ -963,7 +1034,6 @@ class StaticHoldAccumulator:
             paused
             or gap
             or not eligible
-            or posture_deviation < self.policy.static_hold_min_deviation
         ):
             self.static_seconds = 0.0
             return self._snapshot(True)
@@ -1093,6 +1163,8 @@ def measurement_values(sample) -> dict[str, float]:
     torso_height = _finite_float(getattr(sample, "torso_height_px", None))
     signed_shoulder = _finite_float(getattr(sample, "signed_shoulder_diff_px", None))
     trunk_lean = _finite_float(getattr(sample, "trunk_lean_deg", None))
+    projected_axes = projected_axis_values(sample)
+    values.update(projected_axes)
     left_eye = getattr(sample, "left_eye_center", None)
     right_eye = getattr(sample, "right_eye_center", None)
     if left_eye is not None and right_eye is not None:
@@ -1141,12 +1213,9 @@ def measurement_values(sample) -> dict[str, float]:
         # ``trunk_lean_deg`` is expressed against the image vertical. A rigid
         # frame roll changes it by the hip-line angle, so subtracting that
         # angle converts it to a pelvis-relative torso lean.
-        shoulder_center = getattr(sample, "shoulder_center", None)
-        hip_center = getattr(sample, "hip_center", None)
-        if shoulder_center is not None and hip_center is not None:
-            dx = float(shoulder_center[0]) - float(hip_center[0])
-            dy = float(hip_center[1]) - float(shoulder_center[1])
-            trunk_lean = math.degrees(math.atan2(dx, max(abs(dy), 1.0)))
+        projected_trunk = projected_axes.get("projected_trunk_axis_deg")
+        if projected_trunk is not None:
+            trunk_lean = projected_trunk
         values["trunk_lean_deg"] = (
             trunk_lean - hip_line_angle
             if hip_line_angle is not None
@@ -1201,6 +1270,9 @@ def calibration_measurement_values(
             "shoulder_width_px",
             "signed_shoulder_diff_px",
             "shoulder_line_angle_deg",
+            "projected_head_trunk_angle_deg",
+            "projected_head_axis_deg",
+            "projected_trunk_axis_deg",
         ):
             values.pop(name, None)
     if not hips_ok:
@@ -1209,6 +1281,8 @@ def calibration_measurement_values(
             "trunk_lean_deg",
             "torso_height_px",
             "hip_line_angle_deg",
+            "projected_head_trunk_angle_deg",
+            "projected_trunk_axis_deg",
         ):
             values.pop(name, None)
         # Preserve shoulder-only evidence without allowing low-confidence hip
@@ -1221,6 +1295,9 @@ def calibration_measurement_values(
         if not _confidences_meet_floor(sample, (f"{side}_ear_confidence",), floor):
             values.pop("ear_shoulder_ratio", None)
             values.pop("ear_shoulder_offset_px", None)
+    if not _confidences_meet_floor(sample, ("nose_confidence",), floor):
+        values.pop("projected_head_trunk_angle_deg", None)
+        values.pop("projected_head_axis_deg", None)
     return values
 
 
@@ -1255,6 +1332,13 @@ _FEATURE_CONFIDENCE_REQUIREMENTS: Mapping[str, tuple[str, ...]] = {
         "right_shoulder_confidence",
     ),
     "trunk_lean_deg": (
+        "left_shoulder_confidence",
+        "right_shoulder_confidence",
+        "left_hip_confidence",
+        "right_hip_confidence",
+    ),
+    "projected_head_trunk_angle_deg": (
+        "nose_confidence",
         "left_shoulder_confidence",
         "right_shoulder_confidence",
         "left_hip_confidence",

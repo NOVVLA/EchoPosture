@@ -85,6 +85,7 @@ from posture_science import (
     TRANSITION,
     calibration_measurement_values,
     calibration_rejection_reason,
+    projected_axis_values,
 )
 
 from i18n import _t, add_listener, remove_listener
@@ -505,6 +506,8 @@ class DebugWindow(QMainWindow):
         self.shoulder_label = QLabel("--")
         self.distance_label = QLabel("--")
         self.trunk_label = QLabel("--")
+        self.projected_trunk_axis_label = QLabel("--")
+        self.projected_head_trunk_label = QLabel("--")
         self.risk_label = QLabel("--")
         self.baseline_label = QLabel("--")
         self.baseline_label.setWordWrap(True)
@@ -546,6 +549,8 @@ class DebugWindow(QMainWindow):
         self.target_track_label = QLabel("--")
         self.target_count_label = QLabel("--")
         self.target_score_label = QLabel("--")
+        self.target_motion_label = QLabel("--")
+        self.target_activity_label = QLabel("--")
         self.target_reason_label = QLabel("--")
         self.target_reason_label.setWordWrap(True)
 
@@ -557,6 +562,8 @@ class DebugWindow(QMainWindow):
         self.vision_mode_combo.currentIndexChanged.connect(self._switch_vision_mode)
         self.vision_backend_label = QLabel()
         self.vision_backend_label.setWordWrap(True)
+        self._vision_backend_notice_key: Optional[str] = None
+        self._vision_backend_notice_kwargs: dict[str, str] = {}
         self._set_vision_backend_status()
 
         self.calibrate_button = QPushButton(_t("debug_dual_calibrate_btn"))
@@ -624,12 +631,18 @@ class DebugWindow(QMainWindow):
         self.trunk_metric_label = QLabel(_t("debug_metric_trunk"))
         metric_grid.addWidget(self.trunk_metric_label, 3, 0)
         metric_grid.addWidget(self.trunk_label, 3, 1)
+        self.projected_trunk_axis_metric_label = QLabel(_t("debug_metric_projected_trunk_axis"))
+        metric_grid.addWidget(self.projected_trunk_axis_metric_label, 4, 0)
+        metric_grid.addWidget(self.projected_trunk_axis_label, 4, 1)
+        self.projected_head_trunk_metric_label = QLabel(_t("debug_metric_projected_head_trunk"))
+        metric_grid.addWidget(self.projected_head_trunk_metric_label, 5, 0)
+        metric_grid.addWidget(self.projected_head_trunk_label, 5, 1)
         self.risk_metric_label = QLabel(_t("debug_metric_risk"))
-        metric_grid.addWidget(self.risk_metric_label, 4, 0)
-        metric_grid.addWidget(self.risk_label, 4, 1)
+        metric_grid.addWidget(self.risk_metric_label, 6, 0)
+        metric_grid.addWidget(self.risk_label, 6, 1)
         self.baseline_metric_label = QLabel(_t("debug_metric_baseline"))
-        metric_grid.addWidget(self.baseline_metric_label, 5, 0)
-        metric_grid.addWidget(self.baseline_label, 5, 1)
+        metric_grid.addWidget(self.baseline_metric_label, 7, 0)
+        metric_grid.addWidget(self.baseline_label, 7, 1)
 
         target_title = QLabel(_t("debug_target_title"))
         target_title.setFont(QFont("Microsoft YaHei", 12, QFont.Bold))
@@ -648,9 +661,15 @@ class DebugWindow(QMainWindow):
         self.target_score_metric_label = QLabel(_t("debug_target_score"))
         target_grid.addWidget(self.target_score_metric_label, 3, 0)
         target_grid.addWidget(self.target_score_label, 3, 1)
+        self.target_motion_metric_label = QLabel(_t("debug_target_motion"))
+        target_grid.addWidget(self.target_motion_metric_label, 4, 0)
+        target_grid.addWidget(self.target_motion_label, 4, 1)
+        self.target_activity_metric_label = QLabel(_t("debug_target_activity"))
+        target_grid.addWidget(self.target_activity_metric_label, 5, 0)
+        target_grid.addWidget(self.target_activity_label, 5, 1)
         self.target_reason_metric_label = QLabel(_t("debug_target_reason"))
-        target_grid.addWidget(self.target_reason_metric_label, 4, 0, Qt.AlignTop)
-        target_grid.addWidget(self.target_reason_label, 4, 1)
+        target_grid.addWidget(self.target_reason_metric_label, 6, 0, Qt.AlignTop)
+        target_grid.addWidget(self.target_reason_label, 6, 1)
 
         panel_layout.addWidget(title)
         panel_layout.addWidget(self.status_label)
@@ -738,21 +757,38 @@ class DebugWindow(QMainWindow):
                 return index
         return 0
 
-    def _set_vision_backend_status(self, reason_key: Optional[str] = None) -> None:
-        if reason_key is not None:
-            self.vision_backend_label.setText(_t(reason_key))
-            return
-        self.vision_backend_label.setText(
-            _t(
-                "debug_vision_backend",
-                mode=_t(mode_spec(self.vision_mode).label_key),
-                backend=backend_name(self.engine),
-            )
+    def _render_vision_backend_status(self) -> None:
+        current = _t(
+            "debug_vision_backend",
+            mode=_t(mode_spec(self.vision_mode).label_key),
+            backend=backend_name(self.engine),
         )
+        if self._vision_backend_notice_key is None:
+            self.vision_backend_label.setText(current)
+            return
+        notice = _t(
+            self._vision_backend_notice_key,
+            **self._vision_backend_notice_kwargs,
+        )
+        self.vision_backend_label.setText(
+            _t("debug_vision_backend_notice", current=current, notice=notice)
+        )
+
+    def _set_vision_backend_status(
+        self,
+        reason_key: Optional[str] = None,
+        **reason_kwargs: str,
+    ) -> None:
+        self._vision_backend_notice_key = reason_key
+        self._vision_backend_notice_kwargs = reason_kwargs
+        self._render_vision_backend_status()
 
     def _switch_vision_mode(self, index: int) -> None:
         requested_mode = self.vision_mode_combo.itemData(index)
-        if not requested_mode or requested_mode == self.vision_mode:
+        if not requested_mode:
+            return
+        if requested_mode == self.vision_mode:
+            self._set_vision_backend_status()
             return
         factory = self._backend_factories.get(requested_mode)
         if factory is None:
@@ -780,8 +816,9 @@ class DebugWindow(QMainWindow):
                     pass
             self.engine = previous_factory()
             self.engine.start()
-            self.vision_backend_label.setText(
-                _t("vision_mode_switch_failed", detail=str(exc))
+            self._set_vision_backend_status(
+                "vision_mode_switch_failed",
+                detail=str(exc),
             )
             self.vision_mode_combo.blockSignals(True)
             self.vision_mode_combo.setCurrentIndex(self._vision_mode_index(previous_mode))
@@ -1571,9 +1608,19 @@ class DebugWindow(QMainWindow):
             estimated_distance = self.analyzer.estimated_distance_cm(sample)
         distance_text = format_value(estimated_distance, "cm")
         trunk_text = format_value(sample.trunk_lean_deg, "deg")
+        projected_axes = projected_axis_values(sample)
+        projected_trunk_text = format_value(
+            projected_axes.get("projected_trunk_axis_deg"),
+            "deg",
+        )
+        projected_head_trunk_text = format_value(
+            projected_axes.get("projected_head_trunk_angle_deg"),
+            "deg",
+        )
         if decision.calibration_quality > 0.0:
             risk_text = (
                 f"{decision.posture_deviation:.2f} / "
+                f"{decision.risk_score / 100.0:.2f} / "
                 f"{decision.exposure_seconds:.1f}s / {decision.confidence:.2f}"
             )
             if decision.static_hold_seconds > 0.0 or decision.static_hold_bonus > 0.0:
@@ -1592,6 +1639,13 @@ class DebugWindow(QMainWindow):
         self.shoulder_label.setText(shoulder_text)
         self.distance_label.setText(distance_text)
         self.trunk_label.setText(trunk_text)
+        self.projected_trunk_axis_label.setText(projected_trunk_text)
+        self.projected_head_trunk_label.setText(projected_head_trunk_text)
+        self.target_motion_label.setText(
+            "--" if sample.target_motion is None else f"{sample.target_motion:.3f} /s"
+        )
+        activity_key = f"debug_activity_{sample.activity_state or 'UNKNOWN'}"
+        self.target_activity_label.setText(_t(activity_key))
         self.risk_label.setText(risk_text)
         profile = getattr(self.analyzer, "calibration_profile", None)
         self.baseline_label.setText(
@@ -1689,11 +1743,13 @@ class DebugWindow(QMainWindow):
         self.vision_mode_label.setText(_t("debug_vision_mode"))
         for index, spec in enumerate(VISION_MODE_SPECS):
             self.vision_mode_combo.setItemText(index, _t(spec.label_key))
-        self._set_vision_backend_status()
+        self._render_vision_backend_status()
         self.face_metric_label.setText(_t("debug_metric_face"))
         self.shoulder_metric_label.setText(_t("debug_metric_shoulder"))
         self.distance_metric_label.setText(_t("debug_metric_distance"))
         self.trunk_metric_label.setText(_t("debug_metric_trunk"))
+        self.projected_trunk_axis_metric_label.setText(_t("debug_metric_projected_trunk_axis"))
+        self.projected_head_trunk_metric_label.setText(_t("debug_metric_projected_head_trunk"))
         self.risk_metric_label.setText(_t("debug_metric_risk"))
         self.baseline_metric_label.setText(_t("debug_metric_baseline"))
         self.target_title_label.setText(_t("debug_target_title"))
@@ -1701,6 +1757,8 @@ class DebugWindow(QMainWindow):
         self.target_track_metric_label.setText(_t("debug_target_track"))
         self.target_count_metric_label.setText(_t("debug_target_count"))
         self.target_score_metric_label.setText(_t("debug_target_score"))
+        self.target_motion_metric_label.setText(_t("debug_target_motion"))
+        self.target_activity_metric_label.setText(_t("debug_target_activity"))
         self.target_reason_metric_label.setText(_t("debug_target_reason"))
 
     def _human_reason(self, reason: str) -> str:
