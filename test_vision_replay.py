@@ -28,50 +28,53 @@ def test_synthetic_replay_matrix():
 
 def test_numeric_posture_exposure_replay():
     lines = [
-        '{"timestamp_s": 0, "posture_deviation": 1.0, "expected_posture_status": "WATCH"}'
+        '{"timestamp_s": 0, "posture_deviation": 1.0, "expected_posture_status": "ADJUSTING"}',
+        '{"timestamp_s": 1, "posture_deviation": 1.0, "expected_posture_status": "ADJUSTING"}',
+        '{"timestamp_s": 2, "posture_deviation": 1.0, "expected_posture_status": "WATCH"}',
     ]
     lines.extend(
         f'{{"timestamp_s": {seconds}, "posture_deviation": 1.0, '
-        f'"expected_posture_status": "{("BAD" if seconds == 12 else "WATCH")}"}}'
-        for seconds in range(1, 13)
+        f'"expected_posture_status": "{("BAD" if seconds == 14 else "WATCH")}"}}'
+        for seconds in range(3, 15)
     )
     lines.extend(
         [
-            '{"timestamp_s": 13, "posture_deviation": 1.0, "activity_state": "MOVING", "expected_posture_status": "WATCH"}',
-            '{"timestamp_s": 20, "posture_deviation": 1.0, "camera_drift": true, "expected_posture_status": "UNKNOWN"}',
+            '{"timestamp_s": 15, "posture_deviation": 1.0, "activity_state": "MOVING", "expected_posture_status": "MOVING"}',
+            '{"timestamp_s": 20, "posture_deviation": 1.0, "camera_drift": true, "expected_posture_status": "OBSERVING"}',
             '{"timestamp_s": 21, "posture_deviation": 0.0, "expected_posture_status": "GOOD"}',
         ]
     )
     results = replay_lines(lines)
-    assert results[12].exposure_seconds == 12.0
-    assert results[13].exposure_seconds == 12.0
+    assert results[2].exposure_seconds == 0.0
     assert results[14].exposure_seconds == 12.0
-    assert 0.0 < (results[15].exposure_seconds or 0.0) < 12.0
+    assert results[15].exposure_seconds == 12.0
+    assert results[16].exposure_seconds == 12.0
+    assert 0.0 < (results[17].exposure_seconds or 0.0) < 12.0
     print("test_numeric_posture_exposure_replay OK")
 
 
 def test_watch_replay_does_not_preload_alert_exposure():
     lines = [
-        '{"timestamp_s": 0, "posture_deviation": 0.60, "expected_posture_status": "WATCH"}',
-        '{"timestamp_s": 300, "posture_deviation": 0.60, "expected_posture_status": "WATCH"}',
-        '{"timestamp_s": 301, "posture_deviation": 1.0, "expected_posture_status": "WATCH"}',
+        '{"timestamp_s": 0, "posture_deviation": 0.60, "expected_posture_status": "ADJUSTING"}',
+        '{"timestamp_s": 300, "posture_deviation": 0.60, "expected_posture_status": "ADJUSTING"}',
+        '{"timestamp_s": 301, "posture_deviation": 1.0, "expected_posture_status": "ADJUSTING"}',
         '{"timestamp_s": 302, "posture_deviation": 1.0, "expected_posture_status": "WATCH"}',
     ]
     results = replay_lines(lines)
     assert results[1].exposure_seconds == 0.0
-    assert results[3].exposure_seconds == 2.0
+    assert results[3].exposure_seconds == 0.0
     print("test_watch_replay_does_not_preload_alert_exposure OK")
 
 
 def test_sparse_replay_does_not_backfill_missing_exposure() -> None:
     lines = [
-        '{"timestamp_s": 0, "posture_deviation": 1.0, "expected_posture_status": "WATCH"}',
-        '{"timestamp_s": 300, "posture_deviation": 1.0, "expected_posture_status": "WATCH"}',
-        '{"timestamp_s": 301, "posture_deviation": 1.0, "expected_posture_status": "WATCH"}',
+        '{"timestamp_s": 0, "posture_deviation": 1.0, "expected_posture_status": "ADJUSTING"}',
+        '{"timestamp_s": 300, "posture_deviation": 1.0, "expected_posture_status": "ADJUSTING"}',
+        '{"timestamp_s": 301, "posture_deviation": 1.0, "expected_posture_status": "ADJUSTING"}',
     ]
     results = replay_lines(lines)
     assert results[1].exposure_seconds == 0.0
-    assert results[2].exposure_seconds == 1.0
+    assert results[2].exposure_seconds == 0.0
     print("test_sparse_replay_does_not_backfill_missing_exposure OK")
 
 

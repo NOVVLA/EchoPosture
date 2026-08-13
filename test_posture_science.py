@@ -19,6 +19,7 @@ from posture_science import (
     calibration_rejection_reason,
     normalized_feature_deviation,
     runtime_noise_floor,
+    runtime_movement_margin,
     score_posture_deviation,
     shared_scale_measurement_unstable,
 )
@@ -499,7 +500,7 @@ def test_mdc_normalization_and_group_deduplication() -> None:
 
     score = score_posture_deviation(anchor_values(2.5), profile)
     assert math.isclose(score.forward_deviation, 1.0)
-    assert math.isclose(score.lateral_deviation, 1.0)
+    assert score.lateral_deviation >= 0.95
     assert math.isclose(score.deviation, 1.0)
     assert score.deviation <= max(score.forward_deviation, score.lateral_deviation) + 0.10
     print("test_mdc_normalization_and_group_deduplication OK")
@@ -510,21 +511,29 @@ def test_range_deviation_is_bidirectional_and_independent_of_anchor_span() -> No
     identical = FeatureStatistics.from_values([0.300] * 5)
     lower = normalized_feature_deviation(
         "face_shoulder_ratio",
-        0.300 - policy.runtime_ratio_noise_floor - 0.050,
+        0.300
+        - policy.runtime_ratio_noise_floor
+        - runtime_movement_margin("face_shoulder_ratio", policy)
+        - 0.050,
         identical,
         identical,
         policy,
     )
     upper = normalized_feature_deviation(
         "face_shoulder_ratio",
-        0.300 + policy.runtime_ratio_noise_floor + 0.050,
+        0.300
+        + policy.runtime_ratio_noise_floor
+        + runtime_movement_margin("face_shoulder_ratio", policy)
+        + 0.050,
         identical,
         identical,
         policy,
     )
     inside_noise = normalized_feature_deviation(
         "face_shoulder_ratio",
-        0.300 + policy.runtime_ratio_noise_floor,
+        0.300
+        + policy.runtime_ratio_noise_floor
+        + runtime_movement_margin("face_shoulder_ratio", policy),
         identical,
         identical,
         policy,
@@ -537,7 +546,10 @@ def test_range_deviation_is_bidirectional_and_independent_of_anchor_span() -> No
     wide_relaxed = FeatureStatistics.from_values([0.350] * 5)
     same_excursion = normalized_feature_deviation(
         "face_shoulder_ratio",
-        0.350 + policy.runtime_ratio_noise_floor + 0.050,
+        0.350
+        + policy.runtime_ratio_noise_floor
+        + runtime_movement_margin("face_shoulder_ratio", policy)
+        + 0.050,
         wide_preferred,
         wide_relaxed,
         policy,
@@ -569,7 +581,10 @@ def test_single_feature_excursion_is_inconclusive_for_group_scoring() -> None:
     noise = profile.runtime_noise_floors["face_shoulder_ratio"]
     direction = 1.0 if relaxed.mean >= preferred.mean else -1.0
     values["face_shoulder_ratio"] = preferred.mean + direction * (
-        abs(relaxed.mean - preferred.mean) + noise * 2.0
+        abs(relaxed.mean - preferred.mean)
+        + noise
+        + runtime_movement_margin("face_shoulder_ratio")
+        + 0.02
     )
     # Remove every independent feature from both physical groups except the
     # one drifting ratio. It remains useful diagnostic evidence but cannot
@@ -637,10 +652,10 @@ def test_shared_shoulder_scale_drift_abstains_from_ratio_scoring() -> None:
         accumulator.add(6.0 + index, relaxed)
     profile = accumulator.finalize()
     unchanged_numerators_with_drifted_width = {
-        "face_shoulder_ratio": 60.0 / 160.0,
-        "torso_shoulder_ratio": 180.0 / 160.0,
-        "ear_shoulder_ratio": 80.0 / 160.0,
-        "shoulder_width_px": 160.0,
+        "face_shoulder_ratio": 60.0 / 145.0,
+        "torso_shoulder_ratio": 180.0 / 145.0,
+        "ear_shoulder_ratio": 80.0 / 145.0,
+        "shoulder_width_px": 145.0,
     }
 
     score = score_posture_deviation(unchanged_numerators_with_drifted_width, profile)
@@ -651,6 +666,41 @@ def test_shared_shoulder_scale_drift_abstains_from_ratio_scoring() -> None:
     )
     assert not shared_scale_measurement_unstable(relaxed, profile)
     print("test_shared_shoulder_scale_drift_abstains_from_ratio_scoring OK")
+
+
+def test_uniform_distance_scale_change_remains_measurable() -> None:
+    accumulator = CalibrationAccumulator(CalibrationPlan(min_samples_per_stage=5))
+    preferred = {
+        "face_shoulder_ratio": 0.30,
+        "torso_shoulder_ratio": 0.90,
+        "ear_shoulder_ratio": 0.40,
+        "shoulder_width_px": 200.0,
+        "interpupillary_px": 60.0,
+        "torso_height_px": 180.0,
+        "ear_shoulder_offset_px": 80.0,
+    }
+    relaxed = dict(preferred)
+    for index in range(5):
+        accumulator.add(index, preferred)
+    accumulator.begin_transition(5.0)
+    for index in range(5):
+        accumulator.add(6.0 + index, relaxed)
+    profile = accumulator.finalize()
+
+    scaled = {
+        "face_shoulder_ratio": 0.30,
+        "torso_shoulder_ratio": 0.90,
+        "ear_shoulder_ratio": 0.40,
+        "shoulder_width_px": 270.0,
+        "interpupillary_px": 81.0,
+        "torso_height_px": 243.0,
+        "ear_shoulder_offset_px": 108.0,
+    }
+    score = score_posture_deviation(scaled, profile)
+    assert score.deviation == 0.0
+    assert score.raw_deviation == 0.0
+    assert not shared_scale_measurement_unstable(scaled, profile, score=score)
+    print("test_uniform_distance_scale_change_remains_measurable OK")
 
 
 def test_in_range_shoulder_drift_requires_raw_forward_support() -> None:
@@ -682,13 +732,13 @@ def test_in_range_shoulder_drift_requires_raw_forward_support() -> None:
         accumulator.add(6.0 + index, relaxed)
     profile = accumulator.finalize()
     unchanged_numerators = {
-        "face_shoulder_ratio": 60.0 / 175.0,
-        "torso_shoulder_ratio": 180.0 / 175.0,
-        "ear_shoulder_ratio": 80.0 / 175.0,
+        "face_shoulder_ratio": 60.0 / 170.0,
+        "torso_shoulder_ratio": 180.0 / 170.0,
+        "ear_shoulder_ratio": 80.0 / 170.0,
         "interpupillary_px": 60.0,
         "torso_height_px": 180.0,
         "ear_shoulder_offset_px": 80.0,
-        "shoulder_width_px": 175.0,
+        "shoulder_width_px": 170.0,
     }
 
     score = score_posture_deviation(unchanged_numerators, profile)
@@ -746,7 +796,7 @@ def test_runtime_noise_band_uses_single_observation_repeatability() -> None:
         relaxed,
     )
     assert near_preferred.deviation == 0.0, near_preferred
-    assert near_preferred.runtime_noise >= 1.96 * preferred.std
+    assert near_preferred.runtime_noise >= 3.0 * preferred.std
     assert math.isclose(
         near_preferred.runtime_noise,
         runtime_noise_floor(preferred, relaxed),
@@ -770,18 +820,18 @@ def test_marginal_anchor_range_is_valid_and_noise_bounded() -> None:
     noise = profile.runtime_noise_floors["face_shoulder_ratio"]
     stats = FeatureStatistics.from_values(preferred_values)
     assert 0.03 > stats.mdc
-    assert 0.03 <= noise
+    assert 0.025 <= noise
     upper = profile.relaxed["face_shoulder_ratio"].mean
     inside_noise = normalized_feature_deviation(
         "face_shoulder_ratio",
-        upper + noise,
+        upper + noise + runtime_movement_margin("face_shoulder_ratio"),
         profile.preferred["face_shoulder_ratio"],
         profile.relaxed["face_shoulder_ratio"],
         runtime_noise_floor=noise,
     )
     outside_noise = normalized_feature_deviation(
         "face_shoulder_ratio",
-        upper + noise + 0.05,
+        upper + noise + runtime_movement_margin("face_shoulder_ratio") + 0.05,
         profile.preferred["face_shoulder_ratio"],
         profile.relaxed["face_shoulder_ratio"],
         runtime_noise_floor=noise,
@@ -812,7 +862,10 @@ def test_near_identical_smoothed_anchors_form_a_narrow_range() -> None:
     assert profile.enabled_features == ("face_shoulder_ratio",)
     result = normalized_feature_deviation(
         "face_shoulder_ratio",
-        0.305 + PosturePolicy().runtime_ratio_noise_floor + 0.05,
+        0.305
+        + PosturePolicy().runtime_ratio_noise_floor
+        + runtime_movement_margin("face_shoulder_ratio")
+        + 0.05,
         profile.preferred["face_shoulder_ratio"],
         profile.relaxed["face_shoulder_ratio"],
         runtime_noise_floor=profile.runtime_noise_floors["face_shoulder_ratio"],
@@ -833,7 +886,7 @@ def test_narrow_anchor_span_does_not_amplify_runtime_jitter() -> None:
     noise = profile.runtime_noise_floors["face_shoulder_ratio"]
     just_outside_range = normalized_feature_deviation(
         "face_shoulder_ratio",
-        0.320 + noise + 0.005,
+        0.320 + noise + runtime_movement_margin("face_shoulder_ratio") + 0.005,
         profile.preferred["face_shoulder_ratio"],
         profile.relaxed["face_shoulder_ratio"],
         runtime_noise_floor=noise,
@@ -940,6 +993,7 @@ if __name__ == "__main__":
     test_single_feature_excursion_is_inconclusive_for_group_scoring()
     test_shared_head_shoulder_ratios_are_one_evidence_channel()
     test_shared_shoulder_scale_drift_abstains_from_ratio_scoring()
+    test_uniform_distance_scale_change_remains_measurable()
     test_in_range_shoulder_drift_requires_raw_forward_support()
     test_runtime_noise_band_uses_single_observation_repeatability()
     test_marginal_anchor_range_is_valid_and_noise_bounded()

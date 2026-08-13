@@ -59,6 +59,9 @@ def replay_lines(lines: Iterable[str]) -> tuple[ReplayFrameResult, ...]:
     results: list[ReplayFrameResult] = []
     last_timestamp_s: Optional[float] = None
     locked_track_id: Optional[int] = None
+    posture_candidate_started_at: Optional[datetime] = None
+    posture_candidate_last_at: Optional[datetime] = None
+    posture_candidate_confirmed = False
 
     for line_number, raw_line in enumerate(lines, start=1):
         raw_line = raw_line.strip()
@@ -70,6 +73,9 @@ def replay_lines(lines: Iterable[str]) -> tuple[ReplayFrameResult, ...]:
             exposure.reset()
             last_timestamp_s = None
             locked_track_id = None
+            posture_candidate_started_at = None
+            posture_candidate_last_at = None
+            posture_candidate_confirmed = False
 
         timestamp_s = float(payload["timestamp_s"])
         if last_timestamp_s is not None and timestamp_s < last_timestamp_s:
@@ -124,23 +130,59 @@ def replay_lines(lines: Iterable[str]) -> tuple[ReplayFrameResult, ...]:
             posture_deviation = float(payload["posture_deviation"])
             activity_state = str(payload.get("activity_state", "STATIC"))
             quality = float(payload.get("confidence", 1.0))
+            camera_drift = bool(payload.get("camera_drift", False))
             paused = (
                 activity_state == "MOVING"
-                or bool(payload.get("camera_drift", False))
+                or camera_drift
                 or quality < exposure.policy.quality_floor
             )
-            snapshot = exposure.update(
+            invalid_observation = paused or activity_state in {"ADJUSTING", "OBSERVING"}
+            if invalid_observation or posture_deviation <= exposure.policy.watch_exit:
+                posture_candidate_started_at = None
+                posture_candidate_last_at = None
+                posture_candidate_confirmed = False
+            elif posture_deviation >= exposure.policy.watch_enter:
+                if posture_candidate_started_at is None:
+                    posture_candidate_started_at = timestamp
+                    posture_candidate_last_at = timestamp
+                    posture_candidate_confirmed = False
+                elif posture_candidate_last_at is not None:
+                    gap = max(0.0, (timestamp - posture_candidate_last_at).total_seconds())
+                    if gap > exposure.policy.maximum_observation_gap_seconds:
+                        posture_candidate_started_at = timestamp
+                        posture_candidate_last_at = timestamp
+                        posture_candidate_confirmed = False
+                    else:
+                        posture_candidate_last_at = timestamp
+                if (
+                    posture_candidate_started_at is not None
+                    and not posture_candidate_confirmed
+                    and (timestamp - posture_candidate_started_at).total_seconds()
+                    >= exposure.policy.posture_change_confirmation_seconds
+                ):
+                    posture_candidate_confirmed = True
+                    exposure.pause(timestamp)
+
+            confirming = (
+                posture_candidate_started_at is not None
+                and not posture_candidate_confirmed
+                and posture_deviation > exposure.policy.watch_exit
+                and not paused
+            )
+            snapshot = exposure.pause(timestamp) if confirming else exposure.update(
                 timestamp,
                 posture_deviation,
                 paused=paused,
             )
             exposure_seconds = snapshot.exposure_seconds
-            if payload.get("camera_drift"):
-                posture_status = "UNKNOWN"
+            if camera_drift:
+                posture_status = "OBSERVING"
             elif activity_state == "MOVING":
-                posture_status = "WATCH"
+                posture_status = "MOVING"
             elif quality < exposure.policy.quality_floor:
-                posture_status = "UNKNOWN" if exposure_seconds == 0.0 else "WATCH"
+                posture_status = "OBSERVING"
+            elif confirming:
+                posture_status = "ADJUSTING"
             elif (
                 exposure_seconds >= exposure.policy.critical_exposure_seconds
                 and posture_deviation >= exposure.policy.severe_deviation

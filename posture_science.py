@@ -418,10 +418,13 @@ class PosturePolicy:
     # target-replaced monitoring stream. It is a product reliability delay,
     # not a physiological standard.
     post_calibration_validation_seconds: float = 2.0
+    # A single excursion is usually a reach, lean, or seat adjustment. Require
+    # the change to remain beyond the personal range before it can enter WATCH
+    # or exposure integration. This is product debounce, not a health limit.
+    posture_change_confirmation_seconds: float = 2.0
     confirmation_seconds: float = 3.0
     cooldown_seconds: float = 60.0
     moving_threshold: float = 0.20
-    camera_scale_jump_ratio: float = 0.18
     # Eye and hip lines that roll together indicate a changed image frame.
     # These are product reliability parameters, not anatomical standards.
     camera_roll_guard_deg: float = 3.0
@@ -436,14 +439,20 @@ class PosturePolicy:
     # Runtime decisions operate on individual observations, so their noise
     # band is based on within-anchor standard deviation rather than SEM alone.
     # These are adjustable reliability/product parameters, not physiology.
-    runtime_noise_std_multiplier: float = 1.96
+    runtime_noise_std_multiplier: float = 3.0
     # Deprecated constructor compatibility only. This value is intentionally
     # ignored: anchor separation does not gate calibration or scale deviation.
     runtime_min_signal_to_noise_ratio: float = 2.0
     # Conservative feature-unit floors absorb boundary jitter. They are
     # adjustable product reliability parameters, not physiological thresholds.
-    runtime_ratio_noise_floor: float = 0.015
-    runtime_angle_noise_floor_deg: float = 1.5
+    runtime_ratio_noise_floor: float = 0.025
+    runtime_angle_noise_floor_deg: float = 2.5
+    # Ordinary breathing, reaching, and seat adjustment are not measurement
+    # noise. Keep a separate product deadband beyond the audited noise band so
+    # small natural movement does not immediately change the user-visible
+    # state. These margins are interaction policy, not physiological limits.
+    runtime_ratio_movement_margin: float = 0.05
+    runtime_angle_movement_margin_deg: float = 3.0
     # Outside the accepted range and its noise band, these independent scales
     # map raw feature units to a continuous product score. They deliberately
     # do not depend on how far apart the user's two normal anchors happen to be.
@@ -468,12 +477,18 @@ class PosturePolicy:
             raise ValueError("maximum_observation_gap_seconds must be positive")
         if self.post_calibration_validation_seconds < 0:
             raise ValueError("post_calibration_validation_seconds cannot be negative")
+        if self.posture_change_confirmation_seconds < 0:
+            raise ValueError("posture_change_confirmation_seconds cannot be negative")
         if self.runtime_noise_std_multiplier <= 0:
             raise ValueError("runtime_noise_std_multiplier must be positive")
         if self.runtime_ratio_noise_floor < 0.0:
             raise ValueError("runtime_ratio_noise_floor cannot be negative")
         if self.runtime_angle_noise_floor_deg < 0.0:
             raise ValueError("runtime_angle_noise_floor_deg cannot be negative")
+        if self.runtime_ratio_movement_margin < 0.0:
+            raise ValueError("runtime_ratio_movement_margin cannot be negative")
+        if self.runtime_angle_movement_margin_deg < 0.0:
+            raise ValueError("runtime_angle_movement_margin_deg cannot be negative")
         if self.runtime_ratio_response_scale <= 0.0:
             raise ValueError("runtime_ratio_response_scale must be positive")
         if self.runtime_angle_response_scale_deg <= 0.0:
@@ -497,6 +512,7 @@ class FeatureDeviation:
     relaxed: float
     mdc: float
     runtime_noise: float = 0.0
+    acceptance_margin: float = 0.0
     signal_reliability: float = 1.0
 
 
@@ -529,9 +545,10 @@ def normalized_feature_deviation(
     ``preferred`` and ``relaxed`` are both user-accepted calibration postures.
     Their ordered means define a personal normal range; neither anchor defines
     a bad direction or a score denominator. Deviation begins only after the
-    observation leaves either boundary by more than the runtime noise band,
-    then uses an independent per-feature product response scale. Similar or
-    identical anchors are therefore valid and cannot amplify frame jitter.
+    observation leaves either boundary by more than the runtime noise band
+    plus the explicit natural-movement margin, then uses an independent
+    per-feature product response scale. Similar or identical anchors are
+    therefore valid and cannot amplify frame jitter.
     """
 
     policy = policy or PosturePolicy()
@@ -545,13 +562,14 @@ def normalized_feature_deviation(
     upper = max(preferred.mean, relaxed.mean)
     current_value = float(current)
     outside_distance = max(lower - current_value, current_value - upper, 0.0)
+    acceptance_margin = noise_floor + runtime_movement_margin(feature, policy)
     # Treat the inclusive noise boundary as accepted. The epsilon prevents
     # binary floating-point representation from turning an exact policy
     # boundary into a microscopic non-zero deviation.
     credible_excursion = (
         0.0
-        if outside_distance <= noise_floor + 1e-12
-        else outside_distance - noise_floor
+        if outside_distance <= acceptance_margin + 1e-12
+        else outside_distance - acceptance_margin
     )
     response_scale = _feature_response_scale(feature, policy)
     deviation = max(0.0, min(1.5, credible_excursion / response_scale))
@@ -563,6 +581,7 @@ def normalized_feature_deviation(
         relaxed=relaxed.mean,
         mdc=mdc,
         runtime_noise=noise_floor,
+        acceptance_margin=acceptance_margin,
         signal_reliability=1.0,
     )
 
@@ -582,6 +601,20 @@ def runtime_noise_floor(
     """Return the product-policy noise band for one runtime observation."""
 
     return _runtime_noise_floor_for_feature(preferred, relaxed, policy, feature)
+
+
+def runtime_movement_margin(
+    feature: Optional[str],
+    policy: Optional[PosturePolicy] = None,
+) -> float:
+    """Return the product deadband for natural movement beyond measurement noise."""
+
+    policy = policy or PosturePolicy()
+    if feature in LATERAL_FEATURES:
+        return policy.runtime_angle_movement_margin_deg
+    if feature in FORWARD_FEATURES:
+        return policy.runtime_ratio_movement_margin
+    return 0.0
 
 
 def _runtime_noise_floor_for_feature(
@@ -754,18 +787,14 @@ def shared_scale_measurement_unstable(
         upper = max(preferred_stats.mean, relaxed_stats.mean) + repeatability
         return observed < lower or observed > upper
 
-    shoulder_outside = outside_anchor_band("shoulder_width_px")
-    if shoulder_outside:
-        return True
-
-    # The coarse range guard above catches large shoulder-span failures. A
-    # slower drift can still remain inside that allowance long enough for all
-    # ratios sharing the denominator to cross WATCH together. When forward
-    # scoring is active, therefore require at least one raw numerator to have
-    # moved beyond its own calibrated band. If face width, torso height, and
-    # ear-to-shoulder distance all remain stable, their changing ratios are
-    # one denominator artefact rather than independent posture evidence.
-    if score is None or score.forward_deviation <= 0.0:
+    # Shoulder span can legitimately change when the user moves towards or
+    # away from the camera. It becomes a measurement reliability problem only
+    # when it creates forward-ratio evidence without corresponding changes in
+    # the raw numerators. Uniform whole-person scale changes keep the ratios
+    # stable and must remain measurable at the new distance.
+    if score is None:
+        score = score_posture_deviation(values, profile, policy)
+    if score.forward_deviation <= 0.0:
         return False
     feature_deviation = {item.feature: item.deviation for item in score.features}
     head_feature = max(

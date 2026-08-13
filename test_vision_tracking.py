@@ -60,6 +60,8 @@ def observation(
     top: float = 100.0,
     ambiguous: bool = False,
     posture_sample: Optional[VisionSample] = None,
+    width: float = 100.0,
+    height: float = 240.0,
 ) -> PersonObservation:
     posture_features = (
         observation_from_sample(posture_sample)[0].posture_features
@@ -69,7 +71,7 @@ def observation(
     return PersonObservation(
         timestamp=ts,
         detection_id=detection_id,
-        bbox_xyxy=(left, top, left + 100.0, top + 240.0),
+        bbox_xyxy=(left, top, left + width, top + height),
         body_keypoints=(),
         body_confidence=0.9,
         face_bbox_xyxy=(left + 25.0, top, left + 75.0, top + 60.0),
@@ -573,6 +575,35 @@ def test_target_motion_and_activity_state_are_time_normalized():
     print("test_target_motion_and_activity_state_are_time_normalized OK")
 
 
+def test_forward_backward_scale_change_is_activity() -> None:
+    manager = TargetManager()
+    manager.update((observation(1, T0, 100.0),), timestamp=T0)
+    assert manager.lock_target(1)
+    manager.update(
+        (observation(1, T0 + timedelta(seconds=1), 100.0),),
+        timestamp=T0 + timedelta(seconds=1),
+    )
+
+    # Keep the box centre fixed while increasing body scale, as when the user
+    # moves towards the camera. This must be activity, not an unknown target.
+    closer = manager.update(
+        (
+            observation(
+                1,
+                T0 + timedelta(seconds=2),
+                80.0,
+                top=52.0,
+                width=140.0,
+                height=336.0,
+            ),
+        ),
+        timestamp=T0 + timedelta(seconds=2),
+    )
+    assert closer.target_motion is not None and closer.target_motion > 0.20
+    assert closer.activity_state == "MOVING"
+    print("test_forward_backward_scale_change_is_activity OK")
+
+
 def test_high_fps_detector_jitter_stays_static():
     """One-pixel bbox jitter must not gate unchanged posture as moving."""
     manager = TargetManager()
@@ -595,6 +626,41 @@ def test_high_fps_detector_jitter_stays_static():
     assert all(update.activity_state == "STATIC" for update in updates[10:])
     assert max(update.target_motion or 0.0 for update in updates[10:]) < 0.20
     print("test_high_fps_detector_jitter_stays_static OK")
+
+
+def test_high_fps_bbox_scale_jitter_stays_static() -> None:
+    manager = TargetManager()
+    manager.update((observation(1, T0, 100.0),), timestamp=T0)
+    assert manager.lock_target(1)
+
+    updates = []
+    frame_dt = timedelta(seconds=1.0 / 72.0)
+    for index in range(1, 160):
+        # Alternating one-pixel size jitter is detector noise, not sustained
+        # movement towards or away from the camera. Signed scale velocity must
+        # cancel through the same low-pass used for centre motion.
+        jitter = 1.0 if index % 2 else -1.0
+        width = 100.0 + jitter
+        height = 240.0 + jitter
+        updates.append(
+            manager.update(
+                (
+                    observation(
+                        1,
+                        T0 + frame_dt * index,
+                        100.0 - jitter / 2.0,
+                        top=100.0 - jitter / 2.0,
+                        width=width,
+                        height=height,
+                    ),
+                ),
+                timestamp=T0 + frame_dt * index,
+            )
+        )
+
+    assert all(update.activity_state == "STATIC" for update in updates[20:])
+    assert max(update.target_motion or 0.0 for update in updates[20:]) < 0.20
+    print("test_high_fps_bbox_scale_jitter_stays_static OK")
 
 
 def test_sustained_target_motion_still_enters_moving_state():
@@ -635,6 +701,8 @@ if __name__ == "__main__":
     test_worker_compatibility_backend_publishes_target_update()
     test_worker_scores_locked_target_observation_not_global_sample()
     test_target_motion_and_activity_state_are_time_normalized()
+    test_forward_backward_scale_change_is_activity()
     test_high_fps_detector_jitter_stays_static()
+    test_high_fps_bbox_scale_jitter_stays_static()
     test_sustained_target_motion_still_enters_moving_state()
     print("ALL TESTS PASSED")

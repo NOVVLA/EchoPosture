@@ -340,11 +340,7 @@ class VisionWorker:
                                 "TARGET_REACQUIRING",
                             }:
                                 self.target_manager.resolve_identity(True)
-                        decision = replace(
-                            decision,
-                            environment_state=target_update.state,
-                            target_track_id=target_update.target_track_id,
-                        )
+                        decision = self._attach_target_context(decision, target_update)
                 except Exception as exc:
                     self._publish_error(exc)
                     self._mode = MODE_PAUSED  # 停止产出，等主线程处置
@@ -680,6 +676,19 @@ class VisionWorker:
                 sample=sample,
                 target_update=target_update,
             )
+
+    @staticmethod
+    def _attach_target_context(
+        decision: PostureDecision,
+        target_update: TargetUpdate,
+    ) -> PostureDecision:
+        """Add tracking metadata without overwriting a more specific reason."""
+
+        return replace(
+            decision,
+            environment_state=decision.environment_state or target_update.state,
+            target_track_id=target_update.target_track_id,
+        )
 
     def _publish_error(self, exc: Exception) -> None:
         with self._lock:

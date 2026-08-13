@@ -10,7 +10,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import numpy as np
 from PyQt5.QtWidgets import QApplication
 
-from debug_ui import DebugWindow
+from debug_ui import STATUS_TEXT, DebugWindow
 from vision_backend import observation_from_sample
 from vision_test import VisionSample
 
@@ -87,6 +87,16 @@ def make_window(app: QApplication, backend: FakeDebugBackend) -> DebugWindow:
         target_panel=True,
         backend_factory=lambda: backend,
     )
+
+
+def test_debug_panel_exposes_non_intervention_statuses() -> None:
+    assert STATUS_TEXT["MOVING"] == "status.MOVING"
+    assert STATUS_TEXT["ADJUSTING"] == "status.ADJUSTING"
+    assert STATUS_TEXT["OBSERVING"] == "status.OBSERVING"
+    assert DebugWindow._status_style("MOVING") != DebugWindow._status_style("UNKNOWN")
+    assert DebugWindow._status_style("ADJUSTING") != DebugWindow._status_style("UNKNOWN")
+    assert DebugWindow._status_style("OBSERVING") != DebugWindow._status_style("UNKNOWN")
+    print("test_debug_panel_exposes_non_intervention_statuses OK")
 
 
 def test_debug_panel_runs_full_dual_anchor_calibration() -> None:
@@ -353,6 +363,7 @@ def test_debug_panel_reports_incomplete_dual_anchor_profile() -> None:
 
 
 if __name__ == "__main__":
+    test_debug_panel_exposes_non_intervention_statuses()
     test_debug_panel_runs_full_dual_anchor_calibration()
     test_debug_panel_places_stage_card_above_camera()
     test_debug_panel_accepts_identical_anchor_postures()

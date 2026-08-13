@@ -87,6 +87,9 @@ from i18n import _t, add_listener, remove_listener
 STATUS_TEXT: Dict[str, str] = {
     "GOOD": "status.GOOD",
     "GOOD_PART": "status.GOOD_PART",
+    "MOVING": "status.MOVING",
+    "ADJUSTING": "status.ADJUSTING",
+    "OBSERVING": "status.OBSERVING",
     "WATCH": "status.WATCH",
     "BAD": "status.BAD",
     "CRITICAL": "status.CRITICAL",
@@ -160,6 +163,8 @@ REASON_TEXT: Dict[str, str] = {
     "dual_anchor_calibration_required": "reason.dual_anchor_calibration_required",
     "dual_anchor_calibration_collecting": "reason.dual_anchor_calibration_collecting",
     "activity_moving_exposure_paused": "reason.activity_moving_exposure_paused",
+    "posture_adjustment_exposure_paused": "reason.posture_adjustment_exposure_paused",
+    "minor_posture_variation": "reason.minor_posture_variation",
     "camera_drift_recalibration_required": "reason.camera_drift_recalibration_required",
     "camera_scale_jump_measurement_abstained": "reason.camera_scale_jump_measurement_abstained",
     "camera_roll_measurement_abstained": "reason.camera_roll_measurement_abstained",
@@ -1612,6 +1617,12 @@ class DebugWindow(QMainWindow):
             return "color: #6b7280;"
         if status == "WATCH":
             return "color: #b7791f;"
+        if status == "MOVING":
+            return "color: #2563eb;"
+        if status == "ADJUSTING":
+            return "color: #0f766e;"
+        if status == "OBSERVING":
+            return "color: #6d28d9;"
         if status in {"GOOD", "GOOD_PART"}:
             return "color: #157347;"
         return "color: #6b7280;"

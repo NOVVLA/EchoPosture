@@ -69,6 +69,7 @@ class _Track:
     previous_center: Tuple[float, float]
     velocity: Tuple[float, float] = (0.0, 0.0)
     motion_velocity: Tuple[float, float] = (0.0, 0.0)
+    scale_velocity: float = 0.0
     missed_frames: int = 0
     seen_frames: int = 1
     last_match_score: Optional[float] = None
@@ -312,7 +313,12 @@ class TargetManager:
             track.observation.bbox_xyxy[2] - track.observation.bbox_xyxy[0],
             track.observation.bbox_xyxy[3] - track.observation.bbox_xyxy[1],
         )
-        return math.hypot(*track.motion_velocity) / max(1.0, diagonal)
+        translation_rate = math.hypot(*track.motion_velocity) / max(1.0, diagonal)
+        # Forward/backward body motion can leave the box centre almost fixed
+        # while its scale changes substantially. Treat relative box-scale
+        # velocity as activity instead of mislabelling it as an unrecognised
+        # posture measurement.
+        return math.hypot(translation_rate, track.scale_velocity)
 
     def _timestamp(self, observations: Tuple[PersonObservation, ...]) -> Timestamp:
         if observations:
@@ -449,6 +455,14 @@ class TargetManager:
     def _update_track(self, track: _Track, observation: PersonObservation, match_score: float) -> None:
         old_center = _center(track.observation.bbox_xyxy)
         new_center = _center(observation.bbox_xyxy)
+        old_diagonal = math.hypot(
+            track.observation.bbox_xyxy[2] - track.observation.bbox_xyxy[0],
+            track.observation.bbox_xyxy[3] - track.observation.bbox_xyxy[1],
+        )
+        new_diagonal = math.hypot(
+            observation.bbox_xyxy[2] - observation.bbox_xyxy[0],
+            observation.bbox_xyxy[3] - observation.bbox_xyxy[1],
+        )
         elapsed_seconds = _elapsed_seconds(observation.timestamp, track.last_seen_at)
         track.previous_center = old_center
         if elapsed_seconds > 0:
@@ -456,8 +470,12 @@ class TargetManager:
                 (new_center[0] - old_center[0]) / elapsed_seconds,
                 (new_center[1] - old_center[1]) / elapsed_seconds,
             )
+            instantaneous_scale_velocity = math.log(
+                max(new_diagonal, 1.0) / max(old_diagonal, 1.0)
+            ) / elapsed_seconds
         else:
             instantaneous_velocity = (new_center[0] - old_center[0], new_center[1] - old_center[1])
+            instantaneous_scale_velocity = 0.0
         # Keep raw velocity for association prediction, but low-pass the
         # activity signal.  At camera frame rates, one-pixel landmark/bbox
         # jitter can imply a very large instantaneous pixels-per-second value.
@@ -469,8 +487,12 @@ class TargetManager:
                 previous + alpha * (current - previous)
                 for previous, current in zip(track.motion_velocity, instantaneous_velocity)
             )
+            track.scale_velocity += alpha * (
+                instantaneous_scale_velocity - track.scale_velocity
+            )
         else:
             track.motion_velocity = instantaneous_velocity
+            track.scale_velocity = instantaneous_scale_velocity
         track.observation = observation
         track.last_seen_at = observation.timestamp
         track.missed_frames = 0

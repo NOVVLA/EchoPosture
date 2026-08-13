@@ -28,6 +28,7 @@ from posture_science import (  # noqa: E402
     FeatureStatistics,
     PosturePolicy,
     measurement_values,
+    runtime_movement_margin,
     runtime_noise_floor,
 )
 from vision_test import VisionEngine  # noqa: E402
@@ -100,20 +101,25 @@ def collect(frames: int, camera_id: int, width: int, height: int) -> dict:
             policy,
             name,
         )
+        movement_margin = runtime_movement_margin(name, policy)
+        acceptance_margin = single_observation_noise + movement_margin
         response_scale = (
             policy.runtime_angle_response_scale_deg
             if name in {"shoulder_asymmetry_deg", "trunk_lean_deg"}
             else policy.runtime_ratio_response_scale
         )
-        watch_change = single_observation_noise + policy.watch_enter * response_scale
-        alert_change = single_observation_noise + policy.alert_enter * response_scale
+        watch_change = acceptance_margin + policy.watch_enter * response_scale
+        alert_change = acceptance_margin + policy.alert_enter * response_scale
         ranges[name] = {
             "anchor_delta": delta,
             "normal_range_lower": min(preferred_stats["mean"], relaxed_stats["mean"]),
             "normal_range_upper": max(preferred_stats["mean"], relaxed_stats["mean"]),
             "noise_floor_mdc": mdc_floor,
             "single_observation_noise_floor": single_observation_noise,
+            "natural_movement_margin": movement_margin,
+            "runtime_acceptance_margin": acceptance_margin,
             "anchor_delta_within_runtime_noise": delta <= single_observation_noise,
+            "anchor_delta_within_acceptance_margin": delta <= acceptance_margin,
             "response_scale": response_scale,
             "watch_enter_outside_range": watch_change,
             "alert_enter_outside_range": alert_change,
@@ -154,6 +160,8 @@ def collect(frames: int, camera_id: int, width: int, height: int) -> dict:
             "runtime_noise_std_multiplier": policy.runtime_noise_std_multiplier,
             "runtime_ratio_noise_floor": policy.runtime_ratio_noise_floor,
             "runtime_angle_noise_floor_deg": policy.runtime_angle_noise_floor_deg,
+            "runtime_ratio_movement_margin": policy.runtime_ratio_movement_margin,
+            "runtime_angle_movement_margin_deg": policy.runtime_angle_movement_margin_deg,
             "runtime_ratio_response_scale": policy.runtime_ratio_response_scale,
             "runtime_angle_response_scale_deg": policy.runtime_angle_response_scale_deg,
             "note": "Product interaction parameters, not physiological standards.",

@@ -16,6 +16,7 @@ from types import SimpleNamespace
 from posture_science import CalibrationPlan, TRANSITION
 from vision_backend import observation_from_sample
 from vision_tracking import TargetManager
+from vision_tracking import TARGET_LOCKED, TargetUpdate
 from vision_test import (
     CameraBlackFrameError,
     HighPrecisionPostureAnalyzer,
@@ -520,7 +521,7 @@ def test_production_worker_dual_anchor_requires_normal_range_before_exposure() -
         sample, _ = worker._read_sample(engine)
         decisions.append(analyzer.evaluate(sample))
 
-    assert decisions[0].status == "UNKNOWN"
+    assert decisions[0].status == "OBSERVING"
     assert decisions[0].reason == "post_calibration_normal_range_validation"
     assert any(
         decision.reason == "post_calibration_normal_range_validated"
@@ -530,6 +531,35 @@ def test_production_worker_dual_anchor_requires_normal_range_before_exposure() -
     assert max(decision.posture_deviation for decision in decisions) == 0.0
     assert max(decision.exposure_seconds for decision in decisions) == 0.0
     print("test_production_worker_dual_anchor_requires_normal_range_before_exposure OK")
+
+
+def test_worker_preserves_analyzer_environment_reason_over_target_state() -> None:
+    engine = FakeEngine()
+    analyzer = HighPrecisionPostureAnalyzer(auto_calibrate=False)
+    worker = VisionWorker(engine_factory=lambda: engine, analyzer=analyzer)
+    decision = replace(
+        analyzer._basic_mode_evaluate(make_sample()),
+        environment_state="POSTURE_ADJUSTMENT",
+        status="ADJUSTING",
+    )
+    update = TargetUpdate(
+        state=TARGET_LOCKED,
+        target_track_id=7,
+        target_observation=None,
+        tracks=(),
+        person_count=1,
+        reason="target_observed",
+        activity_state="STATIC",
+    )
+    attached = worker._attach_target_context(decision, update)
+    assert attached.environment_state == "POSTURE_ADJUSTMENT"
+    assert attached.target_track_id == 7
+    fallback = worker._attach_target_context(
+        replace(decision, environment_state=None),
+        update,
+    )
+    assert fallback.environment_state == TARGET_LOCKED
+    print("test_worker_preserves_analyzer_environment_reason_over_target_state OK")
 
 
 def test_dual_anchor_worker_skips_zero_person_dropout_without_resetting_stage() -> None:
@@ -680,6 +710,7 @@ if __name__ == "__main__":
     test_dual_anchor_worker_skips_quality_dropout_without_resetting_stage()
     test_dual_anchor_worker_accepts_borderline_pose_quality_for_anchor_repeatability()
     test_production_worker_dual_anchor_requires_normal_range_before_exposure()
+    test_worker_preserves_analyzer_environment_reason_over_target_state()
     test_dual_anchor_worker_skips_zero_person_dropout_without_resetting_stage()
     test_dual_anchor_worker_uses_bounded_relaxed_extension()
     test_monitoring_error_pauses_worker()

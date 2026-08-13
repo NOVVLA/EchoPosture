@@ -16,7 +16,12 @@ from datetime import datetime, timedelta
 from typing import Optional
 
 from vision_test import HighPrecisionPostureAnalyzer, VisionSample
-from posture_science import CalibrationAccumulator, CalibrationPlan, measurement_values
+from posture_science import (
+    CalibrationAccumulator,
+    CalibrationPlan,
+    measurement_values,
+    runtime_movement_margin,
+)
 from vision_backend import PostureFeatureExtractor, observation_from_sample
 from vision_tracking import TargetManager
 
@@ -121,7 +126,7 @@ def validate_scientific_profile(
     """Complete the production post-calibration normal-range validation."""
 
     first = analyzer.evaluate(scientific_sample(start, 1.0))
-    assert first.status == "UNKNOWN", first
+    assert first.status == "OBSERVING", first
     assert first.reason == "post_calibration_normal_range_validation", first
     validated = analyzer.evaluate(scientific_sample(start + timedelta(seconds=2.1), 1.0))
     assert validated.status == "GOOD", validated
@@ -270,7 +275,7 @@ def test_scientific_continuous_scoring_exposure_and_abstention():
     # Both anchors are user-accepted posture. The relaxed anchor and every
     # posture between the anchors must remain inside the personal normal band.
     ending_posture = analyzer.evaluate(scientific_sample(T0, 1.0))
-    assert ending_posture.status == "UNKNOWN", ending_posture
+    assert ending_posture.status == "OBSERVING", ending_posture
     assert ending_posture.reason == "post_calibration_normal_range_validation"
     assert ending_posture.posture_deviation == 0.0
     assert ending_posture.exposure_seconds == 0.0
@@ -299,13 +304,13 @@ def test_scientific_continuous_scoring_exposure_and_abstention():
         assert stable.status == "GOOD", stable
         assert stable.exposure_seconds == 0.0, stable
 
-    beyond_relaxed = analyzer.evaluate(scientific_sample(T0 + timedelta(seconds=301), 1.6))
-    assert beyond_relaxed.posture_deviation >= 0.50, beyond_relaxed
-    assert beyond_relaxed.status == "WATCH", beyond_relaxed
+    beyond_relaxed = analyzer.evaluate(scientific_sample(T0 + timedelta(seconds=301), 2.2))
+    assert beyond_relaxed.posture_deviation == 0.0, beyond_relaxed
+    assert beyond_relaxed.status == "ADJUSTING", beyond_relaxed
 
     alert = beyond_relaxed
-    for seconds in range(302, 315):
-        alert = analyzer.evaluate(scientific_sample(T0 + timedelta(seconds=seconds), 2.0))
+    for seconds in range(302, 317):
+        alert = analyzer.evaluate(scientific_sample(T0 + timedelta(seconds=seconds), 2.2))
     assert alert.status == "BAD", alert
     assert alert.exposure_seconds >= 12.0
     assert alert.risk_score == alert.posture_deviation * 100.0
@@ -315,7 +320,7 @@ def test_scientific_continuous_scoring_exposure_and_abstention():
     low_quality = analyzer.evaluate(
         scientific_sample(T0 + timedelta(seconds=320), 2.0, quality=0.40)
     )
-    assert low_quality.status in {"UNKNOWN", "WATCH"}, low_quality
+    assert low_quality.status == "OBSERVING", low_quality
     assert low_quality.exposure_seconds == before
 
     moving = replace(
@@ -324,7 +329,8 @@ def test_scientific_continuous_scoring_exposure_and_abstention():
         activity_state="MOVING",
     )
     moving_decision = analyzer.evaluate(moving)
-    assert moving_decision.status == "UNKNOWN", moving_decision
+    assert moving_decision.status == "MOVING", moving_decision
+    assert moving_decision.activity_state == "MOVING"
     assert moving_decision.exposure_seconds == before
     print("test_scientific_continuous_scoring_exposure_and_abstention OK")
 
@@ -334,22 +340,70 @@ def test_post_calibration_validation_requires_the_actual_normal_band():
 
     analyzer = scientific_analyzer()
     near_band = analyzer.evaluate(scientific_sample(T0, 1.2))
-    assert near_band.status == "UNKNOWN", near_band
+    assert near_band.status == "OBSERVING", near_band
     assert near_band.reason == "post_calibration_normal_range_validation"
-    assert 0.0 < near_band.risk_score < analyzer.posture_policy.watch_exit * 100.0
+    assert 0.0 <= near_band.risk_score < analyzer.posture_policy.watch_exit * 100.0
     assert near_band.posture_deviation == 0.0
     assert near_band.exposure_seconds == 0.0
 
     first_in_band = analyzer.evaluate(scientific_sample(T0 + timedelta(seconds=1.0), 1.0))
     assert first_in_band.reason == "post_calibration_normal_range_validation"
-    too_soon = analyzer.evaluate(scientific_sample(T0 + timedelta(seconds=2.1), 1.0))
-    assert too_soon.status == "UNKNOWN", too_soon
-    assert too_soon.reason == "post_calibration_normal_range_validation"
-    validated = analyzer.evaluate(scientific_sample(T0 + timedelta(seconds=3.1), 1.0))
+    validated = analyzer.evaluate(scientific_sample(T0 + timedelta(seconds=2.1), 1.0))
     assert validated.status == "GOOD", validated
     assert validated.reason == "post_calibration_normal_range_validated"
     assert validated.exposure_seconds == 0.0
     print("test_post_calibration_validation_requires_the_actual_normal_band OK")
+
+
+def test_brief_posture_excursion_is_adjustment_not_watch() -> None:
+    analyzer = scientific_analyzer()
+    validate_scientific_profile(analyzer, T0)
+
+    reach = analyzer.evaluate(scientific_sample(T0 + timedelta(seconds=10.0), 2.2))
+    assert reach.status == "ADJUSTING", reach
+    assert reach.reason == "posture_adjustment_exposure_paused"
+    assert reach.posture_deviation == 0.0
+    assert reach.exposure_seconds == 0.0
+
+    recovered = analyzer.evaluate(scientific_sample(T0 + timedelta(seconds=10.8), 0.5))
+    assert recovered.status == "GOOD", recovered
+    assert recovered.exposure_seconds == 0.0
+
+    second_reach = analyzer.evaluate(scientific_sample(T0 + timedelta(seconds=12.0), 2.2))
+    assert second_reach.status == "ADJUSTING", second_reach
+    assert second_reach.exposure_seconds == 0.0
+    print("test_brief_posture_excursion_is_adjustment_not_watch OK")
+
+
+def test_natural_midrange_lean_stays_good_without_observation() -> None:
+    analyzer = scientific_analyzer()
+    validate_scientific_profile(analyzer, T0)
+
+    # A moderate, single-frame lean/reach is within the explicit product
+    # deadband. It must not flash WATCH/ADJUSTING merely because it crosses
+    # the narrow calibrated anchor interval.
+    decision = analyzer.evaluate(scientific_sample(T0 + timedelta(seconds=10.0), 1.5))
+    assert decision.status == "GOOD", decision
+    assert decision.reason == "minor_posture_variation", decision
+    assert decision.exposure_seconds == 0.0
+    print("test_natural_midrange_lean_stays_good_without_observation OK")
+
+
+def test_sustained_posture_excursion_enters_watch_after_confirmation() -> None:
+    analyzer = scientific_analyzer()
+    validate_scientific_profile(analyzer, T0)
+
+    first = analyzer.evaluate(scientific_sample(T0 + timedelta(seconds=10.0), 2.2))
+    still_adjusting = analyzer.evaluate(
+        scientific_sample(T0 + timedelta(seconds=11.9), 2.2)
+    )
+    confirmed = analyzer.evaluate(scientific_sample(T0 + timedelta(seconds=12.1), 2.2))
+    assert first.status == "ADJUSTING", first
+    assert still_adjusting.status == "ADJUSTING", still_adjusting
+    assert confirmed.status == "WATCH", confirmed
+    assert confirmed.posture_deviation >= analyzer.posture_policy.watch_enter
+    assert confirmed.exposure_seconds == 0.0
+    print("test_sustained_posture_excursion_enters_watch_after_confirmation OK")
 
 
 def test_production_target_chain_ignores_high_fps_landmark_jitter():
@@ -422,7 +476,7 @@ def test_runtime_local_hip_quality_abstains_torso_features():
         pose_quality=0.95,
     )
     decision = analyzer.evaluate(low_hip)
-    assert decision.status == "UNKNOWN", decision
+    assert decision.status == "OBSERVING", decision
     assert decision.posture_deviation == 0.0, decision
     assert decision.exposure_seconds == 0.0, decision
     assert decision.confidence < analyzer.posture_policy.quality_floor, decision
@@ -442,15 +496,22 @@ def test_single_feature_runtime_drift_does_not_open_watch_or_exposure():
     drifted = replace(
         sample,
         interpupillary_px=(
-            preferred.mean + direction * (abs(relaxed.mean - preferred.mean) + noise * 2.0)
+        preferred.mean
+        + direction
+        * (
+            abs(relaxed.mean - preferred.mean)
+            + noise
+            + runtime_movement_margin(feature)
+            + 0.02
+        )
         ) * sample.shoulder_width_px,
     )
     first = analyzer.evaluate(drifted)
-    assert first.status == "UNKNOWN", first
-    assert first.reason == "posture_evidence_inconclusive"
+    assert first.status == "GOOD", first
+    assert first.reason == "minor_posture_variation", first
     assert first.exposure_seconds == 0.0
     later = analyzer.evaluate(replace(drifted, timestamp=T0 + timedelta(seconds=300)))
-    assert later.status == "UNKNOWN", later
+    assert later.status == "GOOD", later
     assert later.exposure_seconds == 0.0
     print("test_single_feature_runtime_drift_does_not_open_watch_or_exposure OK")
 
@@ -465,7 +526,7 @@ def test_head_turn_abstains_without_static_exposure():
         head_turn_ratio=0.50,
     )
     decision = analyzer.evaluate(turned)
-    assert decision.status == "UNKNOWN", decision
+    assert decision.status == "OBSERVING", decision
     assert decision.reason == "head_turn_measurement_abstained"
     assert decision.posture_deviation == 0.0
     assert decision.exposure_seconds == 0.0
@@ -487,22 +548,44 @@ def test_fixed_posture_distance_scale_does_not_become_head_turn_watch():
             interpupillary_px=baseline.interpupillary_px * scale,
         )
         decision = analyzer.evaluate(sample)
-        assert decision.status in {"GOOD", "UNKNOWN"}, decision
+        assert decision.status in {"GOOD", "ADJUSTING"}, decision
         assert decision.status not in {"WATCH", "BAD", "CRITICAL"}, decision
-        if decision.status == "UNKNOWN":
+        if decision.status == "ADJUSTING":
             assert decision.reason == "posture_evidence_inconclusive", decision
         assert decision.posture_deviation == 0.0, decision
         assert decision.exposure_seconds == 0.0, decision
-    scaled = replace(
-        baseline,
-        timestamp=T0 + timedelta(seconds=20),
-        interpupillary_px=baseline.interpupillary_px * 1.35,
-        shoulder_width_px=baseline.shoulder_width_px * 1.35,
-    )
-    decision = analyzer.evaluate(scaled)
-    assert decision.status == "UNKNOWN", decision
-    assert decision.reason == "camera_scale_jump_measurement_abstained"
-    assert decision.exposure_seconds == 0.0
+    def scale_point(point, factor: float):
+        return None if point is None else (point[0] * factor, point[1] * factor)
+
+    # A geometrically uniform distance change preserves every normalized
+    # posture feature. It remains GOOD at the new distance rather than forcing
+    # the user back to the calibration position.
+    for index, scale in enumerate((0.65, 0.80, 1.20, 1.35), start=20):
+        scaled = replace(
+            baseline,
+            timestamp=T0 + timedelta(seconds=index),
+            interpupillary_px=baseline.interpupillary_px * scale,
+            shoulder_diff_px=baseline.shoulder_diff_px * scale,
+            signed_shoulder_diff_px=baseline.signed_shoulder_diff_px * scale,
+            shoulder_width_px=baseline.shoulder_width_px * scale,
+            torso_height_px=baseline.torso_height_px * scale,
+            left_eye_center=scale_point(baseline.left_eye_center, scale),
+            right_eye_center=scale_point(baseline.right_eye_center, scale),
+            face_nose_point=scale_point(baseline.face_nose_point, scale),
+            nose_point=scale_point(baseline.nose_point, scale),
+            left_ear_point=scale_point(baseline.left_ear_point, scale),
+            right_ear_point=scale_point(baseline.right_ear_point, scale),
+            left_shoulder_point=scale_point(baseline.left_shoulder_point, scale),
+            right_shoulder_point=scale_point(baseline.right_shoulder_point, scale),
+            left_hip_point=scale_point(baseline.left_hip_point, scale),
+            right_hip_point=scale_point(baseline.right_hip_point, scale),
+            shoulder_center=scale_point(baseline.shoulder_center, scale),
+            hip_center=scale_point(baseline.hip_center, scale),
+        )
+        decision = analyzer.evaluate(scaled)
+        assert decision.status == "GOOD", decision
+        assert decision.posture_deviation == 0.0
+        assert decision.exposure_seconds == 0.0
     print("test_fixed_posture_distance_scale_does_not_become_head_turn_watch OK")
 
 
@@ -528,8 +611,14 @@ def test_unchanged_posture_shared_shoulder_width_drift_never_accumulates_exposur
         decisions.append(analyzer.evaluate(sample))
 
     assert all(decision.status not in {"WATCH", "BAD", "CRITICAL"} for decision in decisions)
-    assert any(
-        decision.reason == "shared_shoulder_scale_measurement_abstained"
+    assert all(
+        decision.reason
+        in {
+            "within_personal_posture_range",
+            "minor_posture_variation",
+            "posture_evidence_inconclusive",
+            "shared_shoulder_scale_measurement_abstained",
+        }
         for decision in decisions
     )
     assert max(decision.posture_deviation for decision in decisions) == 0.0
@@ -597,6 +686,7 @@ def test_gradual_shared_scale_drift_does_not_intervene_before_guard():
         decision.reason
         in {
             "within_personal_posture_range",
+            "minor_posture_variation",
             "posture_evidence_inconclusive",
             "shared_shoulder_scale_measurement_abstained",
         }
@@ -618,7 +708,7 @@ def test_gradual_shared_scale_drift_does_not_intervene_before_guard():
                 )
             )
         )
-    assert genuine[0].status == "WATCH", genuine[0]
+    assert genuine[0].status == "ADJUSTING", genuine[0]
     assert genuine[0].reason != "shared_shoulder_scale_measurement_abstained"
     assert genuine[-1].status == "BAD", genuine[-1]
     assert genuine[-1].exposure_seconds >= analyzer.posture_policy.alert_exposure_seconds
@@ -637,14 +727,15 @@ def test_real_forward_change_with_stable_shoulder_scale_still_alerts():
         # a measurable forward-posture change rather than denominator drift.
         sample = replace(
             scientific_sample(T0 + timedelta(seconds=seconds), 1.0),
-            interpupillary_px=96.0,
-            torso_height_px=108.0,
+            interpupillary_px=105.0,
+            torso_height_px=95.0,
         )
         decisions.append(analyzer.evaluate(sample))
 
     assert decisions[0].reason != "shared_shoulder_scale_measurement_abstained"
-    assert decisions[0].status == "WATCH", decisions[0]
-    assert decisions[0].posture_deviation >= analyzer.posture_policy.alert_enter
+    assert decisions[0].status == "ADJUSTING", decisions[0]
+    assert decisions[2].status == "WATCH", decisions[2]
+    assert decisions[2].posture_deviation >= analyzer.posture_policy.alert_enter
     assert decisions[-1].status == "BAD", decisions[-1]
     assert decisions[-1].exposure_seconds >= analyzer.posture_policy.alert_exposure_seconds
     print("test_real_forward_change_with_stable_shoulder_scale_still_alerts OK")
@@ -826,7 +917,8 @@ def test_real_pelvis_relative_lateral_change_still_alerts():
         for seconds in range(1, 17)
     ]
     assert decisions[0].reason != "camera_roll_measurement_abstained", decisions[0]
-    assert decisions[0].status == "WATCH", decisions[0]
+    assert decisions[0].status == "ADJUSTING", decisions[0]
+    assert decisions[2].status == "WATCH", decisions[2]
     assert decisions[-1].status == "BAD", decisions[-1]
     assert decisions[-1].exposure_seconds >= analyzer.posture_policy.alert_exposure_seconds
     print("test_real_pelvis_relative_lateral_change_still_alerts OK")
@@ -841,6 +933,9 @@ if __name__ == "__main__":
     test_identity_toggle()
     test_scientific_continuous_scoring_exposure_and_abstention()
     test_post_calibration_validation_requires_the_actual_normal_band()
+    test_brief_posture_excursion_is_adjustment_not_watch()
+    test_natural_midrange_lean_stays_good_without_observation()
+    test_sustained_posture_excursion_enters_watch_after_confirmation()
     test_production_target_chain_ignores_high_fps_landmark_jitter()
     test_runtime_local_hip_quality_abstains_torso_features()
     test_single_feature_runtime_drift_does_not_open_watch_or_exposure()
