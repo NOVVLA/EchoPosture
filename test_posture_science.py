@@ -21,6 +21,7 @@ from posture_science import (
     runtime_noise_floor,
     runtime_movement_margin,
     score_posture_deviation,
+    StaticHoldAccumulator,
     shared_scale_measurement_unstable,
 )
 
@@ -970,6 +971,50 @@ def test_exposure_hysteresis() -> None:
     print("test_exposure_hysteresis OK")
 
 
+def test_static_hold_is_bounded_and_requires_existing_deviation() -> None:
+    policy = PosturePolicy(
+        static_hold_start_seconds=60.0,
+        static_hold_full_seconds=180.0,
+        static_hold_max_bonus=0.12,
+        maximum_observation_gap_seconds=120.0,
+    )
+    hold = StaticHoldAccumulator(policy)
+    start = datetime(2026, 1, 1, 12, 0, 0)
+
+    normal = hold.update(start, posture_deviation=0.0, eligible=False)
+    assert normal.bonus == 0.0
+    normal = hold.update(start + timedelta(seconds=300), posture_deviation=0.0, eligible=False)
+    assert normal.static_seconds == 0.0
+    assert normal.bonus == 0.0
+
+    hold.update(start + timedelta(seconds=301), posture_deviation=0.8, eligible=True)
+    before_start = hold.update(start + timedelta(seconds=360), posture_deviation=0.8, eligible=True)
+    assert before_start.static_seconds == 60.0
+    assert before_start.bonus == 0.0
+    ramped = hold.update(start + timedelta(seconds=420), posture_deviation=0.8, eligible=True)
+    assert 0.0 < ramped.bonus < policy.static_hold_max_bonus
+    capped = hold.update(start + timedelta(seconds=540), posture_deviation=0.8, eligible=True)
+    assert capped.bonus == policy.static_hold_max_bonus
+
+    reset = hold.update(start + timedelta(seconds=541), posture_deviation=0.8, eligible=False)
+    assert reset.static_seconds == 0.0
+    assert reset.bonus == 0.0
+    print("test_static_hold_is_bounded_and_requires_existing_deviation OK")
+
+
+def test_pronounced_lone_trunk_lean_is_lateral_evidence() -> None:
+    profile = build_profile()
+    values = anchor_values(0.0)
+    values["shoulder_asymmetry_deg"] = profile.preferred["shoulder_asymmetry_deg"].mean
+    values["trunk_lean_deg"] = 24.0
+    values = {"trunk_lean_deg": values["trunk_lean_deg"], "shoulder_asymmetry_deg": values["shoulder_asymmetry_deg"]}
+    score = score_posture_deviation(values, profile)
+    assert score.lateral_deviation >= PosturePolicy().lone_trunk_lean_deviation
+    assert score.deviation >= PosturePolicy().watch_enter
+    assert score.corroborated
+    print("test_pronounced_lone_trunk_lean_is_lateral_evidence OK")
+
+
 if __name__ == "__main__":
     test_statistics_sem_mdc_cv()
     test_two_anchor_segmentation_and_noise_floor()
@@ -1003,4 +1048,6 @@ if __name__ == "__main__":
     test_long_observation_gap_does_not_backfill_exposure()
     test_watch_only_deviation_does_not_preload_exposure()
     test_exposure_hysteresis()
+    test_static_hold_is_bounded_and_requires_existing_deviation()
+    test_pronounced_lone_trunk_lean_is_lateral_evidence()
     print("ALL TESTS PASSED")

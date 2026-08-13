@@ -910,9 +910,11 @@ def test_real_pelvis_relative_lateral_change_still_alerts():
     )
     assert validated.reason == "post_calibration_normal_range_validated", validated
 
+    # A real side-recline may keep both shoulders nearly parallel. The
+    # pelvis-relative torso lean must still become lateral evidence on its own.
     decisions = [
         analyzer.evaluate(
-            lateral_sample(T0 + timedelta(seconds=3 + seconds), 18.0, 24.0)
+            lateral_sample(T0 + timedelta(seconds=3 + seconds), 5.0, 24.0)
         )
         for seconds in range(1, 17)
     ]
@@ -922,6 +924,32 @@ def test_real_pelvis_relative_lateral_change_still_alerts():
     assert decisions[-1].status == "BAD", decisions[-1]
     assert decisions[-1].exposure_seconds >= analyzer.posture_policy.alert_exposure_seconds
     print("test_real_pelvis_relative_lateral_change_still_alerts OK")
+
+
+def test_static_hold_add_on_is_visible_but_bounded() -> None:
+    analyzer = scientific_analyzer()
+    validate_scientific_profile(analyzer, T0)
+
+    decision = analyzer.evaluate(scientific_sample(T0 + timedelta(seconds=10.0), 2.2))
+    assert decision.status == "ADJUSTING", decision
+    for seconds in range(11, 82):
+        decision = analyzer.evaluate(
+            scientific_sample(T0 + timedelta(seconds=seconds), 2.2)
+        )
+    assert decision.static_hold_seconds > 60.0, decision
+    assert 0.0 < decision.static_hold_bonus <= analyzer.posture_policy.static_hold_max_bonus
+    assert decision.status in {"BAD", "CRITICAL"}
+
+    normal = scientific_analyzer()
+    validate_scientific_profile(normal, T0)
+    for seconds in range(3, 240):
+        normal_decision = normal.evaluate(
+            scientific_sample(T0 + timedelta(seconds=seconds), 0.0)
+        )
+    assert normal_decision.status == "GOOD", normal_decision
+    assert normal_decision.static_hold_seconds == 0.0
+    assert normal_decision.static_hold_bonus == 0.0
+    print("test_static_hold_add_on_is_visible_but_bounded OK")
 
 
 if __name__ == "__main__":
@@ -946,4 +974,5 @@ if __name__ == "__main__":
     test_real_forward_change_with_stable_shoulder_scale_still_alerts()
     test_rigid_frame_roll_never_becomes_lateral_exposure()
     test_real_pelvis_relative_lateral_change_still_alerts()
+    test_static_hold_add_on_is_visible_but_bounded()
     print("ALL TESTS PASSED")

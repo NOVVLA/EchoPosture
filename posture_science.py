@@ -436,6 +436,19 @@ class PosturePolicy:
     # must provide meaningful support. This is a product reliability rule,
     # not a physiological standard.
     minimum_group_support_deviation: float = 0.25
+    # A pronounced torso lean can be real side-reclining even when both
+    # shoulders remain parallel. Permit that one independent angle only after
+    # it is already clearly beyond the personal band; the normal two-feature
+    # corroboration rule remains in force for shoulder asymmetry and all other
+    # single-feature changes. This is a product reliability parameter, not an
+    # anatomical limit.
+    lone_trunk_lean_deviation: float = 0.65
+    # A bounded static-hold add-on may support an already corroborated WATCH
+    # posture, but it can never create posture evidence from a normal frame.
+    static_hold_start_seconds: float = 60.0
+    static_hold_full_seconds: float = 180.0
+    static_hold_max_bonus: float = 0.12
+    static_hold_min_deviation: float = 0.50
     # Runtime decisions operate on individual observations, so their noise
     # band is based on within-anchor standard deviation rather than SEM alone.
     # These are adjustable reliability/product parameters, not physiology.
@@ -501,6 +514,16 @@ class PosturePolicy:
             raise ValueError("camera_roll_agreement_deg cannot be negative")
         if not (0.0 <= self.minimum_group_support_deviation <= 1.0):
             raise ValueError("minimum_group_support_deviation must be in [0, 1]")
+        if not (0.0 <= self.lone_trunk_lean_deviation <= 1.0):
+            raise ValueError("lone_trunk_lean_deviation must be in [0, 1]")
+        if self.static_hold_start_seconds < 0.0:
+            raise ValueError("static_hold_start_seconds cannot be negative")
+        if self.static_hold_full_seconds <= self.static_hold_start_seconds:
+            raise ValueError("static_hold_full_seconds must exceed start")
+        if not (0.0 <= self.static_hold_max_bonus <= 1.0):
+            raise ValueError("static_hold_max_bonus must be in [0, 1]")
+        if not (0.0 <= self.static_hold_min_deviation <= 1.0):
+            raise ValueError("static_hold_min_deviation must be in [0, 1]")
 
 
 @dataclass(frozen=True)
@@ -705,6 +728,16 @@ def score_posture_deviation(
         policy.within_group_corroboration,
         policy.minimum_group_support_deviation,
     )
+    # A genuine side-recline can rotate the torso around the pelvis while the
+    # shoulder line remains almost parallel. Keep the two-feature rule for
+    # ordinary lateral evidence, but let a pronounced pelvis-relative torso
+    # lean stand on its own once it clears the explicit product reliability
+    # parameter. This avoids suppressing the real posture pattern without
+    # turning small single-feature jitter into an alert.
+    trunk_lean = by_name.get("trunk_lean_deg", 0.0)
+    if trunk_lean >= policy.lone_trunk_lean_deviation:
+        lateral = max(lateral, trunk_lean)
+        lateral_corroborated = True
     groups = sorted((forward, lateral), reverse=True)
     overall = min(
         1.0,
@@ -821,6 +854,78 @@ class ExposureSnapshot:
     integrated_seconds: float
     recovery_seconds: float
     paused: bool
+
+
+@dataclass(frozen=True)
+class StaticHoldSnapshot:
+    """Continuous static-hold evidence and its bounded posture add-on."""
+
+    static_seconds: float
+    bonus: float
+    paused: bool
+
+
+class StaticHoldAccumulator:
+    """Track one uninterrupted, corroborated posture hold.
+
+    The add-on is deliberately subordinate to posture evidence: callers must
+    pass ``eligible=True`` only for a corroborated posture already at the
+    WATCH boundary. A normal posture therefore never rises merely because
+    time passes. Long gaps, movement, low quality, or recovery reset the hold.
+    """
+
+    def __init__(self, policy: Optional[PosturePolicy] = None) -> None:
+        self.policy = policy or PosturePolicy()
+        self.static_seconds = 0.0
+        self.last_timestamp = None
+
+    def reset(self) -> None:
+        self.static_seconds = 0.0
+        self.last_timestamp = None
+
+    def _advance_time(self, timestamp) -> float:
+        if self.last_timestamp is None:
+            self.last_timestamp = timestamp
+            return 0.0
+        elapsed = max(0.0, _elapsed_seconds(timestamp, self.last_timestamp))
+        self.last_timestamp = timestamp
+        return elapsed
+
+    def _snapshot(self, paused: bool) -> StaticHoldSnapshot:
+        ramp = max(
+            0.0,
+            min(
+                1.0,
+                (self.static_seconds - self.policy.static_hold_start_seconds)
+                / (self.policy.static_hold_full_seconds - self.policy.static_hold_start_seconds),
+            ),
+        )
+        return StaticHoldSnapshot(
+            static_seconds=self.static_seconds,
+            bonus=self.policy.static_hold_max_bonus * ramp,
+            paused=paused,
+        )
+
+    def update(
+        self,
+        timestamp,
+        *,
+        posture_deviation: float,
+        eligible: bool,
+        paused: bool = False,
+    ) -> StaticHoldSnapshot:
+        elapsed = self._advance_time(timestamp)
+        gap = elapsed > self.policy.maximum_observation_gap_seconds
+        if (
+            paused
+            or gap
+            or not eligible
+            or posture_deviation < self.policy.static_hold_min_deviation
+        ):
+            self.static_seconds = 0.0
+            return self._snapshot(True)
+        self.static_seconds += elapsed
+        return self._snapshot(False)
 
 
 class ExposureAccumulator:

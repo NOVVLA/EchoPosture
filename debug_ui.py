@@ -178,6 +178,8 @@ REASON_TEXT: Dict[str, str] = {
     "within_personal_posture_range": "reason.within_personal_posture_range",
     "posture_deviation": "reason.posture_deviation",
     "exposure_seconds": "reason.exposure_seconds",
+    "static_hold_seconds": "reason.static_hold_seconds",
+    "static_hold_bonus": "reason.static_hold_bonus",
     "confidence": "reason.confidence",
 }
 
@@ -1464,6 +1466,12 @@ class DebugWindow(QMainWindow):
                 f"{decision.posture_deviation:.2f} / "
                 f"{decision.exposure_seconds:.1f}s / {decision.confidence:.2f}"
             )
+            if decision.static_hold_seconds > 0.0 or decision.static_hold_bonus > 0.0:
+                risk_text += (
+                    f" / {_t('reason.static_hold_seconds')}="
+                    f"{decision.static_hold_seconds:.1f}s"
+                    f" / {_t('reason.static_hold_bonus')}={decision.static_hold_bonus:.2f}"
+                )
         else:
             risk_text = (
                 f"{decision.risk_score:.0f} / {decision.sustained_seconds:.1f}s"

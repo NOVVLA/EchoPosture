@@ -230,6 +230,8 @@ _TEXTS: Dict[str, Dict[str, str]] = {
         "reason.posture_deviation": "个人姿态偏离",
         "reason.exposure_seconds": "等效静态暴露秒数",
         "reason.confidence": "测量置信度",
+        "reason.static_hold_seconds": "持续静止时长",
+        "reason.static_hold_bonus": "静止加成（仅作已有偏离的有限佐证）",
 
         # ---- debug_ui: _human_reason 替换片段 ----
         "reason_frag.missing": "缺失：",
@@ -528,6 +530,8 @@ _TEXTS: Dict[str, Dict[str, str]] = {
         "reason.posture_deviation": "Personal posture deviation",
         "reason.exposure_seconds": "Equivalent static-exposure seconds",
         "reason.confidence": "Measurement confidence",
+        "reason.static_hold_seconds": "Static-hold duration",
+        "reason.static_hold_bonus": "Static-hold add-on (bounded support for existing deviation only)",
 
         # ---- debug_ui: _human_reason 替换片段 ----
         "reason_frag.missing": "missing: ",

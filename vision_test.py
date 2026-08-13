@@ -27,6 +27,7 @@ from posture_science import (
     CalibrationProfile,
     ExposureAccumulator,
     PosturePolicy,
+    StaticHoldAccumulator,
     aggregate_sample_quality,
     measurement_values,
     runtime_measurement_values,
@@ -157,6 +158,8 @@ class PostureDecision:
     confidence: float = 0.0
     calibration_quality: float = 0.0
     activity_state: str = "UNKNOWN"
+    static_hold_seconds: float = 0.0
+    static_hold_bonus: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -424,6 +427,7 @@ class HighPrecisionPostureAnalyzer(PostureAnalyzer):
         self.calibration_profile: Optional[CalibrationProfile] = None
         self.posture_policy = posture_policy or PosturePolicy()
         self.exposure_accumulator = ExposureAccumulator(self.posture_policy)
+        self.static_hold_accumulator = StaticHoldAccumulator(self.posture_policy)
         self.legacy_calibration_used = False
         self._camera_drifted = False
         self._post_calibration_validation_required = False
@@ -499,6 +503,7 @@ class HighPrecisionPostureAnalyzer(PostureAnalyzer):
         self.legacy_calibration_used = False
         self._camera_drifted = False
         self.exposure_accumulator.reset()
+        self.static_hold_accumulator.reset()
         self._reset_risk_state()
         self._post_calibration_validation_required = True
         self._post_calibration_validation_started_at = None
@@ -511,12 +516,14 @@ class HighPrecisionPostureAnalyzer(PostureAnalyzer):
         self.legacy_calibration_used = False
         self._camera_drifted = False
         self.exposure_accumulator.reset()
+        self.static_hold_accumulator.reset()
         self._post_calibration_validation_required = False
         self._post_calibration_validation_started_at = None
         self._reset_posture_change_candidate()
 
     def evaluate(self, sample: VisionSample) -> PostureDecision:
         if not self.precision_enabled:
+            self.static_hold_accumulator.reset()
             return self._basic_mode_evaluate(sample)
 
         if self.calibration_profile is not None:
@@ -755,6 +762,7 @@ class HighPrecisionPostureAnalyzer(PostureAnalyzer):
             )
 
         if self._post_calibration_validation_required:
+            self.static_hold_accumulator.reset()
             exposure = self.exposure_accumulator.pause(sample.timestamp)
             within_normal_band = score.raw_deviation <= 1e-9
             if within_normal_band:
@@ -800,7 +808,14 @@ class HighPrecisionPostureAnalyzer(PostureAnalyzer):
         # Debounce only a corroborated posture pattern. A lone ratio or angle
         # is not allowed to mature into WATCH merely because it persists.
         change_evidence = score.deviation
+        was_posture_change_confirmed = self._posture_change_confirmed
         if self._posture_change_needs_confirmation(sample.timestamp, change_evidence):
+            self.static_hold_accumulator.update(
+                sample.timestamp,
+                posture_deviation=0.0,
+                eligible=False,
+                paused=True,
+            )
             exposure = self.exposure_accumulator.pause(sample.timestamp)
             return PostureDecision(
                 "ADJUSTING",
@@ -816,9 +831,16 @@ class HighPrecisionPostureAnalyzer(PostureAnalyzer):
                 environment_state="POSTURE_ADJUSTMENT",
             )
 
+        if self._posture_change_confirmed and not was_posture_change_confirmed:
+            # Start the static-hold clock after the two-second adjustment
+            # confirmation window, so reaching into a posture is never counted
+            # as an already-established static hold.
+            self.static_hold_accumulator.reset()
+
         if score.raw_deviation > 0.0 and not score.corroborated:
             if score.raw_deviation < self.posture_policy.watch_enter:
                 self._reset_posture_change_candidate()
+                self.static_hold_accumulator.reset()
                 exposure = self.exposure_accumulator.update(sample.timestamp, 0.0)
                 return PostureDecision(
                     "GOOD",
@@ -837,6 +859,7 @@ class HighPrecisionPostureAnalyzer(PostureAnalyzer):
             # independent posture evidence to enter WATCH or accumulate
             # exposure. Keep the known target in an explicit observation state
             # instead of mislabelling the entire person as unrecognised.
+            self.static_hold_accumulator.reset()
             exposure = self.exposure_accumulator.pause(sample.timestamp)
             return PostureDecision(
                 "ADJUSTING",
@@ -852,12 +875,27 @@ class HighPrecisionPostureAnalyzer(PostureAnalyzer):
                 environment_state="PARTIAL_POSTURE_EVIDENCE",
             )
 
-        exposure = self.exposure_accumulator.update(sample.timestamp, score.deviation)
+        static_hold = self.static_hold_accumulator.update(
+            sample.timestamp,
+            posture_deviation=score.deviation,
+            eligible=(
+                self._posture_change_confirmed
+                and score.corroborated
+                and score.deviation >= self.posture_policy.static_hold_min_deviation
+                and activity_state == "STATIC"
+            ),
+        )
+        effective_deviation = min(1.0, score.deviation + static_hold.bonus)
+        exposure = self.exposure_accumulator.update(sample.timestamp, effective_deviation)
         reasons = [
             f"posture_deviation={score.deviation:.2f}",
+            f"effective_deviation={effective_deviation:.2f}",
             f"exposure_seconds={exposure.exposure_seconds:.1f}",
             f"confidence={confidence:.2f}",
         ]
+        if static_hold.static_seconds > 0.0:
+            reasons.append(f"static_hold_seconds={static_hold.static_seconds:.1f}")
+            reasons.append(f"static_hold_bonus={static_hold.bonus:.2f}")
         if score.features:
             primary = max(score.features, key=lambda item: item.deviation)
             reasons.append(f"primary_feature={primary.feature}:{primary.deviation:.2f}")
@@ -888,17 +926,20 @@ class HighPrecisionPostureAnalyzer(PostureAnalyzer):
             status,
             ",".join(reasons),
             True,
-            risk_score=score.deviation * 100.0,
+            risk_score=effective_deviation * 100.0,
             sustained_seconds=exposure.exposure_seconds,
             posture_deviation=score.deviation,
             exposure_seconds=exposure.exposure_seconds,
             confidence=confidence,
             calibration_quality=profile.calibration_quality,
             activity_state=activity_state,
+            static_hold_seconds=static_hold.static_seconds,
+            static_hold_bonus=static_hold.bonus,
         )
 
     def _reset_post_calibration_validation_window(self) -> None:
         self._reset_posture_change_candidate()
+        self.static_hold_accumulator.reset()
         if self._post_calibration_validation_required:
             self._post_calibration_validation_started_at = None
 
