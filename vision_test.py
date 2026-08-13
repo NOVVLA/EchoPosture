@@ -50,6 +50,8 @@ class CameraBlackFrameError(RuntimeError):
 LEFT_IRIS = (468, 469, 470, 471, 472)
 RIGHT_IRIS = (473, 474, 475, 476, 477)
 FACE_NOSE = 1
+FACE_LEFT_MOUTH = 61
+FACE_RIGHT_MOUTH = 291
 NOSE = 0
 LEFT_EAR = 7
 RIGHT_EAR = 8
@@ -82,6 +84,8 @@ class VisionSample:
     right_hip_point: Optional[Point] = None
     hip_center: Optional[Point] = None
     face_nose_point: Optional[Point] = None
+    face_left_mouth_point: Optional[Point] = None
+    face_right_mouth_point: Optional[Point] = None
     head_turn_ratio: Optional[float] = None
     torso_height_px: Optional[float] = None
     left_ear_point: Optional[Point] = None
@@ -1541,9 +1545,14 @@ class VisionEngine:
         face_result = self._face_mesh.process(frame_rgb)
         pose_result = self._pose.process(frame_rgb)
 
-        left_eye_center, right_eye_center, face_nose_point, face_count = self._measure_face_points(
-            face_result, frame_w, frame_h
-        )
+        (
+            left_eye_center,
+            right_eye_center,
+            face_nose_point,
+            face_left_mouth_point,
+            face_right_mouth_point,
+            face_count,
+        ) = self._measure_face_points(face_result, frame_w, frame_h)
         interpupillary_px = None
         head_turn_ratio = None
         if left_eye_center is not None and right_eye_center is not None:
@@ -1625,6 +1634,8 @@ class VisionEngine:
             right_hip_point=right_hip_point,
             hip_center=hip_center,
             face_nose_point=face_nose_point,
+            face_left_mouth_point=face_left_mouth_point,
+            face_right_mouth_point=face_right_mouth_point,
             head_turn_ratio=head_turn_ratio,
             torso_height_px=torso_height_px,
             left_ear_point=left_ear_point,
@@ -1690,21 +1701,33 @@ class VisionEngine:
 
     def _measure_face_points(
         self, face_result, width: int, height: int
-    ) -> Tuple[Optional[Point], Optional[Point], Optional[Point], int]:
+    ) -> Tuple[
+        Optional[Point],
+        Optional[Point],
+        Optional[Point],
+        Optional[Point],
+        Optional[Point],
+        int,
+    ]:
         if not face_result.multi_face_landmarks:
-            return None, None, None, 0
+            return None, None, None, None, None, 0
 
         face_count = len(face_result.multi_face_landmarks)
         landmarks = face_result.multi_face_landmarks[0].landmark
         if len(landmarks) <= max(*LEFT_IRIS, *RIGHT_IRIS):
-            return None, None, None, face_count
+            return None, None, None, None, None, face_count
 
         left_center = self._landmark_center(landmarks, LEFT_IRIS, width, height)
         right_center = self._landmark_center(landmarks, RIGHT_IRIS, width, height)
         face_nose = None
         if len(landmarks) > FACE_NOSE:
             face_nose = self._pose_point(landmarks[FACE_NOSE], width, height)
-        return left_center, right_center, face_nose, face_count
+        left_mouth = None
+        right_mouth = None
+        if len(landmarks) > max(FACE_LEFT_MOUTH, FACE_RIGHT_MOUTH):
+            left_mouth = self._pose_point(landmarks[FACE_LEFT_MOUTH], width, height)
+            right_mouth = self._pose_point(landmarks[FACE_RIGHT_MOUTH], width, height)
+        return left_center, right_center, face_nose, left_mouth, right_mouth, face_count
 
     @staticmethod
     def _pose_point(landmark, width: int, height: int) -> Point:

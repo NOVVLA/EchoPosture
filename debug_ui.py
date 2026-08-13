@@ -49,6 +49,7 @@ from PyQt5.QtWidgets import (
     QProgressBar,
     QPushButton,
     QCheckBox,
+    QComboBox,
     QDoubleSpinBox,
     QVBoxLayout,
     QWidget,
@@ -68,6 +69,12 @@ from vision_test import (
 )
 from vision_backend import CompatibilityBackend, PostureFeatureExtractor
 from vision_tracking import TargetManager, TargetUpdate
+from vision_modes import (
+    VISION_MODE_COMPATIBILITY,
+    VISION_MODE_SPECS,
+    backend_name,
+    mode_spec,
+)
 from posture_science import (
     CALIBRATION_CONTAMINATION_REASONS,
     CalibrationAccumulator,
@@ -403,18 +410,24 @@ class DebugWindow(QMainWindow):
         intervention_enabled: bool = True,
         target_panel: bool = True,
         backend_factory: Optional[Callable[[], object]] = None,
+        backend_factories: Optional[Dict[str, Callable[[], object]]] = None,
+        initial_vision_mode: str = VISION_MODE_COMPATIBILITY,
     ) -> None:
         super().__init__()
         self.setWindowTitle("EchoPosture Debug Monitor")
         self.resize(1020, 700)
 
-        self.engine = (
-            backend_factory()
-            if backend_factory is not None
-            else CompatibilityBackend(
+        compatibility_factory = backend_factory or (
+            lambda: CompatibilityBackend(
                 lambda: VisionEngine(camera_id=camera_id, width=width, height=height)
             )
         )
+        self._backend_factories = dict(backend_factories or {})
+        self._backend_factories.setdefault(VISION_MODE_COMPATIBILITY, compatibility_factory)
+        if initial_vision_mode not in self._backend_factories:
+            initial_vision_mode = VISION_MODE_COMPATIBILITY
+        self.vision_mode = initial_vision_mode
+        self.engine = self._backend_factories[self.vision_mode]()
         self.target_manager = TargetManager() if target_panel else None
         self.analyzer = PostureAnalyzer(auto_calibrate=False)
         self.current_sample: Optional[VisionSample] = None
@@ -533,6 +546,16 @@ class DebugWindow(QMainWindow):
         self.target_reason_label = QLabel("--")
         self.target_reason_label.setWordWrap(True)
 
+        self.vision_mode_label = QLabel(_t("debug_vision_mode"))
+        self.vision_mode_combo = QComboBox()
+        for spec in VISION_MODE_SPECS:
+            self.vision_mode_combo.addItem(_t(spec.label_key), spec.mode)
+        self.vision_mode_combo.setCurrentIndex(self._vision_mode_index(self.vision_mode))
+        self.vision_mode_combo.currentIndexChanged.connect(self._switch_vision_mode)
+        self.vision_backend_label = QLabel()
+        self.vision_backend_label.setWordWrap(True)
+        self._set_vision_backend_status()
+
         self.calibrate_button = QPushButton(_t("debug_dual_calibrate_btn"))
         self.calibrate_button.clicked.connect(self.toggle_dual_anchor_calibration)
         self.legacy_calibrate_button = QPushButton(_t("debug_calibrate_btn"))
@@ -635,6 +658,9 @@ class DebugWindow(QMainWindow):
         panel_layout.addWidget(target_title)
         panel_layout.addLayout(target_grid)
         panel_layout.addWidget(self.calibration_label)
+        panel_layout.addWidget(self.vision_mode_label)
+        panel_layout.addWidget(self.vision_mode_combo)
+        panel_layout.addWidget(self.vision_backend_label)
         panel_layout.addWidget(self.precision_checkbox)
         panel_layout.addWidget(self.distance_input)
         panel_layout.addWidget(self.performance_checkbox)
@@ -693,8 +719,89 @@ class DebugWindow(QMainWindow):
                 border-radius: 4px;
                 background: rgba(255, 255, 255, 0.55);
             }
+            QComboBox {
+                border: 1px solid #9aa6b2;
+                border-radius: 5px;
+                padding: 7px 9px;
+                background: white;
+                color: #1f2933;
+            }
             """
         )
+
+    def _vision_mode_index(self, mode: str) -> int:
+        for index in range(self.vision_mode_combo.count()):
+            if self.vision_mode_combo.itemData(index) == mode:
+                return index
+        return 0
+
+    def _set_vision_backend_status(self, reason_key: Optional[str] = None) -> None:
+        if reason_key is not None:
+            self.vision_backend_label.setText(_t(reason_key))
+            return
+        self.vision_backend_label.setText(
+            _t(
+                "debug_vision_backend",
+                mode=_t(mode_spec(self.vision_mode).label_key),
+                backend=backend_name(self.engine),
+            )
+        )
+
+    def _switch_vision_mode(self, index: int) -> None:
+        requested_mode = self.vision_mode_combo.itemData(index)
+        if not requested_mode or requested_mode == self.vision_mode:
+            return
+        factory = self._backend_factories.get(requested_mode)
+        if factory is None:
+            spec = mode_spec(requested_mode)
+            self._set_vision_backend_status(spec.unavailable_reason_key)
+            self.vision_mode_combo.blockSignals(True)
+            self.vision_mode_combo.setCurrentIndex(self._vision_mode_index(self.vision_mode))
+            self.vision_mode_combo.blockSignals(False)
+            return
+
+        self.timer.stop()
+        previous_mode = self.vision_mode
+        previous_factory = self._backend_factories[previous_mode]
+        self.cancel_dual_anchor_calibration()
+        self.engine.close()
+        next_engine = None
+        try:
+            next_engine = factory()
+            next_engine.start()
+        except Exception as exc:
+            if next_engine is not None:
+                try:
+                    next_engine.close()
+                except Exception:
+                    pass
+            self.engine = previous_factory()
+            self.engine.start()
+            self.vision_backend_label.setText(
+                _t("vision_mode_switch_failed", detail=str(exc))
+            )
+            self.vision_mode_combo.blockSignals(True)
+            self.vision_mode_combo.setCurrentIndex(self._vision_mode_index(previous_mode))
+            self.vision_mode_combo.blockSignals(False)
+            self.timer.start(self._interval_ms(self.normal_fps))
+            return
+
+        self.engine = next_engine
+        self.vision_mode = requested_mode
+        if self.target_manager is not None:
+            self.target_manager.reset()
+        self.current_sample = None
+        self.current_raw_sample = None
+        self.current_target_update = None
+        self._scientific_profile = None
+        self.analyzer = HighPrecisionPostureAnalyzer(
+            auto_calibrate=False,
+            require_dual_anchor=True,
+        )
+        self._set_calibration_message("debug_calib_init")
+        self._set_calibration_stage_visual("idle")
+        self._set_vision_backend_status()
+        self.timer.start(self._interval_ms(self.normal_fps))
 
     def update_frame(self) -> None:
         try:
@@ -1576,6 +1683,10 @@ class DebugWindow(QMainWindow):
         self._set_calibration_stage_visual(self._calibration_visual_phase)
         self.precision_checkbox.setText(_t("debug_precision_cb"))
         self.performance_checkbox.setText(_t("debug_performance_cb"))
+        self.vision_mode_label.setText(_t("debug_vision_mode"))
+        for index, spec in enumerate(VISION_MODE_SPECS):
+            self.vision_mode_combo.setItemText(index, _t(spec.label_key))
+        self._set_vision_backend_status()
         self.face_metric_label.setText(_t("debug_metric_face"))
         self.shoulder_metric_label.setText(_t("debug_metric_shoulder"))
         self.distance_metric_label.setText(_t("debug_metric_distance"))

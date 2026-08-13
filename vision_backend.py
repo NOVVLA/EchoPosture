@@ -39,6 +39,8 @@ class PostureFeatures:
     right_hip_point: Optional[Point] = None
     hip_center: Optional[Point] = None
     face_nose_point: Optional[Point] = None
+    face_left_mouth_point: Optional[Point] = None
+    face_right_mouth_point: Optional[Point] = None
     head_turn_ratio: Optional[float] = None
     torso_height_px: Optional[float] = None
     left_ear_point: Optional[Point] = None
@@ -141,6 +143,8 @@ class PostureFeatureExtractor:
             right_hip_point=features.right_hip_point,
             hip_center=features.hip_center,
             face_nose_point=features.face_nose_point,
+            face_left_mouth_point=features.face_left_mouth_point,
+            face_right_mouth_point=features.face_right_mouth_point,
             head_turn_ratio=features.head_turn_ratio,
             torso_height_px=features.torso_height_px,
             left_ear_point=features.left_ear_point,
@@ -205,7 +209,13 @@ def observation_from_sample(sample: VisionSample) -> Tuple[PersonObservation, ..
     )
     face_points = tuple(
         point
-        for point in (sample.left_eye_center, sample.right_eye_center, sample.face_nose_point)
+        for point in (
+            sample.left_eye_center,
+            sample.right_eye_center,
+            sample.face_nose_point,
+            sample.face_left_mouth_point,
+            sample.face_right_mouth_point,
+        )
         if point is not None
     )
     if not body_points and not face_points:
@@ -278,6 +288,12 @@ def observation_from_sample(sample: VisionSample) -> Tuple[PersonObservation, ..
                 right_hip_point=sample.right_hip_point,
                 hip_center=sample.hip_center,
                 face_nose_point=None if sample.face_count > 1 else sample.face_nose_point,
+                face_left_mouth_point=(
+                    None if sample.face_count > 1 else sample.face_left_mouth_point
+                ),
+                face_right_mouth_point=(
+                    None if sample.face_count > 1 else sample.face_right_mouth_point
+                ),
                 head_turn_ratio=None if sample.face_count > 1 else sample.head_turn_ratio,
                 torso_height_px=sample.torso_height_px,
                 left_ear_point=sample.left_ear_point,

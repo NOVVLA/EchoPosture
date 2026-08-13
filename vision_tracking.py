@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import Dict, Iterable, List, Optional, Tuple
 
@@ -31,6 +31,16 @@ class TargetManagerConfig:
     min_bbox_iou: float = 0.05
     max_center_distance_ratio: float = 1.35
     association_ambiguity_margin: float = 0.08
+    # The compatibility backend can lose or sharply move torso landmarks
+    # during a deep side-recline while the face remains continuously visible.
+    # Use short-gap face continuity as an association aid so one person is not
+    # split into a missing target plus a permanent candidate. These are
+    # product tracking parameters, not identity or anatomical thresholds.
+    face_continuity_max_gap_seconds: float = 0.5
+    face_reacquire_max_gap_seconds: float = 4.0
+    max_face_center_distance_ratio: float = 1.5
+    min_face_area_ratio: float = 0.35
+    min_face_continuity_quality: float = 0.50
     moving_speed_ratio_per_second: float = 0.20
     # Activity classification is intentionally slower than association
     # prediction so detector jitter does not become user movement.
@@ -195,6 +205,16 @@ class TargetManager:
         ]
 
         for _, track, observation, match_score in assignments:
+            # Once a target is locked, temporal face continuity can resolve a
+            # geometric face/body envelope failure caused by a deep lean. The
+            # observation remains auditable, but is no longer allowed to turn
+            # one visible user into TARGET_OCCLUDED/TARGET_AMBIGUOUS.
+            if (
+                track.track_id == self.target_track_id
+                and observation.association_ambiguous
+                and self._face_continuity_score(track, observation) is not None
+            ):
+                observation = replace(observation, association_ambiguous=False)
             self._update_track(track, observation, match_score)
 
         for track in self._tracks.values():
@@ -208,6 +228,28 @@ class TargetManager:
         target = self._tracks.get(self.target_track_id) if self.target_track_id else None
         target_observation = target.observation if target and target.missed_frames == 0 else None
         active_tracks = [track for track in self._tracks.values() if track.missed_frames == 0]
+        if target is not None and target_observation is None:
+            candidate = self._face_reacquire_candidate(target, active_tracks)
+            if candidate is not None:
+                # Keep the original target id and transfer only the live
+                # numeric observation. Identity verification still runs after
+                # this rebind when the occlusion gap exceeded its grace.
+                target.observation = replace(candidate.observation, association_ambiguous=False)
+                target.last_seen_at = candidate.last_seen_at
+                target.previous_center = candidate.previous_center
+                target.velocity = candidate.velocity
+                target.motion_velocity = candidate.motion_velocity
+                target.scale_velocity = candidate.scale_velocity
+                target.missed_frames = 0
+                target.seen_frames += candidate.seen_frames
+                target.last_match_score = candidate.last_match_score
+                del self._tracks[candidate.track_id]
+                # Rebinding a separately created track is not identity proof.
+                # Keep posture intervention paused until the shared verifier
+                # confirms the candidate, even when face geometry is unique.
+                self._identity_pending = True
+                target_observation = target.observation
+                active_tracks = [track for track in self._tracks.values() if track.missed_frames == 0]
         other_tracks = [track for track in active_tracks if track.track_id != self.target_track_id]
         target_ambiguous = self._track_is_ambiguous(self.target_track_id, candidate_scores)
 
@@ -274,12 +316,12 @@ class TargetManager:
             if self._target_missing_since is None:
                 self._target_missing_since = timestamp
             missing_seconds = max(0.0, _elapsed_seconds(timestamp, self._target_missing_since))
-            if missing_seconds < self.config.occlusion_grace_seconds:
-                self.state = TARGET_OCCLUDED
-                reason = f"target_missing_observing_s={missing_seconds:.1f}"
-            elif active_tracks:
+            if active_tracks:
                 self.state = TARGET_REACQUIRING
                 reason = "target_missing_candidate_present"
+            elif missing_seconds < self.config.occlusion_grace_seconds:
+                self.state = TARGET_OCCLUDED
+                reason = f"target_missing_observing_s={missing_seconds:.1f}"
             elif missing_seconds >= self.config.away_confirm_seconds:
                 self.state = AWAY
                 reason = f"target_away_s={missing_seconds:.1f}"
@@ -382,8 +424,16 @@ class TargetManager:
         return best_matches, candidate_scores
 
     def _match_score(self, track: _Track, observation: PersonObservation) -> Optional[float]:
+        face_score = self._face_continuity_score(track, observation)
         if observation.association_ambiguous:
-            if track.track_id == self.target_track_id or not track.observation.association_ambiguous:
+            if track.track_id == self.target_track_id:
+                # Compatibility mode can mark a clear, continuous face as
+                # face/body ambiguous when a deep lean moves the pose box.
+                # Only short-gap face continuity may resolve that condition
+                # for the already locked target.
+                if face_score is None:
+                    return None
+            elif not track.observation.association_ambiguous:
                 return None
         if (
             observation.detection_id is not None
@@ -400,12 +450,98 @@ class TargetManager:
         iou = _iou(track.observation.bbox_xyxy, observation.bbox_xyxy)
         distance = _distance_ratio(track, observation)
         if iou < self.config.min_bbox_iou and distance > self.config.max_center_distance_ratio:
-            return None
+            return face_score
         motion_score = max(0.0, 1.0 - distance / self.config.max_center_distance_ratio)
         old_area = _area(track.observation.bbox_xyxy)
         new_area = _area(observation.bbox_xyxy)
         area_ratio = min(old_area, new_area) / max(old_area, new_area, 1.0)
-        return motion_score * 0.75 + iou * 0.20 + area_ratio * 0.05
+        body_score = motion_score * 0.75 + iou * 0.20 + area_ratio * 0.05
+        return max(body_score, face_score or 0.0)
+
+    def _face_continuity_score(
+        self,
+        track: _Track,
+        observation: PersonObservation,
+        *,
+        max_gap_seconds: Optional[float] = None,
+    ) -> Optional[float]:
+        previous = track.observation.face_bbox_xyxy
+        current = observation.face_bbox_xyxy
+        if previous is None or current is None:
+            return None
+        previous_quality = track.observation.face_quality
+        current_quality = observation.face_quality
+        if (
+            previous_quality is None
+            or current_quality is None
+            or min(previous_quality, current_quality) < self.config.min_face_continuity_quality
+        ):
+            return None
+        elapsed = max(0.0, _elapsed_seconds(observation.timestamp, track.last_seen_at))
+        if elapsed > (
+            self.config.face_continuity_max_gap_seconds
+            if max_gap_seconds is None
+            else max_gap_seconds
+        ):
+            return None
+
+        previous_diagonal = math.hypot(
+            previous[2] - previous[0],
+            previous[3] - previous[1],
+        )
+        current_diagonal = math.hypot(
+            current[2] - current[0],
+            current[3] - current[1],
+        )
+        center_distance = math.dist(_center(previous), _center(current)) / max(
+            1.0,
+            previous_diagonal,
+            current_diagonal,
+        )
+        previous_area = _area(previous)
+        current_area = _area(current)
+        area_ratio = min(previous_area, current_area) / max(
+            previous_area,
+            current_area,
+            1.0,
+        )
+        if (
+            center_distance > self.config.max_face_center_distance_ratio
+            or area_ratio < self.config.min_face_area_ratio
+        ):
+            return None
+        distance_score = max(
+            0.0,
+            1.0 - center_distance / self.config.max_face_center_distance_ratio,
+        )
+        return distance_score * 0.75 + _iou(previous, current) * 0.20 + area_ratio * 0.05
+
+    def _face_reacquire_candidate(
+        self,
+        target: _Track,
+        active_tracks: List[_Track],
+    ) -> Optional[_Track]:
+        candidates: list[tuple[float, _Track]] = []
+        for track in active_tracks:
+            if track.track_id == target.track_id:
+                continue
+            if track.observation.association_ambiguous:
+                continue
+            score = self._face_continuity_score(
+                target,
+                track.observation,
+                max_gap_seconds=self.config.face_reacquire_max_gap_seconds,
+            )
+            if score is not None:
+                candidates.append((score, track))
+        candidates.sort(key=lambda item: item[0], reverse=True)
+        if not candidates:
+            return None
+        if len(candidates) > 1 and (
+            candidates[0][0] - candidates[1][0] < self.config.association_ambiguity_margin
+        ):
+            return None
+        return candidates[0][1]
 
     def _track_is_ambiguous(
         self,

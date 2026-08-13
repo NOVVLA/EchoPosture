@@ -5,7 +5,7 @@
 {"scenario":"multi-enter-exit","timestamp_s":0.8,"observations":[{"detection_id":1,"bbox_xyxy":[120,100,220,340]}],"expected_state":"MULTI_PRESENT","expected_target_detection_id":1}
 {"scenario":"multi-enter-exit","timestamp_s":1.7,"observations":[{"detection_id":1,"bbox_xyxy":[125,100,225,340]}],"expected_state":"TARGET_LOCKED","expected_target_detection_id":1}
 {"scenario":"target-leaves-return","reset":true,"timestamp_s":0.0,"observations":[{"detection_id":1,"bbox_xyxy":[100,100,200,340]}],"lock_target_after":true,"expected_state":"TARGET_LOCKED"}
-{"scenario":"target-leaves-return","timestamp_s":1.0,"observations":[{"detection_id":2,"bbox_xyxy":[400,100,500,340]}],"expected_state":"TARGET_OCCLUDED","expected_target_detection_id":null}
+{"scenario":"target-leaves-return","timestamp_s":1.0,"observations":[{"detection_id":2,"bbox_xyxy":[400,100,500,340]}],"expected_state":"TARGET_REACQUIRING","expected_target_detection_id":null}
 {"scenario":"target-leaves-return","timestamp_s":3.1,"observations":[{"detection_id":2,"bbox_xyxy":[390,100,490,340]}],"expected_state":"TARGET_REACQUIRING","expected_target_detection_id":null}
 {"scenario":"target-leaves-return","timestamp_s":4.0,"observations":[{"detection_id":1,"bbox_xyxy":[120,100,220,340]},{"detection_id":2,"bbox_xyxy":[380,100,480,340]}],"expected_state":"IDENTITY_UNCERTAIN","expected_target_detection_id":1}
 {"scenario":"target-leaves-return","timestamp_s":4.1,"resolve_identity_before":true,"observations":[{"detection_id":1,"bbox_xyxy":[125,100,225,340]},{"detection_id":2,"bbox_xyxy":[375,100,475,340]}],"expected_state":"TARGET_LOCKED","expected_target_detection_id":1}

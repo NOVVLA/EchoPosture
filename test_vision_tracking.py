@@ -289,7 +289,9 @@ def test_occlusion_reacquisition_and_no_silent_promotion():
         [observation(2, T0 + timedelta(seconds=1), 400.0)],
         timestamp=T0 + timedelta(seconds=1),
     )
-    assert occluded.state == TARGET_OCCLUDED
+    # A visible non-target candidate means the target is being reacquired,
+    # not that the entire scene is simply occluded.
+    assert occluded.state == TARGET_REACQUIRING
     assert occluded.target_track_id == target_id
     assert occluded.target_observation is None
 
@@ -321,6 +323,108 @@ def test_occlusion_reacquisition_and_no_silent_promotion():
     print("test_occlusion_reacquisition_and_no_silent_promotion OK")
 
 
+def test_face_continuity_survives_side_recline_body_box_jump():
+    """A continuously visible face keeps the target through torso-box jumps."""
+
+    manager = TargetManager()
+    upright = observation(None, T0, 100.0)
+    manager.update([upright])
+    assert manager.lock_calibration_target()
+    target_id = manager.target_track_id
+
+    # Simulate a deep side-recline where pose landmarks move the body box far
+    # away while the face detector remains stable and high quality.
+    reclined = replace(
+        observation(None, T0 + timedelta(seconds=0.1), 420.0),
+        face_bbox_xyxy=upright.face_bbox_xyxy,
+        face_quality=0.95,
+    )
+    reclined_update = manager.update([reclined])
+    assert reclined_update.state == TARGET_LOCKED, reclined_update
+    assert reclined_update.target_track_id == target_id
+    assert reclined_update.target_observation == reclined
+    assert reclined_update.person_count == 1
+
+    returned = replace(
+        observation(None, T0 + timedelta(seconds=0.2), 100.0),
+        face_bbox_xyxy=upright.face_bbox_xyxy,
+        face_quality=0.95,
+    )
+    returned_update = manager.update([returned])
+    assert returned_update.state == TARGET_LOCKED, returned_update
+    assert returned_update.target_track_id == target_id
+    assert returned_update.target_observation == returned
+    print("test_face_continuity_survives_side_recline_body_box_jump OK")
+
+
+def test_face_continuity_resolves_compatibility_face_body_ambiguity():
+    manager = TargetManager()
+    upright = observation(None, T0, 100.0)
+    manager.update([upright])
+    assert manager.lock_calibration_target()
+
+    reclined = replace(
+        observation(None, T0 + timedelta(seconds=0.1), 420.0, ambiguous=True),
+        face_bbox_xyxy=upright.face_bbox_xyxy,
+        face_quality=0.95,
+    )
+    update = manager.update([reclined])
+
+    assert update.state == TARGET_LOCKED, update
+    assert update.target_track_id == 1
+    assert update.target_observation is not None
+    assert not update.target_observation.association_ambiguous
+    print("test_face_continuity_resolves_compatibility_face_body_ambiguity OK")
+
+
+def test_face_reacquisition_abstains_for_multiple_similar_candidates():
+    manager = TargetManager()
+    initial = observation(1, T0, 100.0)
+    manager.update([initial])
+    assert manager.lock_calibration_target()
+
+    candidates = [
+        replace(
+            observation(2, T0 + timedelta(seconds=1), 400.0),
+            face_bbox_xyxy=initial.face_bbox_xyxy,
+        ),
+        replace(
+            observation(3, T0 + timedelta(seconds=1), 500.0),
+            face_bbox_xyxy=initial.face_bbox_xyxy,
+        ),
+    ]
+    update = manager.update(candidates)
+
+    assert update.state == TARGET_REACQUIRING, update
+    assert update.target_observation is None
+    assert update.target_track_id == 1
+    print("test_face_reacquisition_abstains_for_multiple_similar_candidates OK")
+
+
+def test_face_reacquisition_abstains_after_timeout_or_with_low_quality():
+    for candidate in (
+        replace(
+            observation(2, T0 + timedelta(seconds=4.1), 400.0),
+            face_bbox_xyxy=observation(1, T0, 100.0).face_bbox_xyxy,
+        ),
+        replace(
+            observation(2, T0 + timedelta(seconds=1), 400.0),
+            face_bbox_xyxy=observation(1, T0, 100.0).face_bbox_xyxy,
+            face_quality=0.1,
+        ),
+    ):
+        manager = TargetManager()
+        manager.update([observation(1, T0, 100.0)])
+        assert manager.lock_calibration_target()
+
+        update = manager.update([candidate])
+
+        assert update.state == TARGET_REACQUIRING, update
+        assert update.target_observation is None
+        assert update.target_track_id == 1
+    print("test_face_reacquisition_abstains_after_timeout_or_with_low_quality OK")
+
+
 def test_compatibility_without_stable_detection_id_requires_reacquire_check():
     manager = TargetManager()
     first = replace(observation(1, T0, 100.0), detection_id=None)
@@ -333,6 +437,25 @@ def test_compatibility_without_stable_detection_id_requires_reacquire_check():
     assert update.state == IDENTITY_UNCERTAIN
     assert update.target_observation == replacement
     print("test_compatibility_without_stable_detection_id_requires_reacquire_check OK")
+
+
+def test_separate_face_rebind_always_requires_identity_confirmation():
+    manager = TargetManager()
+    initial = observation(None, T0, 100.0)
+    manager.update([initial])
+    assert manager.lock_calibration_target()
+
+    manager.update([], timestamp=T0 + timedelta(seconds=0.1))
+    candidate = replace(
+        observation(None, T0 + timedelta(seconds=0.7), 800.0),
+        face_bbox_xyxy=initial.face_bbox_xyxy,
+    )
+    update = manager.update([candidate])
+
+    assert update.state == IDENTITY_UNCERTAIN, update
+    assert update.target_track_id == 1
+    assert update.target_observation == candidate
+    print("test_separate_face_rebind_always_requires_identity_confirmation OK")
 
 
 def test_numeric_timestamp_contract():
@@ -693,7 +816,12 @@ if __name__ == "__main__":
     test_geometry_prediction_keeps_target_without_detection_ids()
     test_geometry_tie_enters_ambiguous_state_without_silent_switch()
     test_occlusion_reacquisition_and_no_silent_promotion()
+    test_face_continuity_survives_side_recline_body_box_jump()
+    test_face_continuity_resolves_compatibility_face_body_ambiguity()
+    test_face_reacquisition_abstains_for_multiple_similar_candidates()
+    test_face_reacquisition_abstains_after_timeout_or_with_low_quality()
     test_compatibility_without_stable_detection_id_requires_reacquire_check()
+    test_separate_face_rebind_always_requires_identity_confirmation()
     test_numeric_timestamp_contract()
     test_away_and_ambiguous_states()
     test_analyzer_continues_target_during_multi_present()

@@ -9,11 +9,18 @@ from __future__ import annotations
 
 import threading
 import time
+from concurrent.futures import Future
 from dataclasses import replace
 from datetime import datetime, timedelta
 from types import SimpleNamespace
 
 from posture_science import CalibrationPlan, TRANSITION
+from identity_verifier import (
+    FaceObservation,
+    IdentityVerifier,
+    IdentityVerifierConfig,
+    PrecomputedEmbedder,
+)
 from vision_backend import observation_from_sample
 from vision_tracking import TargetManager
 from vision_tracking import TARGET_LOCKED, TargetUpdate
@@ -206,6 +213,8 @@ def make_production_dual_sample(
         left_eye_center=(290.0, 150.0),
         right_eye_center=(350.0, 150.0),
         face_nose_point=(320.0, 170.0),
+        face_left_mouth_point=(302.0, 192.0),
+        face_right_mouth_point=(338.0, 192.0),
         nose_point=(320.0, 170.0),
         left_ear_point=(278.0, 168.0),
         right_ear_point=(362.0, 168.0),
@@ -216,6 +225,170 @@ def make_production_dual_sample(
         shoulder_center=(320.0, 242.0),
         hip_center=(320.0, 390.0),
     )
+
+
+class ImmediateEmbeddingPipeline:
+    def request(self, _frame, observation):
+        future = Future()
+        future.set_result(
+            FaceObservation(
+                timestamp=observation.timestamp,
+                bbox_xyxy=observation.face_bbox_xyxy,
+                landmarks=observation.face_landmarks or (),
+                detector_quality=observation.face_quality or 0.0,
+                embedding=(1.0, 0.0),
+            )
+        )
+        return future
+
+
+def test_worker_builds_session_identity_template_from_transient_embeddings() -> None:
+    engine = FakeEngine()
+    analyzer = HighPrecisionPostureAnalyzer(auto_calibrate=False, require_dual_anchor=True)
+    verifier = IdentityVerifier(
+        PrecomputedEmbedder(),
+        IdentityVerifierConfig(min_frames=2, max_frames=3, debounce_results=1),
+    )
+    worker = VisionWorker(
+        engine_factory=lambda: engine,
+        analyzer=analyzer,
+        identity_verifier=verifier,
+        identity_embedding_pipeline=ImmediateEmbeddingPipeline(),
+    )
+    observation = observation_from_sample(make_production_dual_sample(datetime.now()))[0]
+    update = TargetUpdate(
+        state=TARGET_LOCKED,
+        target_track_id=1,
+        target_observation=observation,
+        tracks=(),
+        person_count=1,
+        reason="target_observed",
+    )
+    worker._identity_enrollment_active = True
+    try:
+        for _ in range(2):
+            worker._schedule_identity_embedding(
+                object(),
+                observation,
+                update,
+            )
+            worker._apply_identity_embedding_result()
+        assert verifier.has_template
+        assert not worker._identity_enrollment_active
+        assert worker._identity_enrollment_samples == []
+    finally:
+        verifier.close()
+    print("test_worker_builds_session_identity_template_from_transient_embeddings OK")
+
+
+def test_worker_enrolls_embedding_already_supplied_by_backend() -> None:
+    engine = FakeEngine()
+    analyzer = HighPrecisionPostureAnalyzer(auto_calibrate=False, require_dual_anchor=True)
+    verifier = IdentityVerifier(
+        PrecomputedEmbedder(),
+        IdentityVerifierConfig(min_frames=1, max_frames=2, debounce_results=1),
+    )
+    worker = VisionWorker(
+        engine_factory=lambda: engine,
+        analyzer=analyzer,
+        identity_verifier=verifier,
+    )
+    observation = replace(
+        observation_from_sample(make_production_dual_sample(datetime.now()))[0],
+        face_embedding=(1.0, 0.0),
+    )
+    update = TargetUpdate(
+        state=TARGET_LOCKED,
+        target_track_id=1,
+        target_observation=observation,
+        tracks=(),
+        person_count=1,
+        reason="target_observed",
+    )
+    worker._identity_enrollment_active = True
+    try:
+        worker._schedule_identity_embedding(None, observation, update)
+        assert verifier.has_template
+        assert not worker._identity_enrollment_active
+    finally:
+        verifier.close()
+    print("test_worker_enrolls_embedding_already_supplied_by_backend OK")
+
+
+def test_worker_ignores_late_embedding_after_enrollment_is_cancelled() -> None:
+    engine = FakeEngine()
+    analyzer = HighPrecisionPostureAnalyzer(auto_calibrate=False, require_dual_anchor=True)
+    verifier = IdentityVerifier(
+        PrecomputedEmbedder(),
+        IdentityVerifierConfig(min_frames=1, max_frames=2, debounce_results=1),
+    )
+    worker = VisionWorker(
+        engine_factory=lambda: engine,
+        analyzer=analyzer,
+        identity_verifier=verifier,
+        identity_embedding_pipeline=ImmediateEmbeddingPipeline(),
+    )
+    observation = observation_from_sample(make_production_dual_sample(datetime.now()))[0]
+    update = TargetUpdate(
+        state=TARGET_LOCKED,
+        target_track_id=1,
+        target_observation=observation,
+        tracks=(),
+        person_count=1,
+        reason="target_observed",
+    )
+    worker._identity_enrollment_active = True
+    try:
+        worker._schedule_identity_embedding(object(), observation, update)
+        worker._identity_enrollment_active = False
+        worker._apply_identity_embedding_result()
+        assert not verifier.has_template
+        assert worker._identity_enrollment_samples == []
+    finally:
+        verifier.close()
+    print("test_worker_ignores_late_embedding_after_enrollment_is_cancelled OK")
+
+
+def test_worker_clears_identity_template_when_calibration_is_contaminated() -> None:
+    engine = FakeEngine()
+    analyzer = HighPrecisionPostureAnalyzer(auto_calibrate=False, require_dual_anchor=True)
+    verifier = IdentityVerifier(
+        PrecomputedEmbedder(),
+        IdentityVerifierConfig(min_frames=1, max_frames=2, debounce_results=1),
+    )
+    worker = VisionWorker(
+        engine_factory=lambda: engine,
+        analyzer=analyzer,
+        identity_verifier=verifier,
+    )
+    try:
+        assert verifier.enroll(
+            [
+                FaceObservation(
+                    timestamp=datetime.now(),
+                    bbox_xyxy=(0.0, 0.0, 80.0, 80.0),
+                    landmarks=((20.0, 20.0), (60.0, 20.0), (40.0, 40.0)),
+                    embedding=(1.0, 0.0),
+                )
+            ]
+        ).ok
+        worker._identity_enrollment_active = True
+        worker._identity_enrollment_samples = [
+            FaceObservation(
+                timestamp=datetime.now(),
+                bbox_xyxy=(0.0, 0.0, 80.0, 80.0),
+                landmarks=((20.0, 20.0), (60.0, 20.0), (40.0, 40.0)),
+                embedding=(1.0, 0.0),
+            )
+        ]
+        worker._collect_calibration_sample(
+            replace(make_dual_sample(datetime.now(), face_count=2), person_count=2)
+        )
+        assert not verifier.has_template
+        assert worker._identity_enrollment_samples == []
+    finally:
+        verifier.close()
+    print("test_worker_clears_identity_template_when_calibration_is_contaminated OK")
 
 
 def test_pose_quality_uses_shoulders_not_optional_hips() -> None:
@@ -710,6 +883,10 @@ if __name__ == "__main__":
     test_dual_anchor_worker_skips_quality_dropout_without_resetting_stage()
     test_dual_anchor_worker_accepts_borderline_pose_quality_for_anchor_repeatability()
     test_production_worker_dual_anchor_requires_normal_range_before_exposure()
+    test_worker_builds_session_identity_template_from_transient_embeddings()
+    test_worker_enrolls_embedding_already_supplied_by_backend()
+    test_worker_ignores_late_embedding_after_enrollment_is_cancelled()
+    test_worker_clears_identity_template_when_calibration_is_contaminated()
     test_worker_preserves_analyzer_environment_reason_over_target_state()
     test_dual_anchor_worker_skips_zero_person_dropout_without_resetting_stage()
     test_dual_anchor_worker_uses_bounded_relaxed_extension()

@@ -12,6 +12,11 @@ from PyQt5.QtWidgets import QApplication
 
 from debug_ui import STATUS_TEXT, DebugWindow
 from vision_backend import observation_from_sample
+from vision_modes import (
+    VISION_MODE_COMPATIBILITY,
+    VISION_MODE_PROFESSIONAL_BETA,
+    VISION_MODE_STANDARD,
+)
 from vision_test import VisionSample
 
 
@@ -59,6 +64,11 @@ class FakeDebugBackend:
         self.observations = ()
         self.started = False
         self.closed = False
+        self.capabilities = type(
+            "Capabilities",
+            (),
+            {"backend_name": "fake-compatibility"},
+        )()
 
     def start(self) -> None:
         self.started = True
@@ -97,6 +107,55 @@ def test_debug_panel_exposes_non_intervention_statuses() -> None:
     assert DebugWindow._status_style("ADJUSTING") != DebugWindow._status_style("UNKNOWN")
     assert DebugWindow._status_style("OBSERVING") != DebugWindow._status_style("UNKNOWN")
     print("test_debug_panel_exposes_non_intervention_statuses OK")
+
+
+def test_debug_panel_exposes_three_vision_modes_and_explicit_availability() -> None:
+    app = QApplication.instance() or QApplication([])
+    compatibility = FakeDebugBackend()
+    standard = FakeDebugBackend()
+    standard.capabilities.backend_name = "fake-standard"
+    window = DebugWindow(
+        camera_id=0,
+        fps=4.0,
+        width=640,
+        height=480,
+        intervention_enabled=False,
+        target_panel=True,
+        backend_factory=lambda: compatibility,
+        backend_factories={VISION_MODE_STANDARD: lambda: standard},
+    )
+    try:
+        modes = {
+            window.vision_mode_combo.itemData(index)
+            for index in range(window.vision_mode_combo.count())
+        }
+        assert modes == {
+            VISION_MODE_COMPATIBILITY,
+            VISION_MODE_STANDARD,
+            VISION_MODE_PROFESSIONAL_BETA,
+        }
+        assert "兼容模式" in window.vision_backend_label.text()
+        assert "fake-compatibility" in window.vision_backend_label.text()
+
+        window.vision_mode_combo.setCurrentIndex(
+            window._vision_mode_index(VISION_MODE_STANDARD)
+        )
+        assert compatibility.closed
+        assert standard.started
+        assert window.vision_mode == VISION_MODE_STANDARD
+        assert "标准模式" in window.vision_backend_label.text()
+        assert "fake-standard" in window.vision_backend_label.text()
+
+        window.vision_mode_combo.setCurrentIndex(
+            window._vision_mode_index(VISION_MODE_PROFESSIONAL_BETA)
+        )
+        assert window.vision_mode == VISION_MODE_STANDARD
+        assert window.vision_mode_combo.currentData() == VISION_MODE_STANDARD
+        assert "TensorRT" in window.vision_backend_label.text()
+    finally:
+        window.close()
+        app.processEvents()
+    print("test_debug_panel_exposes_three_vision_modes_and_explicit_availability OK")
 
 
 def test_debug_panel_runs_full_dual_anchor_calibration() -> None:
@@ -364,6 +423,7 @@ def test_debug_panel_reports_incomplete_dual_anchor_profile() -> None:
 
 if __name__ == "__main__":
     test_debug_panel_exposes_non_intervention_statuses()
+    test_debug_panel_exposes_three_vision_modes_and_explicit_availability()
     test_debug_panel_runs_full_dual_anchor_calibration()
     test_debug_panel_places_stage_card_above_camera()
     test_debug_panel_accepts_identical_anchor_postures()

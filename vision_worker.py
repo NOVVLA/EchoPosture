@@ -27,6 +27,8 @@ from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import Callable, List, Optional
 
+from face_embedding import FaceEmbeddingPipeline, FaceEmbeddingUnavailable
+
 from vision_test import (
     CameraPermissionError,
     PostureDecision,
@@ -40,6 +42,7 @@ from identity_verifier import (
     IdentityVerifier,
     IDENTITY_CONFIRMED,
     IDENTITY_MISMATCH,
+    TRIGGER_EXPLICIT,
     TRIGGER_HEARTBEAT,
     TRIGGER_REACQUIRED,
 )
@@ -147,11 +150,13 @@ class VisionWorker:
         target_fps: float = 30.0,
         target_manager: Optional[TargetManager] = None,
         identity_verifier: Optional[IdentityVerifier] = None,
+        identity_embedding_pipeline: Optional[FaceEmbeddingPipeline] = None,
     ) -> None:
         self._engine_factory = engine_factory
         self.analyzer = analyzer
         self.target_manager = target_manager
         self.identity_verifier = identity_verifier
+        self.identity_embedding_pipeline = identity_embedding_pipeline
         self._target_fps = max(1.0, float(target_fps))
 
         self._commands: "queue.Queue[tuple]" = queue.Queue()
@@ -180,6 +185,11 @@ class VisionWorker:
         self._preferred_cutoff_at = None
         self._calib_request_seq = 0
         self._identity_future = None
+        self._identity_embedding_future = None
+        self._identity_embedding_context: Optional[tuple[str, str, Optional[int]]] = None
+        self._identity_enrollment_samples: list[FaceObservation] = []
+        self._identity_enrollment_active = False
+        self._last_identity_embedding_at: dict[tuple[str, Optional[int]], float] = {}
         self._last_identity_state: Optional[str] = None
         self._last_identity_track_id: Optional[int] = None
 
@@ -379,6 +389,15 @@ class VisionWorker:
                 self._calibration_missing_fields = set()
                 self._calibration_accumulator = CalibrationAccumulator(self._calibration_plan)
                 self._dual_calibration_request = None
+                self._identity_enrollment_samples = []
+                self._identity_enrollment_active = self.identity_verifier is not None
+                self._last_identity_embedding_at.clear()
+                # A result from the previous session may still finish in the
+                # embedding executor. Clear its context so it cannot enter the
+                # new calibration template.
+                self._identity_embedding_context = None
+                if self.identity_verifier is not None:
+                    self.identity_verifier.clear_template()
                 if self.target_manager is not None:
                     self.target_manager.reset()
             elif kind == "complete_preferred_calib":
@@ -432,6 +451,7 @@ class VisionWorker:
                     accumulator.reject(sample.timestamp, rejection)
                     self._calib_samples = []
                     self._last_usable_sample = None
+                    self._reset_identity_enrollment()
                 else:
                     accumulator.skip(sample.timestamp, rejection)
                 self._calibration_missing_fields.add(rejection)
@@ -456,6 +476,7 @@ class VisionWorker:
             # not let later averaging hide that contamination.
             self._calib_samples = []
             self._last_usable_sample = None
+            self._reset_identity_enrollment()
             missing_fields = tuple(sorted(set(missing_fields) | {"single_person"}))
         self._calibration_missing_fields.update(missing_fields)
         if not missing_fields:
@@ -565,6 +586,8 @@ class VisionWorker:
             if failure_reason:
                 fields.add(failure_reason)
             missing_fields = tuple(sorted(fields or {"complete_sample"}))
+            self._identity_enrollment_samples = []
+            self._identity_enrollment_active = False
 
         self._calib_samples = []
         self._last_usable_sample = None
@@ -592,14 +615,29 @@ class VisionWorker:
 
     # ---- 信箱写入 ----
     def _read_sample(self, engine) -> tuple[VisionSample, Optional[TargetUpdate]]:
-        sample = engine.read_sample()
+        frame = None
+        frame_reader = getattr(engine, "read_frame_sample", None)
+        if self.identity_embedding_pipeline is not None and frame_reader is not None:
+            frame, sample = frame_reader()
+        else:
+            sample = engine.read_sample()
         if self.target_manager is None:
             return sample, None
+        self._apply_identity_embedding_result()
         self._apply_identity_result()
         provider = getattr(engine, "observations_for_last_sample", None)
         observations = provider() if provider is not None else observation_from_sample(sample)
         target_update = self.target_manager.update(observations, timestamp=sample.timestamp)
-        self._request_identity_check(target_update)
+        identity_observation = target_update.target_observation
+        if identity_observation is None and self._mode == MODE_CALIBRATING:
+            eligible = tuple(
+                observation
+                for observation in observations
+                if not observation.association_ambiguous
+                and observation.face_bbox_xyxy is not None
+            )
+            identity_observation = eligible[0] if len(eligible) == 1 else None
+        self._schedule_identity_embedding(frame, identity_observation, target_update)
         if target_update.target_observation is not None:
             sample = PostureFeatureExtractor.to_sample(target_update.target_observation)
         sample = replace(
@@ -614,20 +652,95 @@ class VisionWorker:
         )
         return sample, target_update
 
-    def _request_identity_check(self, target_update: TargetUpdate) -> None:
+    def _schedule_identity_embedding(
+        self,
+        frame,
+        observation,
+        target_update: TargetUpdate,
+    ) -> None:
+        pipeline = self.identity_embedding_pipeline
         verifier = self.identity_verifier
-        observation = target_update.target_observation
         if verifier is None or observation is None or observation.face_bbox_xyxy is None:
             self._last_identity_state = target_update.state
             self._last_identity_track_id = target_update.target_track_id
             return
+        if observation.face_embedding is not None:
+            self._submit_identity_observation(
+                FaceObservation(
+                    timestamp=observation.timestamp,
+                    bbox_xyxy=observation.face_bbox_xyxy,
+                    landmarks=observation.face_landmarks or (),
+                    detector_quality=observation.face_quality or 0.0,
+                    embedding=observation.face_embedding,
+                ),
+                target_update,
+            )
+            return
+        if pipeline is None or frame is None or self._identity_embedding_future is not None:
+            return
+
+        if self._identity_enrollment_active:
+            context = (TRIGGER_EXPLICIT, target_update.target_track_id)
+            kind = "enroll"
+            interval = 0.0
+        else:
+            reacquired = (
+                self._last_identity_track_id != target_update.target_track_id
+                or self._last_identity_state in {
+                    "TARGET_REACQUIRING",
+                    "AWAY",
+                    "TARGET_OCCLUDED",
+                }
+            )
+            trigger = TRIGGER_REACQUIRED if reacquired else TRIGGER_HEARTBEAT
+            context = (trigger, target_update.target_track_id)
+            kind = "verify"
+            interval = (
+                verifier.config.min_event_interval_seconds
+                if reacquired
+                else verifier.config.heartbeat_seconds
+            )
+        now = self._timestamp_seconds(observation.timestamp)
+        previous = self._last_identity_embedding_at.get(context)
+        if previous is not None and now - previous < interval:
+            return
+        try:
+            self._identity_embedding_future = pipeline.request(frame, observation)
+        except (FaceEmbeddingUnavailable, RuntimeError, ValueError):
+            self._last_identity_state = target_update.state
+            self._last_identity_track_id = target_update.target_track_id
+            return
+        self._last_identity_embedding_at[context] = now
+        self._identity_embedding_context = (kind, context[0], context[1])
+        self._last_identity_state = target_update.state
+        self._last_identity_track_id = target_update.target_track_id
+
+    def _submit_identity_observation(
+        self,
+        face_observation: FaceObservation,
+        target_update: TargetUpdate,
+    ) -> None:
+        verifier = self.identity_verifier
+        if verifier is None:
+            return
         face_observation = FaceObservation(
-            timestamp=observation.timestamp,
-            bbox_xyxy=observation.face_bbox_xyxy,
-            landmarks=observation.face_landmarks or (),
-            detector_quality=observation.face_quality or 0.0,
-            embedding=observation.face_embedding,
+            timestamp=face_observation.timestamp,
+            bbox_xyxy=face_observation.bbox_xyxy,
+            landmarks=face_observation.landmarks,
+            detector_quality=face_observation.detector_quality,
+            embedding=face_observation.embedding,
         )
+        if self._identity_enrollment_active:
+            self._identity_enrollment_samples.append(face_observation)
+            self._identity_enrollment_samples = self._identity_enrollment_samples[
+                -verifier.config.max_frames:
+            ]
+            if len(self._identity_enrollment_samples) >= verifier.config.min_frames:
+                result = verifier.enroll(self._identity_enrollment_samples)
+                if result.ok:
+                    self._identity_enrollment_active = False
+                    self._identity_enrollment_samples = []
+            return
         reacquired = (
             self._last_identity_track_id != target_update.target_track_id
             or self._last_identity_state in {"TARGET_REACQUIRING", "AWAY", "TARGET_OCCLUDED"}
@@ -642,6 +755,56 @@ class VisionWorker:
             self._identity_future = future
         self._last_identity_state = target_update.state
         self._last_identity_track_id = target_update.target_track_id
+
+    def _apply_identity_embedding_result(self) -> None:
+        future = self._identity_embedding_future
+        if future is None or not future.done():
+            return
+        context = self._identity_embedding_context
+        self._identity_embedding_future = None
+        self._identity_embedding_context = None
+        try:
+            observation = future.result()
+        except Exception:
+            return
+        if context is None:
+            return
+        kind, trigger, track_id = context
+        verifier = self.identity_verifier
+        if verifier is None:
+            return
+        if kind == "enroll":
+            if not self._identity_enrollment_active:
+                return
+            self._identity_enrollment_samples.append(observation)
+            self._identity_enrollment_samples = self._identity_enrollment_samples[
+                -verifier.config.max_frames:
+            ]
+            if len(self._identity_enrollment_samples) >= verifier.config.min_frames:
+                result = verifier.enroll(self._identity_enrollment_samples)
+                if result.ok:
+                    self._identity_enrollment_active = False
+                    self._identity_enrollment_samples = []
+            return
+        future = verifier.request(
+            observation,
+            trigger=trigger,
+            track_id=track_id,
+            force=True,
+        )
+        if future is not None:
+            self._identity_future = future
+
+    @staticmethod
+    def _timestamp_seconds(value) -> float:
+        return value.timestamp() if isinstance(value, datetime) else float(value)
+
+    def _reset_identity_enrollment(self) -> None:
+        self._identity_enrollment_samples = []
+        self._identity_embedding_context = None
+        self._last_identity_embedding_at.clear()
+        if self.identity_verifier is not None:
+            self.identity_verifier.clear_template()
 
     def _apply_identity_result(self) -> None:
         if self.identity_verifier is None or self.target_manager is None:

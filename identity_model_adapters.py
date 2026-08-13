@@ -165,6 +165,33 @@ class CvlFaceAutoModelAdapter:
             output = output.unsqueeze(0)
         return tuple(float(value) for value in output[0].detach().cpu().flatten().tolist())
 
+    def embed_rgb_image(
+        self,
+        image_rgb: Any,
+        keypoints: Optional[Tuple[Tuple[float, float], ...]] = None,
+    ) -> Tuple[float, ...]:
+        """Convert one transient 112x112 RGB array using the model's test transform."""
+
+        if self._model is None or self._torch is None:
+            raise RuntimeError("CvlFaceAutoModelAdapter.load() must be called first")
+        if getattr(image_rgb, "shape", None) != (112, 112, 3):
+            raise ValueError("CVLFace input must be a 112x112 RGB image")
+        image_tensor = self._torch.as_tensor(image_rgb.copy(), device=self.device)
+        image_tensor = image_tensor.permute(2, 0, 1).unsqueeze(0).float()
+        image_tensor = image_tensor.div(255.0).sub(0.5).div(0.5)
+
+        keypoint_tensor = None
+        needs_keypoints = "KP-RPE" in self.spec.architecture
+        if needs_keypoints:
+            if keypoints is None or len(keypoints) != 5:
+                raise ValueError("CVLFace KP-RPE input requires five face keypoints")
+            keypoint_tensor = self._torch.tensor(
+                keypoints,
+                dtype=image_tensor.dtype,
+                device=self.device,
+            ).unsqueeze(0)
+        return self.embed_tensor(image_tensor, keypoint_tensor)
+
     def embed(self, observation: FaceObservation) -> Sequence[float]:
         """IdentityVerifier hook for backends that already computed a vector."""
 

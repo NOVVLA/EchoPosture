@@ -47,6 +47,7 @@ from PyQt5.QtWidgets import (
 )
 
 from gpu_blur_overlay import GpuBlurOverlayController
+from face_embedding import FaceEmbeddingPipeline
 from debug_ui import STATUS_TEXT
 from identity_model_adapters import (
     CvlFaceAutoModelAdapter,
@@ -68,6 +69,7 @@ from onboarding_toast import (
 from posture_console import PostureConsoleWindow
 from tray_flyout import TrayFlyout
 from vision_backend import CompatibilityBackend
+from vision_modes import VISION_MODE_COMPATIBILITY
 from vision_tracking import TargetManager
 from vision_test import (
     CameraBlackFrameError,
@@ -388,10 +390,12 @@ class TrayMonitor:
             require_dual_anchor=True,
         )
         self.target_manager = TargetManager()
+        self.vision_mode = VISION_MODE_COMPATIBILITY
         requested_identity_model = os.environ.get("ECHOPOSTURE_P5_IDENTITY_MODEL", "vit").lower()
         identity_spec = IR101_WEBFACE4M if requested_identity_model == "ir101" else VIT_KPRPE_WEBFACE4M
         self.identity_model = CvlFaceAutoModelAdapter(identity_spec)
         self.identity_verifier: Optional[IdentityVerifier] = None
+        self.identity_embedding_pipeline: Optional[FaceEmbeddingPipeline] = None
         self.identity_model_error: Optional[str] = None
         # 摄像头 + MediaPipe + 评分全部活在 VisionWorker 工作线程；
         # 主线程只低频取信箱快照，UI 不再被推理阻塞。
@@ -476,7 +480,9 @@ class TrayMonitor:
             print(f"P5 identity verification unavailable: {exc}", file=sys.stderr)
             return
         self.identity_verifier = IdentityVerifier(self.identity_model)
+        self.identity_embedding_pipeline = FaceEmbeddingPipeline(self.identity_model)
         self.worker.identity_verifier = self.identity_verifier
+        self.worker.identity_embedding_pipeline = self.identity_embedding_pipeline
 
     def stop(self) -> None:
         if self._stopping:
@@ -502,6 +508,9 @@ class TrayMonitor:
         self.overlay.force_clear()
         self.overlay.close()
         self.worker.stop(join_timeout=2.0)
+        if self.identity_embedding_pipeline is not None:
+            self.identity_embedding_pipeline.close()
+            self.identity_embedding_pipeline = None
         if self.identity_verifier is not None:
             self.identity_verifier.close()
             self.identity_verifier = None
