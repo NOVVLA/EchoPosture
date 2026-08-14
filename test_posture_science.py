@@ -887,8 +887,87 @@ def test_raw_support_uses_measured_repeatability_not_percent_floor() -> None:
     print("test_raw_support_uses_measured_repeatability_not_percent_floor OK")
 
 
-def test_in_range_shoulder_drift_requires_raw_forward_support() -> None:
-    """A shared denominator cannot manufacture corroborated posture evidence."""
+def test_minor_shared_scale_drift_does_not_force_abstention() -> None:
+    accumulator = CalibrationAccumulator(CalibrationPlan(min_samples_per_stage=5))
+    anchor = {
+        "face_shoulder_ratio": 0.30,
+        "torso_shoulder_ratio": 0.90,
+        "ear_shoulder_ratio": 0.40,
+        "shoulder_width_px": 200.0,
+        "interpupillary_px": 60.0,
+        "torso_height_px": 180.0,
+        "ear_shoulder_offset_px": 80.0,
+    }
+    for index in range(5):
+        accumulator.add(index, anchor)
+    accumulator.begin_transition(5.0)
+    for index in range(5):
+        accumulator.add(6.0 + index, anchor)
+    profile = accumulator.finalize()
+
+    minor_width_change = {
+        "face_shoulder_ratio": 60.0 / 208.0,
+        "torso_shoulder_ratio": 180.0 / 208.0,
+        "ear_shoulder_ratio": 80.0 / 208.0,
+        "shoulder_width_px": 208.0,
+        "interpupillary_px": 60.0,
+        "torso_height_px": 180.0,
+        "ear_shoulder_offset_px": 80.0,
+    }
+    score = score_posture_deviation(minor_width_change, profile)
+    assert 0.0 < score.forward_deviation < PosturePolicy().watch_enter, score
+    assert not shared_scale_measurement_unstable(
+        minor_width_change,
+        profile,
+        score=score,
+    )
+    print("test_minor_shared_scale_drift_does_not_force_abstention OK")
+
+
+def test_independent_posture_evidence_bypasses_shared_scale_abstention() -> None:
+    accumulator = CalibrationAccumulator(CalibrationPlan(min_samples_per_stage=5))
+    anchor = {
+        "face_shoulder_ratio": 0.30,
+        "torso_shoulder_ratio": 0.90,
+        "ear_shoulder_ratio": 0.40,
+        "trunk_lean_deg": 0.0,
+        "projected_head_trunk_angle_deg": 0.0,
+        "shoulder_width_px": 200.0,
+        "interpupillary_px": 60.0,
+        "torso_height_px": 180.0,
+        "ear_shoulder_offset_px": 80.0,
+    }
+    for index in range(5):
+        accumulator.add(index, anchor)
+    accumulator.begin_transition(5.0)
+    for index in range(5):
+        accumulator.add(6.0 + index, anchor)
+    profile = accumulator.finalize()
+
+    projected_lean = {
+        "face_shoulder_ratio": 60.0 / 220.0,
+        "torso_shoulder_ratio": 180.0 / 220.0,
+        "ear_shoulder_ratio": 80.0 / 220.0,
+        "trunk_lean_deg": 18.0,
+        "projected_head_trunk_angle_deg": 18.0,
+        "shoulder_width_px": 220.0,
+        "interpupillary_px": 60.0,
+        "torso_height_px": 180.0,
+        "ear_shoulder_offset_px": 80.0,
+    }
+    score = score_posture_deviation(projected_lean, profile)
+    assert score.forward_deviation >= PosturePolicy().watch_enter, score
+    assert score.lateral_deviation >= PosturePolicy().watch_enter, score
+    assert not shared_scale_measurement_unstable(
+        projected_lean,
+        profile,
+        score=score,
+    )
+    print("test_independent_posture_evidence_bypasses_shared_scale_abstention OK")
+
+
+def test_shared_scale_drift_requires_raw_support_only_at_watch_level() -> None:
+    """Sub-WATCH drift stays measurable; actionable drift needs raw support."""
 
     accumulator = CalibrationAccumulator(CalibrationPlan(min_samples_per_stage=5))
     preferred = {
@@ -926,12 +1005,12 @@ def test_in_range_shoulder_drift_requires_raw_forward_support() -> None:
     }
 
     score = score_posture_deviation(unchanged_numerators, profile)
-    # More responsive scoring makes the shared-denominator signal visible,
-    # but the raw numerators remain unchanged. The reliability guard must
-    # abstain instead of allowing that denominator to manufacture evidence.
-    assert score.deviation > 0.0
+    # The shared-denominator signal is visible but remains below the first
+    # intervention threshold, so it cannot accumulate exposure and should not
+    # freeze the rest of the frame.
+    assert 0.0 < score.deviation < PosturePolicy().watch_enter
     assert score.raw_deviation > 0.0
-    assert shared_scale_measurement_unstable(
+    assert not shared_scale_measurement_unstable(
         unchanged_numerators,
         profile,
         score=score,
@@ -1346,7 +1425,9 @@ if __name__ == "__main__":
     test_shared_shoulder_scale_drift_abstains_from_ratio_scoring()
     test_uniform_distance_scale_change_remains_measurable()
     test_raw_support_uses_measured_repeatability_not_percent_floor()
-    test_in_range_shoulder_drift_requires_raw_forward_support()
+    test_minor_shared_scale_drift_does_not_force_abstention()
+    test_independent_posture_evidence_bypasses_shared_scale_abstention()
+    test_shared_scale_drift_requires_raw_support_only_at_watch_level()
     test_runtime_noise_band_uses_single_observation_repeatability()
     test_marginal_anchor_range_is_valid_and_noise_bounded()
     test_near_identical_smoothed_anchors_form_a_narrow_range()

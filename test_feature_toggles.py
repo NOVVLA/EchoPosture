@@ -821,11 +821,53 @@ def test_unchanged_posture_shared_shoulder_width_drift_never_accumulates_exposur
         }
         for decision in decisions
     )
-    assert max(decision.posture_deviation for decision in decisions) == 0.0
+    measured = [
+        decision
+        for decision in decisions
+        if decision.reason != "shared_shoulder_scale_measurement_abstained"
+    ]
+    assert measured
+    assert max(decision.posture_deviation for decision in measured) < analyzer.posture_policy.watch_enter
     assert max(decision.exposure_seconds for decision in decisions) == 0.0
     print(
         "test_unchanged_posture_shared_shoulder_width_drift_never_accumulates_exposure OK"
     )
+
+
+def test_minor_shoulder_width_change_does_not_freeze_measurement():
+    analyzer = scientific_analyzer()
+    validate_scientific_profile(analyzer, T0)
+    minor_change = replace(
+        scientific_sample(T0 + timedelta(seconds=3), 1.0),
+        shoulder_width_px=208.0,
+    )
+    decision = analyzer.evaluate(minor_change)
+    assert decision.status == "GOOD", decision
+    assert decision.reason != "shared_shoulder_scale_measurement_abstained"
+    assert 0.0 <= decision.posture_deviation < analyzer.posture_policy.watch_enter
+    assert decision.exposure_seconds == 0.0
+    print("test_minor_shoulder_width_change_does_not_freeze_measurement OK")
+
+
+def test_projected_lean_is_not_vetoed_by_shoulder_scale_guard():
+    analyzer = scientific_analyzer()
+    validate_scientific_profile(analyzer, T0)
+    projected_lean = replace(
+        scientific_sample(T0 + timedelta(seconds=3), 1.0),
+        shoulder_width_px=220.0,
+        nose_point=(370.0, 170.0),
+    )
+
+    first = analyzer.evaluate(projected_lean)
+    assert first.status == "ADJUSTING", first
+    assert first.reason != "shared_shoulder_scale_measurement_abstained"
+    analyzer.evaluate(replace(projected_lean, timestamp=T0 + timedelta(seconds=4.0)))
+    confirmed = analyzer.evaluate(
+        replace(projected_lean, timestamp=T0 + timedelta(seconds=5.1))
+    )
+    assert confirmed.status == "WATCH", confirmed
+    assert confirmed.posture_deviation >= analyzer.posture_policy.severe_deviation
+    print("test_projected_lean_is_not_vetoed_by_shoulder_scale_guard OK")
 
 
 def test_gradual_shared_scale_drift_does_not_intervene_before_guard():
@@ -892,7 +934,13 @@ def test_gradual_shared_scale_drift_does_not_intervene_before_guard():
         }
         for decision in decisions
     )
-    assert max(decision.posture_deviation for decision in decisions) == 0.0
+    measured = [
+        decision
+        for decision in decisions
+        if decision.reason != "shared_shoulder_scale_measurement_abstained"
+    ]
+    assert measured
+    assert max(decision.posture_deviation for decision in measured) < analyzer.posture_policy.watch_enter
     assert max(decision.exposure_seconds for decision in decisions) == 0.0
 
     genuine = []
@@ -1227,6 +1275,8 @@ if __name__ == "__main__":
     test_extreme_frontal_shrug_is_watch_without_bypassing_exposure()
     test_fixed_posture_distance_scale_does_not_become_head_turn_watch()
     test_unchanged_posture_shared_shoulder_width_drift_never_accumulates_exposure()
+    test_minor_shoulder_width_change_does_not_freeze_measurement()
+    test_projected_lean_is_not_vetoed_by_shoulder_scale_guard()
     test_gradual_shared_scale_drift_does_not_intervene_before_guard()
     test_real_forward_change_with_stable_shoulder_scale_still_alerts()
     test_rigid_frame_roll_never_becomes_lateral_exposure()

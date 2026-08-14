@@ -920,7 +920,9 @@ def shared_scale_measurement_unstable(
     anchors can therefore move several ratios together while the person is
     physically unchanged. This check uses only the already-audited numeric
     calibration statistics and explicitly abstains; it never manufactures a
-    GOOD or BAD posture judgment.
+    GOOD or BAD posture judgment. Sub-WATCH forward noise cannot trigger an
+    intervention, so it must not freeze the whole frame. Independent lateral
+    evidence that already reaches WATCH also takes priority over this guard.
     """
 
     policy = policy or PosturePolicy()
@@ -960,7 +962,9 @@ def shared_scale_measurement_unstable(
     # stable and must remain measurable at the new distance.
     if score is None:
         score = score_posture_deviation(values, profile, policy)
-    if score.forward_deviation <= 0.0:
+    if score.forward_deviation < policy.watch_enter:
+        return False
+    if score.lateral_deviation >= policy.watch_enter:
         return False
     feature_deviation = {item.feature: item.deviation for item in score.features}
     head_feature = max(
