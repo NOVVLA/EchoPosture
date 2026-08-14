@@ -2058,3 +2058,54 @@
   cross-device threshold calibration was performed. Remote CI will be checked after push and reported separately.
 - Conclusion: both documented defects are fixed in source with deterministic regression coverage, while unvalidated
   P2 threshold changes remain deferred instead of being guessed.
+
+## 2026-08-14 - Shoulder-scale abstention decision priority follow-up
+
+- Source: user field report that leaning toward the display or changing projected shoulder width still repeatedly
+  froze posture processing in `OBSERVING`, despite the earlier measured-abstention improvement.
+- Git: feature commit `efc7161`, branch `codex/pr2-phase1-calibration-safety`, PR `#23`, tag `none`.
+- Root cause and reproduced evidence:
+  - `shared_scale_measurement_unstable()` treated every positive forward deviation without raw numerator support as a
+    global frame veto. It did not consider whether that deviation could reach the first intervention threshold, or
+    whether the same frame already contained independent intervention-level lateral posture evidence.
+  - A synthetic calibrated shoulder-width change from 200 px to 208 px produced forward deviation `0.045`, far below
+    `watch_enter=0.50`, but the guard returned true and the analyzer emitted
+    `shared_shoulder_scale_measurement_abstained` instead of continuing a normal measurement.
+  - A 220 px shoulder width combined with strong projected head lean produced overall deviation `1.0` and lateral
+    deviation `1.5`, but the same guard still returned true and suppressed the expected intervention flow.
+- Changes:
+  - Sub-WATCH forward evidence now bypasses the shared-scale abstention guard because it cannot open intervention or
+    accumulate exposure. No new numeric threshold was introduced; the existing audited `watch_enter` policy is used.
+  - Lateral evidence that already reaches WATCH takes priority over the shoulder-scale guard, allowing genuine
+    projected trunk/head posture evidence to continue through `ADJUSTING`, `WATCH`, and later exposure states.
+  - High forward scores caused only by an unsupported shoulder-width denominator still abstain, preserving the
+    original landmark-instability protection.
+  - Regression expectations now distinguish low-risk measurable drift from actionable denominator drift: low-risk
+    values may remain visible below WATCH but must never accumulate exposure.
+- Risk:
+  - This changes only guard priority after the posture score is already available. Calibration bands, raw-numerator
+    repeatability, intervention thresholds, exposure timing, identity, target ownership, and camera-roll policy are
+    unchanged.
+  - Independent lateral evidence can now continue when shoulder width is also suspect. Existing roll, quality,
+    target, and exposure guards remain earlier or downstream in the analyzer pipeline.
+- Verification from `C:\Temp\ep_repo`, using
+  `C:\Users\aaabb\Documents\ICC驼背项目\runtime\python311\python.exe`:
+  - Before the implementation change, the new regressions failed with `OBSERVING` and
+    `shared_shoulder_scale_measurement_abstained` for the 208 px case, proving the reported behavior.
+  - Passed all 12 required suites: `test_face_body_association.py`, `test_compatibility_face_detection.py`,
+    `test_vision_tracking.py`, `test_vision_worker.py`, `test_identity_verifier.py`,
+    `test_identity_model_adapters.py`, `test_standard_pose_backend.py`, `test_posture_science.py`,
+    `test_feature_toggles.py`, `test_debug_ui.py`, `test_vision_replay.py`, and `test_startup_guards.py`.
+  - The new runtime regression proves 208 px remains `GOOD`; the projected-lean regression proceeds from
+    `ADJUSTING` to `WATCH`; long synthetic shoulder-only drift never reaches WATCH/BAD or accumulates exposure; and
+    strong numerator-supported posture change still reaches BAD.
+  - `ruff check .`, targeted `py_compile`, and `git diff --check`: passed. `git diff --check` emitted only expected
+    LF-to-CRLF conversion warnings. `test_startup_guards.py` emitted the existing Qt font-directory warning and exited
+    with code 0.
+- Artifacts and privacy: no package, release, camera frame, recording, model, runtime, generated asset, or plan file is
+  included. Existing unrelated tracked and untracked files remain outside the delivery set.
+- Gaps: no live seated-person camera session, cross-device threshold study, packaged EXE rebuild/self-test, or release
+  operation was performed. Remote CI and PR mergeability are checked after push and reported separately.
+- Conclusion: the deterministic decision-priority defect is fixed without guessing new sensitivity constants. The
+  source change is ready for audit commit, push, and remote CI verification; the reported physical scenario remains a
+  manual live-camera confirmation gate.
