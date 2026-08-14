@@ -11,7 +11,9 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import numpy as np
 from PyQt5.QtWidgets import QApplication, QMessageBox
 
+import debug_ui as debug_ui_module
 from debug_ui import STATUS_TEXT, DebugWindow
+from vision_tracking import TargetUpdate
 from vision_backend import observation_from_sample
 from vision_modes import (
     VISION_MODE_COMPATIBILITY,
@@ -177,10 +179,38 @@ def test_debug_panel_exposes_three_vision_modes_and_explicit_availability() -> N
         assert window.vision_mode == VISION_MODE_STANDARD
         assert "标准模式" in window.vision_backend_label.text()
         assert "fake-standard" in window.vision_backend_label.text()
-        window.update_frame()
+        drawn_boxes = []
+        original_rectangle = debug_ui_module.cv2.rectangle
+        debug_ui_module.cv2.rectangle = (
+            lambda _frame, top_left, bottom_right, color, thickness, line_type:
+            drawn_boxes.append((top_left, bottom_right, color, thickness, line_type))
+        )
+        try:
+            window.update_frame()
+        finally:
+            debug_ui_module.cv2.rectangle = original_rectangle
         assert window.current_sample is not None
         assert window.current_sample.face_required_for_calibration is False
         assert "不处理人脸" in window.face_label.text()
+        assert len(drawn_boxes) == 1
+        assert drawn_boxes[0][0] == (204, 152)
+        assert drawn_boxes[0][1] == (436, 408)
+
+        window._show_target_metrics(
+            TargetUpdate(
+                state="TARGET_REACQUIRING",
+                target_track_id=1,
+                target_observation=None,
+                tracks=(),
+                person_count=1,
+                reason="target_missing_candidate_present",
+            )
+        )
+        assert "人体轨迹" in window.target_state_label.text()
+        assert "兼容模式" not in window.target_state_label.text()
+        assert "尚未接入人脸身份确认" in window._human_reason(
+            "reacquired_candidate_needs_identity_confirmation"
+        )
 
         window.vision_mode_combo.setCurrentIndex(
             window._vision_mode_index(VISION_MODE_PROFESSIONAL_BETA)

@@ -1811,3 +1811,48 @@
 - Conclusion: P0 Compatibility ownership safety and the EP-ID-009 KP-RPE loader repair are implemented with
   deterministic and real local model evidence. The untracked user-authored detail plan remains a read-only input and
   is not part of the staged delivery set.
+
+## 2026-08-14 - Standard mode person boxes and honest reacquisition status
+
+- Source: user report that Standard mode did not draw the person box emitted by the pose model, incorrectly displayed
+  a Compatibility-mode reacquisition message, and did not recover after the user's face became unrecognisable.
+- Git: commit `pending`, branch `codex/pr2-phase1-calibration-safety`, PR `#23`, tag `none`.
+- Root causes and scope:
+  - `StandardPoseBackend` already populated each `PersonObservation.bbox_xyxy`, but `DebugWindow._show_frame()` only
+    drew selected posture landmarks and never consumed the model's person boxes.
+  - The shared `TARGET_REACQUIRING` translation was hard-coded as a Compatibility-mode message even when the active
+    backend was Standard.
+  - Standard mode is deliberately pose-only: it sets `supports_face_bbox=False` and emits no face box, landmarks,
+    quality, or embedding. Debug UI constructs a `TargetManager` but no `IdentityVerifier` or
+    `FaceEmbeddingPipeline`. Once geometry association breaks and a new body track appears, the required identity
+    confirmation therefore cannot complete. This is an implementation gap, not evidence that face recognition ran
+    and failed.
+  - `debug_ui.py` now reads observations once per frame, passes the same immutable set to tracking and drawing, and
+    draws visible Standard-mode person boxes. The locked target uses a green `TARGET #id` frame; other people use
+    yellow `PERSON #id` frames. Invalid, non-finite, or out-of-frame boxes are rejected or clipped.
+  - `i18n.py` now describes `TARGET_REACQUIRING` generically as rematching the body track. Standard mode explicitly
+    says face identity confirmation is not connected when that confirmation is required.
+- Risk: the fix does not loosen target ownership or silently promote a new body track. Full Standard-mode face and
+  identity integration remains deferred to the dedicated identity plan; this change only makes the current limitation
+  visible and corrects the two requested UI defects.
+- Verification from `C:\Users\aaabb\Documents\ICC驼背项目`:
+  - `runtime\python311\python.exe test_debug_ui.py`: passed, including assertions that the Standard observation box
+    reaches `cv2.rectangle`, uses the expected coordinates, and no reacquisition text claims Compatibility mode.
+  - `runtime\python311\python.exe test_standard_pose_backend.py`: passed; confirms the pose-only observation contract.
+  - `runtime\python311\python.exe test_vision_tracking.py`: passed, including no-silent-promotion and identity-required
+    reacquisition guards.
+  - `runtime\python311\python.exe test_vision_worker.py`: passed, including identity enrollment and ambiguous-ownership
+    rejection tests.
+  - `ruff check .`, target-file `py_compile`, and `git diff --check`: passed. `git diff --check` emitted only the
+    repository's existing LF-to-CRLF conversion warnings.
+  - Real camera/model probe: the bundled runtime opened camera 0 and completed one single-frame plus one ten-frame
+    Standard YOLO run without saving images. All sampled frames returned zero person observations, so the probe proves
+    capture/inference execution but cannot prove a visible real-person box. The deterministic UI test is the current
+    drawing evidence.
+- Artifacts and privacy: no image, recording, face crop, embedding, model, package, or runtime dependency was staged or
+  saved by this work.
+- Gaps: a seated person must be present and detected for live visual box confirmation. Standard-mode head-region face
+  detection, FaceMesh ownership geometry, session identity enrollment/verification, reacquisition recovery, packaged
+  EXE integration, and remote CI remain follow-up gates.
+- Conclusion: the two requested Debug UI defects are fixed and locally regression-tested. The third report is
+  confirmed as a missing Standard-mode identity integration; it is investigated and disclosed, not implemented here.

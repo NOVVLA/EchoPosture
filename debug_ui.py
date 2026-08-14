@@ -15,7 +15,7 @@ import sys
 import time
 from dataclasses import replace
 from datetime import datetime
-from typing import Callable, Dict, Optional
+from typing import Callable, Dict, Optional, Sequence
 
 import cv2
 
@@ -77,7 +77,7 @@ from vision_test import (
     format_calibration_profile,
     format_value,
 )
-from vision_backend import CompatibilityBackend, PostureFeatureExtractor
+from vision_backend import CompatibilityBackend, PersonObservation, PostureFeatureExtractor
 from vision_tracking import TargetManager, TargetUpdate
 from vision_modes import (
     VISION_MODE_COMPATIBILITY,
@@ -926,10 +926,11 @@ class DebugWindow(QMainWindow):
 
         self._last_frame_error_detail = None
         self.current_raw_sample = raw_sample
+        observations = tuple(self.engine.observations_for_last_sample())
         target_update = None
         if self.target_manager is not None:
             target_update = self.target_manager.update(
-                self.engine.observations_for_last_sample(),
+                observations,
                 timestamp=raw_sample.timestamp,
             )
         sample = self._sample_for_target(raw_sample, target_update)
@@ -949,7 +950,7 @@ class DebugWindow(QMainWindow):
             )
         else:
             decision = self.analyzer.evaluate(sample)
-        self._show_frame(frame, raw_sample)
+        self._show_frame(frame, raw_sample, observations, target_update)
         self._show_metrics(sample, decision)
         if target_update is not None:
             self._show_target_metrics(target_update)
@@ -1543,8 +1544,16 @@ class DebugWindow(QMainWindow):
             return _t("calib_missing_unknown")
         return "；".join(self._calibration_reason_text(part) for part in parts)
 
-    def _show_frame(self, frame, sample: VisionSample) -> None:
+    def _show_frame(
+        self,
+        frame,
+        sample: VisionSample,
+        observations: Sequence[PersonObservation] = (),
+        target_update: Optional[TargetUpdate] = None,
+    ) -> None:
         annotated = frame.copy()
+        if self.vision_mode == VISION_MODE_STANDARD:
+            self._draw_person_boxes(annotated, observations, target_update)
         self._draw_landmarks(annotated, sample)
 
         rgb = cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB)
@@ -1563,6 +1572,63 @@ class DebugWindow(QMainWindow):
             Qt.SmoothTransformation,
         )
         self.video_label.setPixmap(pixmap)
+
+    @staticmethod
+    def _draw_person_boxes(
+        frame,
+        observations: Sequence[PersonObservation],
+        target_update: Optional[TargetUpdate],
+    ) -> None:
+        height, width = frame.shape[:2]
+        visible_tracks = (
+            tuple(
+                (track.track_id, track.observation)
+                for track in target_update.tracks
+                if track.missed_frames == 0
+            )
+            if target_update is not None
+            else ()
+        )
+        boxes = visible_tracks or tuple(
+            (index, observation)
+            for index, observation in enumerate(observations, start=1)
+        )
+        for track_id, observation in boxes:
+            values = observation.bbox_xyxy
+            if len(values) != 4 or not all(math.isfinite(value) for value in values):
+                continue
+            left = max(0, min(width - 1, int(round(values[0]))))
+            top = max(0, min(height - 1, int(round(values[1]))))
+            right = max(0, min(width - 1, int(round(values[2]))))
+            bottom = max(0, min(height - 1, int(round(values[3]))))
+            if right <= left or bottom <= top:
+                continue
+            is_target = (
+                target_update is not None
+                and target_update.target_track_id == track_id
+            )
+            color = (80, 220, 80) if is_target else (0, 200, 255)
+            thickness = 3 if is_target else 2
+            cv2.rectangle(
+                frame,
+                (left, top),
+                (right, bottom),
+                color,
+                thickness,
+                cv2.LINE_AA,
+            )
+            label = f"TARGET #{track_id}" if is_target else f"PERSON #{track_id}"
+            label_y = max(18, top - 7)
+            cv2.putText(
+                frame,
+                label,
+                (left, label_y),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.52,
+                color,
+                2,
+                cv2.LINE_AA,
+            )
 
     def _draw_landmarks(self, frame, sample: VisionSample) -> None:
         eye_color = (0, 220, 255)
@@ -1834,6 +1900,12 @@ class DebugWindow(QMainWindow):
     def _human_reason(self, reason: str) -> str:
         if not reason:
             return "--"
+
+        if (
+            self.vision_mode == VISION_MODE_STANDARD
+            and reason == "reacquired_candidate_needs_identity_confirmation"
+        ):
+            return _t("reason.standard_identity_confirmation_unavailable")
 
         # 用 reason key 直接替换为本地化文本（_t 自动按当前语言返回）
         translated = reason
