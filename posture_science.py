@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import asdict, dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Mapping, Optional, Sequence
 
 
@@ -57,6 +57,14 @@ def _elapsed_seconds(current, previous) -> float:
     if hasattr(delta, "total_seconds"):
         return float(delta.total_seconds())
     return float(delta)
+
+
+def _advance_seconds(timestamp, seconds: float):
+    """Add a duration to a datetime or monotonic-float timestamp."""
+
+    if isinstance(timestamp, datetime):
+        return timestamp + timedelta(seconds=seconds)
+    return timestamp + seconds
 
 
 def _finite_float(value) -> Optional[float]:
@@ -298,7 +306,13 @@ class CalibrationAccumulator:
             elapsed = max(0.0, _elapsed_seconds(timestamp, self._phase_started_at))
             if elapsed >= self.plan.transition_seconds:
                 self._phase = RELAXED
-                self._phase_started_at = timestamp
+                # Anchor the relaxed window at the logical transition end, not
+                # at the observing frame, so frame spacing cannot extend the
+                # relaxed collection window past its intended deadline.
+                self._phase_started_at = _advance_seconds(
+                    self._phase_started_at,
+                    self.plan.transition_seconds,
+                )
         return self._phase
 
     def begin_transition(self, timestamp=None) -> None:
@@ -1241,7 +1255,10 @@ def measurement_values(sample) -> dict[str, float]:
             # makes a rigid camera/person roll rotation invariant while still
             # retaining a real shoulder-versus-pelvis imbalance.
             values["shoulder_asymmetry_deg"] = (
-                shoulder_angle - hip_line_angle
+                # Wrap the difference so a rigid roll near the +/-90 edge is
+                # reported as the small true relative angle instead of a
+                # phantom ~180-degree imbalance.
+                _relative_axis_angle_deg(shoulder_angle, hip_line_angle)
                 if hip_line_angle is not None
                 else shoulder_angle
             )
@@ -1264,7 +1281,9 @@ def measurement_values(sample) -> dict[str, float]:
         if projected_trunk is not None:
             trunk_lean = projected_trunk
         values["trunk_lean_deg"] = (
-            trunk_lean - hip_line_angle
+            # Same wraparound guard as shoulder asymmetry: near-vertical axes
+            # must not flip into a phantom ~180-degree lean after subtraction.
+            _relative_axis_angle_deg(trunk_lean, hip_line_angle)
             if hip_line_angle is not None
             else trunk_lean
         )

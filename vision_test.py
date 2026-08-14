@@ -1139,6 +1139,12 @@ class HighPrecisionPostureAnalyzer(PostureAnalyzer):
         if last is not None:
             gap = max(0.0, (timestamp - last).total_seconds())
             if gap > self.posture_policy.maximum_observation_gap_seconds:
+                if deviation <= exit_threshold:
+                    # Posture already returned to normal during the gap: clear
+                    # the stale candidate instead of mislabeling this frame as
+                    # an unconfirmed adjustment.
+                    self._reset_posture_change_candidate()
+                    return False
                 self._posture_change_candidate_started_at = timestamp
                 self._posture_change_candidate_last_at = timestamp
                 self._posture_change_confirmed = False

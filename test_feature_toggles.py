@@ -135,6 +135,23 @@ def validate_scientific_profile(
     assert validated.exposure_seconds == 0.0
 
 
+def test_posture_change_candidate_clears_after_normal_gap_recovery() -> None:
+    analyzer = scientific_analyzer()
+    start = T0 + timedelta(seconds=30.0)
+    # A sustained excursion opens a posture-change confirmation candidate.
+    assert analyzer._posture_change_needs_confirmation(start, 0.9) is True
+    # The next observation arrives after an observation gap with the posture
+    # already back inside the exit threshold: the stale candidate must be
+    # cleared instead of mislabeling this frame as a fresh unconfirmed
+    # adjustment.
+    after_gap = start + timedelta(
+        seconds=analyzer.posture_policy.maximum_observation_gap_seconds + 1.0
+    )
+    assert analyzer._posture_change_needs_confirmation(after_gap, 0.0) is False
+    assert analyzer._posture_change_candidate_started_at is None
+    print("test_posture_change_candidate_clears_after_normal_gap_recovery OK")
+
+
 def test_defaults_all_enabled():
     analyzer = HighPrecisionPostureAnalyzer()
     assert analyzer.precision_enabled
@@ -1283,4 +1300,5 @@ if __name__ == "__main__":
     test_real_pelvis_relative_lateral_change_still_alerts()
     test_low_track_activity_add_on_is_visible_but_bounded()
     test_low_measurement_quality_resets_low_track_activity()
+    test_posture_change_candidate_clears_after_normal_gap_recovery()
     print("ALL TESTS PASSED")

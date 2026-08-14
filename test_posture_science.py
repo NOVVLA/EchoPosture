@@ -19,6 +19,7 @@ from posture_science import (
     aggregate_sample_quality,
     calibration_measurement_values,
     calibration_rejection_reason,
+    measurement_values,
     normalized_feature_deviation,
     projected_axis_values,
     runtime_noise_floor,
@@ -1397,6 +1398,41 @@ def test_projected_axes_separate_head_tilt_from_trunk_translation() -> None:
     print("test_projected_axes_separate_head_tilt_from_trunk_translation OK")
 
 
+def test_relative_axis_difference_wraps_near_vertical_edges() -> None:
+    rolled = SimpleNamespace(
+        shoulder_width_px=200.0,
+        interpupillary_px=60.0,
+        signed_shoulder_diff_px=3.0,
+        torso_height_px=180.0,
+        trunk_lean_deg=85.0,
+        left_shoulder_point=(0.0, 0.0),
+        right_shoulder_point=(10.0, 114.3),
+        left_hip_point=(0.0, 0.0),
+        right_hip_point=(10.0, -114.3),
+    )
+    values = measurement_values(rolled)
+    # A rigid scene roll near the +/-90 edge puts the shoulder line at ~+85
+    # and the hip line at ~-85 degrees. The true relative imbalance is ~10
+    # degrees; raw subtraction would report a phantom ~170-degree deviation.
+    assert abs(values["shoulder_asymmetry_deg"]) <= 15.0, values
+    assert abs(values["trunk_lean_deg"]) <= 15.0, values
+    print("test_relative_axis_difference_wraps_near_vertical_edges OK")
+
+
+def test_relaxed_window_anchors_at_logical_transition_end() -> None:
+    accumulator = CalibrationAccumulator(CalibrationPlan(min_samples_per_stage=5))
+    for index in range(5):
+        accumulator.add(index * 0.3, anchor_values(0.0))
+    accumulator.begin_transition(5.0)
+    # Sparse frame spacing observes the first relaxed-eligible frame 2.5 s
+    # after the transition opened; the relaxed window must still be anchored
+    # at the logical transition end (t=6.0), not at the observing frame.
+    assert accumulator.stage_at(7.5) == RELAXED
+    assert math.isclose(accumulator.relaxed_elapsed(7.5), 1.5)
+    assert accumulator.relaxed_target_reached(11.0) is True
+    print("test_relaxed_window_anchors_at_logical_transition_end OK")
+
+
 if __name__ == "__main__":
     test_statistics_sem_mdc_cv()
     test_two_anchor_segmentation_and_noise_floor()
@@ -1441,4 +1477,6 @@ if __name__ == "__main__":
     test_pronounced_lone_trunk_lean_is_lateral_evidence()
     test_shared_projected_axis_does_not_corroborate_itself()
     test_projected_axes_separate_head_tilt_from_trunk_translation()
+    test_relative_axis_difference_wraps_near_vertical_edges()
+    test_relaxed_window_anchors_at_logical_transition_end()
     print("ALL TESTS PASSED")
