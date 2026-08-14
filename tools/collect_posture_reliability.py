@@ -26,6 +26,7 @@ if str(PROJECT_ROOT) not in sys.path:
 from posture_science import (  # noqa: E402
     CALIBRATION_FEATURES,
     FeatureStatistics,
+    LATERAL_FEATURES,
     PosturePolicy,
     measurement_values,
     runtime_movement_margin,
@@ -101,11 +102,15 @@ def collect(frames: int, camera_id: int, width: int, height: int) -> dict:
             policy,
             name,
         )
-        movement_margin = runtime_movement_margin(name, policy)
-        acceptance_margin = single_observation_noise + movement_margin
+        movement_margin = runtime_movement_margin(
+            name,
+            policy,
+            anchor_span=delta,
+        )
+        acceptance_margin = max(single_observation_noise, movement_margin)
         response_scale = (
             policy.runtime_angle_response_scale_deg
-            if name in {"shoulder_asymmetry_deg", "trunk_lean_deg"}
+            if name in LATERAL_FEATURES
             else policy.runtime_ratio_response_scale
         )
         watch_change = acceptance_margin + policy.watch_enter * response_scale
@@ -162,8 +167,13 @@ def collect(frames: int, camera_id: int, width: int, height: int) -> dict:
             "runtime_angle_noise_floor_deg": policy.runtime_angle_noise_floor_deg,
             "runtime_ratio_movement_margin": policy.runtime_ratio_movement_margin,
             "runtime_angle_movement_margin_deg": policy.runtime_angle_movement_margin_deg,
+            "runtime_ratio_anchor_band_fraction": policy.runtime_ratio_anchor_band_fraction,
+            "runtime_angle_anchor_band_fraction": policy.runtime_angle_anchor_band_fraction,
             "runtime_ratio_response_scale": policy.runtime_ratio_response_scale,
             "runtime_angle_response_scale_deg": policy.runtime_angle_response_scale_deg,
+            "single_channel_evidence_discount": policy.single_channel_evidence_discount,
+            "watch_exposure_min_weight": policy.watch_exposure_min_weight,
+            "head_turn_observe_delta": policy.head_turn_observe_delta,
             "note": "Product interaction parameters, not physiological standards.",
         },
         "unverified_items": [

@@ -476,6 +476,11 @@ class PosturePolicy:
     # must provide meaningful support. This is a product reliability rule,
     # not a physiological standard.
     minimum_group_support_deviation: float = 0.25
+    # A lone channel is weaker evidence, not zero evidence. Discount it until
+    # an independent channel supports the same physical group. This keeps
+    # single-landmark noise below a corroborated event without creating a
+    # hard cliff that hides a sustained, pronounced one-channel excursion.
+    single_channel_evidence_discount: float = 0.75
     # A pronounced torso lean can be real side-reclining even when both
     # shoulders remain parallel. Permit that one independent angle only after
     # it is already clearly beyond the personal band; the normal two-feature
@@ -502,7 +507,7 @@ class PosturePolicy:
     # moderate change therefore pauses scoring, while an extreme, stable,
     # high-quality direction change becomes its own auditable exposure
     # signal. These normalized FaceMesh deltas are product policy values.
-    head_turn_observe_delta: float = 0.25
+    head_turn_observe_delta: float = 0.35
     head_turn_watch_delta: float = 0.45
     head_turn_full_delta: float = 0.70
     # Low track activity is an exposure-context signal, not posture geometry.
@@ -526,19 +531,28 @@ class PosturePolicy:
     runtime_min_signal_to_noise_ratio: float = 2.0
     # Conservative feature-unit floors absorb boundary jitter. They are
     # adjustable product reliability parameters, not physiological thresholds.
-    runtime_ratio_noise_floor: float = 0.025
-    runtime_angle_noise_floor_deg: float = 2.5
+    runtime_ratio_noise_floor: float = 0.010
+    runtime_angle_noise_floor_deg: float = 1.0
     # Ordinary breathing, reaching, and seat adjustment are not measurement
-    # noise. Keep a separate product deadband beyond the audited noise band so
-    # small natural movement does not immediately change the user-visible
-    # state. These margins are interaction policy, not physiological limits.
-    runtime_ratio_movement_margin: float = 0.05
-    runtime_angle_movement_margin_deg: float = 3.0
+    # noise. Bound the personal-span movement allowance with these absolute
+    # caps, then compare it with the audited noise band so small natural
+    # movement does not immediately change the user-visible state. These
+    # margins are interaction policy, not physiological limits.
+    runtime_ratio_movement_margin: float = 0.075
+    runtime_angle_movement_margin_deg: float = 5.0
+    # Natural movement allowance follows the user's accepted normal span.
+    # The absolute movement margins above remain caps for unusually wide
+    # anchor ranges; they are no longer added on top of the noise band.
+    runtime_ratio_anchor_band_fraction: float = 0.75
+    runtime_angle_anchor_band_fraction: float = 0.75
     # Outside the accepted range and its noise band, these independent scales
     # map raw feature units to a continuous product score. They deliberately
     # do not depend on how far apart the user's two normal anchors happen to be.
-    runtime_ratio_response_scale: float = 0.10
-    runtime_angle_response_scale_deg: float = 10.0
+    runtime_ratio_response_scale: float = 0.07
+    runtime_angle_response_scale_deg: float = 6.0
+    # WATCH is lower-confidence evidence, so it integrates more slowly than
+    # ALERT. A non-zero floor removes the permanent 0.69/0.70 exposure cliff.
+    watch_exposure_min_weight: float = 0.25
     # Every normalized posture feature except trunk lean depends on the
     # detected shoulder span. If that shared denominator leaves both
     # calibrated anchor ranges by more than its repeatability allowance, the
@@ -552,6 +566,8 @@ class PosturePolicy:
             raise ValueError("watch hysteresis must satisfy exit < enter")
         if not (0.0 <= self.alert_exit < self.alert_enter <= 1.0):
             raise ValueError("alert hysteresis must satisfy exit < enter")
+        if self.watch_enter >= self.alert_enter:
+            raise ValueError("watch_enter must be less than alert_enter")
         if self.recovery_half_life_seconds <= 0:
             raise ValueError("recovery_half_life_seconds must be positive")
         if self.maximum_observation_gap_seconds <= 0:
@@ -570,6 +586,10 @@ class PosturePolicy:
             raise ValueError("runtime_ratio_movement_margin cannot be negative")
         if self.runtime_angle_movement_margin_deg < 0.0:
             raise ValueError("runtime_angle_movement_margin_deg cannot be negative")
+        if not (0.0 <= self.runtime_ratio_anchor_band_fraction <= 1.0):
+            raise ValueError("runtime_ratio_anchor_band_fraction must be in [0, 1]")
+        if not (0.0 <= self.runtime_angle_anchor_band_fraction <= 1.0):
+            raise ValueError("runtime_angle_anchor_band_fraction must be in [0, 1]")
         if self.runtime_ratio_response_scale <= 0.0:
             raise ValueError("runtime_ratio_response_scale must be positive")
         if self.runtime_angle_response_scale_deg <= 0.0:
@@ -582,6 +602,8 @@ class PosturePolicy:
             raise ValueError("camera_roll_agreement_deg cannot be negative")
         if not (0.0 <= self.minimum_group_support_deviation <= 1.0):
             raise ValueError("minimum_group_support_deviation must be in [0, 1]")
+        if not (0.0 <= self.single_channel_evidence_discount <= 1.0):
+            raise ValueError("single_channel_evidence_discount must be in [0, 1]")
         if not (0.0 <= self.lone_trunk_lean_deviation <= 1.0):
             raise ValueError("lone_trunk_lean_deviation must be in [0, 1]")
         if not (0.0 <= self.lone_projected_head_trunk_deviation <= 1.0):
@@ -604,6 +626,8 @@ class PosturePolicy:
             raise ValueError("static_hold_max_bonus must be in [0, 1]")
         if not (0.0 <= self.static_hold_min_deviation <= 1.0):
             raise ValueError("static_hold_min_deviation must be in [0, 1]")
+        if not (0.0 <= self.watch_exposure_min_weight <= 1.0):
+            raise ValueError("watch_exposure_min_weight must be in [0, 1]")
 
 
 @dataclass(frozen=True)
@@ -648,10 +672,10 @@ def normalized_feature_deviation(
     ``preferred`` and ``relaxed`` are both user-accepted calibration postures.
     Their ordered means define a personal normal range; neither anchor defines
     a bad direction or a score denominator. Deviation begins only after the
-    observation leaves either boundary by more than the runtime noise band
-    plus the explicit natural-movement margin, then uses an independent
-    per-feature product response scale. Similar or identical anchors are
-    therefore valid and cannot amplify frame jitter.
+    observation leaves either boundary by more than the larger of the runtime
+    noise band and the capped personal-span movement allowance, then uses an
+    independent per-feature product response scale. Similar or identical
+    anchors are therefore valid and cannot amplify frame jitter.
     """
 
     policy = policy or PosturePolicy()
@@ -665,7 +689,11 @@ def normalized_feature_deviation(
     upper = max(preferred.mean, relaxed.mean)
     current_value = float(current)
     outside_distance = max(lower - current_value, current_value - upper, 0.0)
-    acceptance_margin = noise_floor + runtime_movement_margin(feature, policy)
+    anchor_span = upper - lower
+    acceptance_margin = max(
+        noise_floor,
+        runtime_movement_margin(feature, policy, anchor_span=anchor_span),
+    )
     # Treat the inclusive noise boundary as accepted. The epsilon prevents
     # binary floating-point representation from turning an exact policy
     # boundary into a microscopic non-zero deviation.
@@ -709,15 +737,22 @@ def runtime_noise_floor(
 def runtime_movement_margin(
     feature: Optional[str],
     policy: Optional[PosturePolicy] = None,
+    anchor_span: Optional[float] = None,
 ) -> float:
-    """Return the product deadband for natural movement beyond measurement noise."""
+    """Return a personal-range movement allowance, capped in feature units."""
 
     policy = policy or PosturePolicy()
     if feature in LATERAL_FEATURES:
-        return policy.runtime_angle_movement_margin_deg
-    if feature in FORWARD_FEATURES:
-        return policy.runtime_ratio_movement_margin
-    return 0.0
+        maximum = policy.runtime_angle_movement_margin_deg
+        fraction = policy.runtime_angle_anchor_band_fraction
+    elif feature in FORWARD_FEATURES:
+        maximum = policy.runtime_ratio_movement_margin
+        fraction = policy.runtime_ratio_anchor_band_fraction
+    else:
+        return 0.0
+    if anchor_span is None:
+        return maximum
+    return min(maximum, max(0.0, float(anchor_span)) * fraction)
 
 
 def _runtime_noise_floor_for_feature(
@@ -749,17 +784,17 @@ def _group_score(
     values: Sequence[float],
     corroboration: float,
     minimum_support: float,
+    single_channel_discount: float,
 ) -> tuple[float, bool]:
     ordered = sorted((max(0.0, value) for value in values), reverse=True)
     if not ordered:
         return 0.0, False
     primary = ordered[0]
     support = ordered[1] if len(ordered) > 1 else 0.0
-    # A lone feature is diagnostic evidence only. Requiring support from a
-    # second feature prevents one noisy ratio/angle from opening WATCH or
-    # accumulating static exposure for an otherwise stable posture.
+    # A lone feature is weaker evidence. Discounting preserves the signal for
+    # sustained exposure while independent support still receives full weight.
     if support < minimum_support:
-        return 0.0, False
+        return min(1.0, primary * single_channel_discount), False
     return min(1.0, primary + min(corroboration, support * corroboration)), True
 
 
@@ -802,6 +837,7 @@ def score_posture_deviation(
         [head_shoulder, torso_shoulder],
         policy.within_group_corroboration,
         policy.minimum_group_support_deviation,
+        policy.single_channel_evidence_discount,
     )
     # A frontal-view shoulder shrug or strong neck protraction can move only
     # one head/shoulder or torso/shoulder channel. Keep ordinary single-channel
@@ -823,6 +859,7 @@ def score_posture_deviation(
         [projected_axis, shoulder_asymmetry],
         policy.within_group_corroboration,
         policy.minimum_group_support_deviation,
+        policy.single_channel_evidence_discount,
     )
     # A genuine side-recline can rotate the torso around the pelvis while the
     # shoulder line remains almost parallel. Keep the two-feature rule for
@@ -955,10 +992,10 @@ def shared_scale_measurement_unstable(
     ):
         # The same rule applies to a lone, extreme shoulder-to-hip change.
         return torso_supported is not True
-    # Corroborated head + torso evidence must be supported by both raw
-    # numerators. Missing support is uncertainty, not permission to let the
-    # shared denominator corroborate itself.
-    return head_supported is not True or torso_supported is not True
+    # Abstain only when neither raw numerator supports the ratio change. One
+    # real head or torso numerator excursion remains measurable even if the
+    # other ratio also moved because the shoulder denominator changed.
+    return head_supported is not True and torso_supported is not True
 
 
 @dataclass(frozen=True)
@@ -1042,7 +1079,7 @@ class StaticHoldAccumulator:
 
 
 class ExposureAccumulator:
-    """Integrate equivalent high-deviation seconds using real timestamps."""
+    """Integrate severity-weighted posture exposure using real timestamps."""
 
     def __init__(self, policy: Optional[PosturePolicy] = None) -> None:
         self.policy = policy or PosturePolicy()
@@ -1117,6 +1154,17 @@ class ExposureAccumulator:
             )
         if self.alert_active:
             integrated = elapsed * deviation
+            self.exposure_seconds += integrated
+        elif self.watch_active and deviation >= self.policy.watch_enter:
+            watch_span = self.policy.alert_enter - self.policy.watch_enter
+            progress = min(
+                1.0,
+                max(0.0, (deviation - self.policy.watch_enter) / watch_span),
+            )
+            weight = self.policy.watch_exposure_min_weight + (
+                1.0 - self.policy.watch_exposure_min_weight
+            ) * progress
+            integrated = elapsed * deviation * weight
             self.exposure_seconds += integrated
         elif elapsed > 0.0 and self.exposure_seconds > 0.0:
             before = self.exposure_seconds

@@ -1,5 +1,51 @@
 # DEVELOPMENT_LOG（Development Log，开发日志）
 
+## 2026-08-14 (Asia/Shanghai) - Repair intervention trigger sensitivity and timing
+
+- Source: urgent user request and `docs/plans/EchoPosture_intervention_trigger_defects.md`; the report's synthetic
+  dual-anchor scenario A reproduced as exactly `0.0` deviation before the fix, with ratio/angle acceptance margins
+  of `0.075` and `5.5 degrees` masking meaningful changes.
+- Git: commit `pending`, branch `codex/pr2-phase1-calibration-safety`, tag `none`; delivery remains the existing PR
+  branch and includes the branch's one previously local commit.
+- Root causes: runtime acceptance added a fixed movement deadband to measurement noise, unsupported single channels
+  were discarded, the shared shoulder denominator guard could suppress changes backed by real raw geometry, severe
+  excursions bypassed the existing posture-change confirmation, and exposure accumulated only after ALERT. This
+  created both false negatives and a hard WATCH/ALERT cliff.
+- Scope and fix: `posture_science.py` now accepts the larger of runtime noise and a personal-span movement allowance
+  capped by the absolute policy limit; ratio/angle defaults are `0.010`/`1.0 degree` noise floors, `0.075`/`5.0
+  degree` movement caps, and `0.07`/`6.0 degree` response scales. Lone supported channels contribute discounted
+  evidence, while shoulder-width-only denominator drift still abstains unless a raw head or torso numerator supports
+  the change. `vision_test.py` requires the two-second confirmation for every new body-posture excursion, integrates
+  WATCH at a lower bounded weight, can reach BAD from sustained WATCH exposure, and labels nonzero sub-WATCH results
+  as minor posture variation. The reliability collection tool reports the same production formula and policy fields.
+- Policy safety: `PosturePolicy` now rejects `watch_enter >= alert_enter`, preventing a zero or negative WATCH
+  interpolation span. Moderate head-direction change remains scoreable below `0.35`; changes at or above that
+  observation threshold still abstain according to the head-turn policy.
+- Superseded audit claims: this entry replaces the 2026-08-13 statements that a severe eligible posture becomes
+  WATCH on its first qualifying frame and that WATCH never accumulates exposure. All new body-posture episodes now
+  require the existing two-second confirmation, and sustained WATCH evidence accumulates more slowly than ALERT.
+- Risk: intervention sensitivity changes within the calibrated scientific analyzer, but target identity, presence,
+  movement, quality, camera/reference, cooldown, and tray intervention gates remain in place. The new thresholds are
+  adjustable product interaction and measurement-reliability policy, not anatomical, physiological, or medical
+  standards.
+- Verification from the repository root:
+  - `runtime\python311\python.exe test_posture_science.py`, `test_feature_toggles.py`, and
+    `test_vision_worker.py` passed. Regressions cover report scenarios A/B/C/D, accepted anchors, sustained sub-ALERT
+    WATCH reaching BAD, brief severe actions remaining behind confirmation, shoulder-width-only drift abstention,
+    real forward/lateral alerts, and the head-turn boundary.
+  - `runtime\python311\python.exe test_vision_tracking.py`, `test_vision_replay.py`, `test_startup_guards.py`, and
+    `test_tray_flyout.py` passed.
+  - Bundled-Python `py_compile` passed for all six changed Python files; global `ruff check` passed for those files;
+    `git diff --check` passed with only Git's existing LF-to-CRLF working-copy warnings.
+- Artifacts and privacy: tests use synthetic numeric geometry. No frame, image, video, face crop, identity data,
+  reliability report, model, package, or release artifact was created or staged. The user-owned defect report and all
+  unrelated untracked workspace files remain unstaged.
+- Gaps: physical-camera comfort, false-positive/false-negative rates, cross-camera reliability, external validity,
+  and medical validation remain unverified and unclaimed. Live-camera behavior still requires user retest after
+  delivery.
+- Conclusion: the reported trigger defects are fixed at the deterministic policy and timing layers, guarded by core
+  and cross-module regressions, and ready to commit and push on the current branch.
+
 ## 2026-08-14 - Recover camera frames and Standard mode after native-frame failures
 
 - Source: user feedback screenshot and live Debug UI report: startup raised `Reference mode is unavailable if

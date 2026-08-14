@@ -915,12 +915,20 @@ def test_production_worker_dual_anchor_requires_normal_range_before_exposure() -
     analyzer.evaluate(first_tilted_sample)
     engine.sample = replace(tilted, timestamp=tilted_at + timedelta(seconds=0.4))
     second_tilted_sample, _ = worker._read_sample(engine)
-    tilted_decision = analyzer.evaluate(second_tilted_sample)
+    second_tilted_decision = analyzer.evaluate(second_tilted_sample)
+    engine.sample = replace(tilted, timestamp=tilted_at + timedelta(seconds=1.4))
+    third_tilted_sample, _ = worker._read_sample(engine)
+    third_tilted_decision = analyzer.evaluate(third_tilted_sample)
+    engine.sample = replace(tilted, timestamp=tilted_at + timedelta(seconds=2.2))
+    confirmed_tilted_sample, _ = worker._read_sample(engine)
+    tilted_decision = analyzer.evaluate(confirmed_tilted_sample)
 
     assert second_tilted_sample.nose_point == (370.0, 170.0)
     assert second_tilted_sample.shoulder_center == (320.0, 242.0)
     assert second_tilted_sample.hip_center == (320.0, 390.0)
     assert second_tilted_sample.activity_state == "STATIC"
+    assert second_tilted_decision.status == "ADJUSTING", second_tilted_decision
+    assert third_tilted_decision.status == "ADJUSTING", third_tilted_decision
     assert tilted_decision.status == "WATCH", tilted_decision
     assert tilted_decision.posture_deviation >= analyzer.posture_policy.severe_deviation
     print("test_production_worker_dual_anchor_requires_normal_range_before_exposure OK")

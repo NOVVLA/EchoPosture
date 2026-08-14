@@ -890,19 +890,12 @@ class HighPrecisionPostureAnalyzer(PostureAnalyzer):
                 environment_state="CALIBRATION_VALIDATION",
             )
 
-        # Debounce ordinary corroborated posture changes. A severe, quality-
-        # valid excursion is immediately visible as WATCH, but starts exposure
-        # at this observation and still cannot bypass the 12/30-second dose,
-        # tray confirmation, or cooldown gates.
+        # Debounce every new posture change, including a severe score. The
+        # more responsive personal-range scoring must not turn one reach or
+        # landmark jump into a one-frame WATCH state.
         change_evidence = score.deviation
         was_posture_change_confirmed = self._posture_change_confirmed
-        severe_change = change_evidence >= self.posture_policy.severe_deviation
-        if severe_change and not self._posture_change_confirmed:
-            self._posture_change_candidate_started_at = sample.timestamp
-            self._posture_change_candidate_last_at = sample.timestamp
-            self._posture_change_confirmed = True
-            self.exposure_accumulator.pause(sample.timestamp)
-        elif self._posture_change_needs_confirmation(sample.timestamp, change_evidence):
+        if self._posture_change_needs_confirmation(sample.timestamp, change_evidence):
             self.static_hold_accumulator.update(
                 sample.timestamp,
                 posture_deviation=0.0,
@@ -930,7 +923,7 @@ class HighPrecisionPostureAnalyzer(PostureAnalyzer):
             # activity. Field names remain stable for compatibility.
             self.static_hold_accumulator.reset()
 
-        if score.raw_deviation > 0.0 and not score.corroborated:
+        if score.deviation <= 0.0 and score.raw_deviation > 0.0 and not score.corroborated:
             if score.raw_deviation < self.posture_policy.watch_enter:
                 self._reset_posture_change_candidate()
                 static_hold = self.static_hold_accumulator.update(
@@ -1007,14 +1000,18 @@ class HighPrecisionPostureAnalyzer(PostureAnalyzer):
             status = "CRITICAL"
         elif (
             exposure.exposure_seconds >= self.posture_policy.alert_exposure_seconds
-            and exposure.alert_active
+            and exposure.watch_active
         ):
             status = "BAD"
         elif exposure.watch_active:
             status = "WATCH"
         else:
             status = "GOOD"
-            reasons = ["within_personal_posture_range"]
+            reasons = [
+                "minor_posture_variation"
+                if score.deviation > 0.0
+                else "within_personal_posture_range"
+            ]
 
         return PostureDecision(
             status,
