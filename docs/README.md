@@ -13,7 +13,7 @@ is the end-user landing page; the documents here are for contributors and mainta
 - [Posture science ADR](decisions/ADR-0002-posture-detection-scientific-improvements.md): accepted two-anchor calibration,
   measurement-noise gates, exposure policy, and explicit validity limits.
 - [Vision evidence](vision-evidence/README.md): consent-controlled recording metadata, deletion records, metrics, and license audit.
-- [Standard mode](STANDARD_MODE.md): Debug UI-only YOLO26n-pose setup, pose-only privacy boundary, local-weight gate, and fallback behavior.
+- [Standard mode](STANDARD_MODE.md): Debug UI-only YOLO26n-pose multi-person setup, shared local face/identity boundary, local-weight gate, and fallback behavior.
 - [Contributing](../CONTRIBUTING.md): development setup, change workflow, test selection, and pull request expectations.
 
 ## Debug UI Test Panel

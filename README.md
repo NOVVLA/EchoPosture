@@ -2,7 +2,7 @@
 
 > **许可证：GNU AGPLv3（`AGPL-3.0-only`）。** 项目已接受该严格许可证及其相应源码义务；第三方模型权重和训练数据仍需独立审计。完整决策见 [ADR-0003](docs/decisions/ADR-0003-agpl-license-acceptance.md)。
 
-当前标准模式是 [Debug UI 姿态-only 原型](docs/STANDARD_MODE.md)：使用本地 YOLO26n-pose 权重，明确不处理人脸、身份模板或 embedding；正式 EXE 尚未接入。
+当前标准模式是 [Debug UI 多人姿态原型](docs/STANDARD_MODE.md)：使用本地 YOLO26n-pose 权重输出每个人的人体框和 COCO 17 点骨架，并与兼容模式共用本地人脸增强、目标管理和 CVLFace 身份复核链路；正式托盘/EXE 仍固定使用兼容模式，标准后端及其可选依赖尚未进入 GA 发行包。
 
 EchoPosture is a Windows desktop posture-change and static-exposure reminder. It uses a webcam with MediaPipe/OpenCV-based numeric posture signals, runs quietly from the system tray, performs personal two-anchor calibration, and can apply gradual screen dimming or blur after sustained static exposure.
 

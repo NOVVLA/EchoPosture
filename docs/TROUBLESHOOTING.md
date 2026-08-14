@@ -232,11 +232,21 @@ provides a real `ultralytics-yolo26n-pose-cpu` standard backend. It requires the
 `models/pose/yolo26n-pose.pt` file (or `ECHOPOSTURE_STANDARD_MODEL`) and the optional dependencies in
 `requirements-standard.txt`; it never downloads a model. If initialization fails, the panel restores the previous
 backend and shows the actual failure reason rather than silently relabeling Compatibility mode. Professional mode
-remains unavailable. The production tray/EXE still uses `mediapipe-compatibility` only.
+remains unavailable. The production tray/EXE still uses Compatibility posture extraction, wrapped by the shared face
+boundary; it does not register the Standard pose backend.
 
-This Standard-mode stage is pose-only. It does not crop faces, run FaceMesh or an identity model, create templates,
-or process embeddings. The COCO nose/eye/ear points are treated only as body-pose landmarks. Identity-related work is
-deferred to a separate plan and must not be inferred from Standard mode being available.
+`StandardPoseBackend` itself emits pose-only observations: its COCO nose/eye/ear points remain body-pose landmarks and
+are not treated as identity data. The live Debug UI then wraps every registered pose backend in the shared
+`FaceEnhancedBackend`. That boundary runs BlazeFace, associates faces to body observations, extracts five target-face
+points with FaceMesh, and can submit transient face crops to the local CVLFace verifier when its isolated runtime is
+available. Geometry is used only for face/body ownership and track association; only a CVLFace result may confirm or
+reject identity. Frames, crops, session templates, and embeddings are not written to disk by this path.
+
+Switching modes cancels an active calibration, clears the target and identity session, and requires a new two-anchor
+calibration. If Standard initialization fails, the panel closes the failed backend, restores the previous live backend
+(normally Compatibility), and displays the actual dependency, weight, model-contract, DLL, or camera error. A working
+source Debug UI still does not prove that Standard mode or the isolated P5 identity runtime is present in the GA
+package.
 
 To prove the panel wiring without a camera or desktop display, run:
 

@@ -1,5 +1,46 @@
 # DEVELOPMENT_LOG（Development Log，开发日志）
 
+## 2026-08-14 (Asia/Shanghai) - Synchronize vision-mode documentation with current source
+
+- Source: user request to correct documentation after the recent Standard-mode, shared face-observation, CVLFace,
+  candidate-session, ownership, abstention, and intervention fixes. The canonical docs still described Standard as a
+  pose-only path with no face or identity processing and the tracked upgrade plan still marked resumed identity work
+  as paused.
+- Git: commit `pending`, branch `codex/pr2-phase1-calibration-safety`, PR `#23`, tag `none`.
+- Scope:
+  - `README.md`, `README_EXE.md`, `docs/README.md`, and `docs/STANDARD_MODE.md` now distinguish the packaged
+    Compatibility-only posture path from the source Debug UI Standard prototype and describe Standard's per-person
+    boxes, COCO 17-keypoint observations, local-weight gate, shared face/identity boundary, and evidence limits.
+  - `docs/ARCHITECTURE.md`, `docs/TROUBLESHOOTING.md`, and ADR-0001 now describe
+    `FaceEnhancedBackend(CompatibilityBackend(...))`, `StandardPoseBackend`, mode-independent BlazeFace/FaceMesh
+    enrichment, CVLFace-only identity decisions, candidate-scoped stale-result guards, actual switch/reset behavior,
+    and the current Professional unavailable entry.
+  - The tracked vision/identity plan now records the implemented ViT KP-RPE and optional IR101 adapters, resumed P5
+    status, Standard shared face enhancement, and the fact that current mode switching clears target, identity, and
+    scientific calibration state instead of performing the previously planned quick recalibration/template reuse.
+- Risk: documentation could overstate source capability as packaged availability or deterministic tests as live
+  accuracy. Every updated entry keeps Standard out of the current GA package, separates the raw pose-only backend from
+  the Debug UI face decorator, and leaves real-camera, identity-threshold, privacy, packaging, and redistribution
+  evidence explicitly open. No runtime behavior, dependency, model, or release artifact changed.
+- Verification from `C:\Users\aaabb\Documents\ICC驼背项目`:
+  - `runtime\python311\python.exe test_standard_pose_backend.py`: passed all pose-only raw-backend, multi-person,
+    shared-face, no-download, DLL-preload, and model-contract checks.
+  - `runtime\python311\python.exe test_debug_ui.py`: passed all tests, including three-mode availability and fallback;
+    emitted the existing bundled Qt missing-font-directory and offscreen plugin warnings.
+  - `runtime\python311\python.exe test_identity_model_adapters.py`: passed.
+  - `runtime\python311\python.exe test_vision_tracking.py`: passed, including multi-person continuation, no silent
+    promotion, candidate identity, association-budget, and worker target-selection cases; the bounded 10x10 matrix
+    measured P50 `5.82 ms` and P95 `7.32 ms` in this run.
+  - Local Markdown link check passed for all eight updated documentation files before this log entry.
+  - `git diff --check`: passed; Git emitted only existing working-copy LF-to-CRLF conversion warnings.
+- Artifacts and privacy: no package, release, model, runtime, frame, face crop, embedding, recording, or generated
+  document was created or staged. Existing unrelated untracked workspace files remain untouched.
+- Gaps: no live camera, consented multi-person scene, deliberate leave/re-enter identity trial, cross-device test,
+  packaged EXE rebuild/self-test, model redistribution audit, remote CI, or medical/external validation was performed.
+- Conclusion: the canonical mode documentation and tracked implementation plan now match the current source contracts
+  and preserve the remaining evidence boundaries; ready for reviewed documentation commit and push on the current
+  branch.
+
 ## 2026-08-14 (Asia/Shanghai) - Repair intervention trigger sensitivity and timing
 
 - Source: urgent user request and `docs/plans/EchoPosture_intervention_trigger_defects.md`; the report's synthetic

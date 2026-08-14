@@ -81,9 +81,11 @@ modules alongside the executable.
 - user-facing camera and screen-capture warnings.
 
 The GUI thread must not perform continuous camera capture or model inference. The current production backend is
-`CompatibilityBackend` (MediaPipe); `vision_modes.py` defines the compatibility/standard/professional-beta contract
-and Debug UI exposes all three with explicit availability reasons. A selectable mode is not active unless its backend
-factory actually initializes.
+`FaceEnhancedBackend(CompatibilityBackend(...))` with MediaPipe posture extraction. `vision_modes.py` defines the
+compatibility/standard/professional-beta contract, and Debug UI exposes all three with explicit availability reasons.
+The source Debug UI registers the local CPU `StandardPoseBackend`; Professional mode remains a capability reservation.
+A selectable mode is not active unless its backend factory actually initializes. The packaged tray/EXE does not yet
+register Standard mode.
 
 ### Vision worker thread
 
@@ -126,6 +128,26 @@ bystander's posture just because it was returned in the same frame. Because Medi
 with multiple faces cannot prove which face belongs to its one body; the adapter marks that observation ambiguous
 instead of combining the first face with the pose. Even with one face, the adapter requires a face anchor inside the
 expanded body envelope; a missing or out-of-envelope anchor is marked ambiguous rather than guessed.
+
+`standard_pose_backend.py` implements the source-only CPU `StandardPoseBackend`. It loads an explicitly local
+YOLO26n-pose model, validates the `pose` task and COCO `[17, 3]` contract, and emits a separate body box, 17-keypoint
+skeleton, confidence, and posture feature set for every detected person. It never downloads a model. A multi-person
+scene remains a collection of independent observations; the backend does not collapse their posture values into one
+global sample.
+
+`face_observation_enhancer.py` provides the mode-independent `FaceEnhancedBackend` decorator used by the Debug UI for
+both Compatibility and Standard and by the production tray around Compatibility. It uses BlazeFace to detect faces,
+globally associates one clear face to each body, runs FaceMesh on the associated crop for five alignment points, and
+publishes the same enriched `PersonObservation` shape before `TargetManager` sees it. Existing complete Compatibility
+face output is preserved instead of processed twice. Ambiguous or unconfirmed ownership remains explicit and cannot
+silently attach a bystander's face to a body.
+
+Identity decisions are downstream of this observation boundary. The local CVLFace adapter runs asynchronously through
+an isolated interpreter when available; geometry may establish ownership and track continuity but cannot confirm or
+reject identity. Candidate-scoped sessions reject stale or wrong-track results. Face crops, embeddings, and session
+templates remain transient and are not persisted by the runtime path. Identity-runtime availability is independent of
+pose-backend availability: Standard posture can initialize while CVLFace is unavailable, and the GA package does not
+yet claim to include either Standard dependencies or the isolated P5 runtime.
 
 `vision_tracking.py` owns `TargetManager`. It associates observations using stable detection IDs when available,
 predicted motion, center distance, and bounding-box overlap; maintains track lifetimes; locks the calibration target;
