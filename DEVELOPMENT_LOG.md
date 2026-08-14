@@ -2022,7 +2022,7 @@
 
 - Source: `docs/plans/EchoPosture_abstention_oversensitivity_plan.md`, based on field reports of occasional false
   `TARGET_AMBIGUOUS` frames and frequent shoulder-scale `OBSERVING` abstentions.
-- Git: commit `pending`, branch `codex/pr2-phase1-calibration-safety`, PR `#23`, tag `none`.
+- Git: commit `c6144d1`, branch `codex/pr2-phase1-calibration-safety`, PR `#23`, tag `none`.
 - Face/body ownership changes:
   - Association results now distinguish `clear`, `unconfirmed`, and `ambiguous`. A single face/body pair whose
     cross-model ear or nose anchors disagree is treated as an unconfirmed measurement, not immediate multi-person
