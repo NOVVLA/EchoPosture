@@ -131,6 +131,26 @@ class CalibrationResult:
     failure_reason: Optional[str] = None
 
 
+def _calibration_failure_fields(failure_reason: Optional[str]) -> tuple[str, ...]:
+    """Convert a worker-internal failure reason into translatable field tokens.
+
+    Failure reasons may embed debugging detail (``profile_apply_failed:<exc>``)
+    or be compound (``"preferred_samples,relaxed_samples"`` from
+    CalibrationAccumulator.finalize). The tray translates each missing field
+    through the ``calib_missing_{field}`` i18n key, so only stable field tokens
+    are allowed through: strip embedded detail and split compound values.
+    """
+
+    if not failure_reason:
+        return ()
+    fields: list[str] = []
+    for token in failure_reason.split(","):
+        head = token.split(":", 1)[0].strip()
+        if head and head not in fields:
+            fields.append(head)
+    return tuple(fields)
+
+
 class VisionWorker:
     """拥有 VisionEngine 与 analyzer 的后台线程。
 
@@ -424,8 +444,8 @@ class VisionWorker:
                         CalibrationResult(
                             request_id,
                             False,
-                            (str(exc),),
-                            failure_reason=str(exc),
+                            ("transition_invalid",),
+                            failure_reason=f"transition_invalid:{exc}",
                         )
                     )
                     continue
@@ -585,8 +605,7 @@ class VisionWorker:
             fields = set(self._calibration_missing_fields)
             if accumulator is not None:
                 fields.update(accumulator.failure_fields())
-            if failure_reason:
-                fields.add(failure_reason)
+            fields.update(_calibration_failure_fields(failure_reason))
             missing_fields = tuple(sorted(fields or {"complete_sample"}))
             self._identity_enrollment_samples = []
             self._identity_enrollment_active = False

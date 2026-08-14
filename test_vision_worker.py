@@ -36,6 +36,7 @@ from vision_worker import (
     MODE_MONITORING,
     MODE_PAUSED,
     VisionWorker,
+    _calibration_failure_fields,
     average_calibration_sample,
 )
 
@@ -795,6 +796,74 @@ def test_dual_anchor_worker_rejects_multi_person_and_short_stage():
     print("test_dual_anchor_worker_rejects_multi_person_and_short_stage OK")
 
 
+def test_calibration_failure_fields_split_compound_reasons() -> None:
+    assert _calibration_failure_fields(None) == ()
+    assert _calibration_failure_fields("") == ()
+    # Compound finalize error splits into per-stage tokens.
+    assert _calibration_failure_fields("preferred_samples,relaxed_samples") == (
+        "preferred_samples",
+        "relaxed_samples",
+    )
+    # Embedded exception detail is stripped to the stable head token.
+    assert _calibration_failure_fields(
+        "profile_apply_failed:RuntimeError('boom')"
+    ) == ("profile_apply_failed",)
+    assert _calibration_failure_fields("target_lock_failed") == ("target_lock_failed",)
+    assert _calibration_failure_fields(
+        "transition_invalid:cannot begin transition from preferred"
+    ) == ("transition_invalid",)
+    print("test_calibration_failure_fields_split_compound_reasons OK")
+
+
+def test_calibration_failure_fields_are_translatable() -> None:
+    import i18n
+
+    # Every token the worker can emit through failure reasons must resolve to
+    # a real zh + en translation, so the tray never shows a raw i18n key.
+    worker_reasons = (
+        "calibration_not_started",
+        "transition_invalid:cannot begin transition from preferred",
+        "target_lock_failed",
+        "profile_apply_failed:ValueError('bad profile')",
+        "preferred_samples,relaxed_samples",
+        "no_common_posture_features",
+    )
+    tokens = {field for reason in worker_reasons for field in _calibration_failure_fields(reason)}
+    # Plus the accumulator-level and completeness tokens that also flow into
+    # CalibrationResult.missing_fields.
+    tokens.update(
+        {
+            "preferred_samples",
+            "relaxed_samples",
+            "single_person",
+            "complete_sample",
+        }
+    )
+    for field in sorted(tokens):
+        key = f"calib_missing_{field}"
+        assert key in i18n._TEXTS["zh"], f"missing zh translation: {key}"
+        assert key in i18n._TEXTS["en"], f"missing en translation: {key}"
+
+    # End-to-end: a short-stage finalize failure must only emit translatable
+    # fields through the real worker path.
+    engine = FakeEngine()
+    analyzer = HighPrecisionPostureAnalyzer(auto_calibrate=False, require_dual_anchor=True)
+    worker = VisionWorker(engine_factory=lambda: engine, analyzer=analyzer)
+    start = datetime(2026, 1, 1, 12, 0, 0)
+    for index in range(3):
+        worker._collect_calibration_sample(
+            make_dual_sample(start + timedelta(seconds=index * 0.2))
+        )
+    worker._finalize_dual_anchor_calibration(60.0, 1)
+    result = worker.take_calibration_result()
+    assert result is not None and not result.ok
+    assert result.missing_fields
+    for field in result.missing_fields:
+        assert f"calib_missing_{field}" in i18n._TEXTS["zh"], field
+        assert f"calib_missing_{field}" in i18n._TEXTS["en"], field
+    print("test_calibration_failure_fields_are_translatable OK")
+
+
 def test_dual_anchor_worker_skips_quality_dropout_without_resetting_stage() -> None:
     engine = FakeEngine()
     analyzer = HighPrecisionPostureAnalyzer(auto_calibrate=False, require_dual_anchor=True)
@@ -1108,6 +1177,8 @@ if __name__ == "__main__":
     test_dual_anchor_worker_calibration_and_stage_counts()
     test_dual_anchor_worker_accepts_identical_anchor_postures()
     test_dual_anchor_worker_rejects_multi_person_and_short_stage()
+    test_calibration_failure_fields_split_compound_reasons()
+    test_calibration_failure_fields_are_translatable()
     test_dual_anchor_worker_skips_quality_dropout_without_resetting_stage()
     test_dual_anchor_worker_accepts_borderline_pose_quality_for_anchor_repeatability()
     test_production_worker_dual_anchor_requires_normal_range_before_exposure()

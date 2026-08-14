@@ -101,9 +101,13 @@ from vision_worker import (
 def _calibration_failure_details(result: CalibrationResult) -> str:
     if not result.missing_fields:
         return _t("calib_missing_unknown")
-    return ", ".join(
-        _t(f"calib_missing_{field}") for field in result.missing_fields
-    )
+    details = []
+    for field in result.missing_fields:
+        key = f"calib_missing_{field}"
+        text = _t(key)
+        # _t() 返回 key 本身即为查表失败：回退到通用文案，避免原始键名漏给用户
+        details.append(text if text != key else _t("calib_missing_unknown"))
+    return ", ".join(details)
 
 
 class _EngineProxy:
