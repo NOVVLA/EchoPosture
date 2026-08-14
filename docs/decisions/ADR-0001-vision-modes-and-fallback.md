@@ -15,11 +15,14 @@ EchoPosture 需要在不破坏当前 MediaPipe 兼容路径的前提下增加标
 
 | 模式 | 姿态后端 | 人脸处理 | 目标设备 | 状态 |
 | --- | --- | --- | --- | --- |
-| 兼容模式 | 当前 MediaPipe BlazePose Lite | 当前 Face Mesh；事件时可做身份复核 | CPU、无可用 GPU | 现有可运行基线 |
+| 兼容模式 | 当前 MediaPipe BlazePose Lite（单骨架） | BlazeFace 多脸检测与脸身归属；仅对目标脸运行 FaceMesh；事件时可做身份复核 | CPU、无可用 GPU | 现有可运行基线；错配时安全暂停，不提供真正的多人骨架连续追踪 |
 | 标准模式 | YOLO26n-pose；首版使用 Ultralytics PyTorch CPU | 本轮不运行任何人脸、身份模板或 embedding 功能 | 普通 Windows CPU | Debug UI 姿态后端已实现；真实设备与正式 EXE 尚未接入 |
 | 专业模式 Beta | YOLO26l/x-pose；优先 TensorRT FP16 | 高质量目标对齐；可选双模型/视频聚合 | RTX 级 GPU | P2 后进入许可和性能验证 |
 
-当前实现边界：正式托盘路径仍使用“兼容模式”（MediaPipe BlazePose Lite + FaceMesh）。Debug UI 已接入
+当前实现边界：正式托盘路径仍使用“兼容模式”（MediaPipe BlazePose Lite + BlazeFace + 目标 FaceMesh）。
+BlazeFace 提供真实人脸框、检测分数和多脸计数；脸与单副 BlazePose 骨架必须通过肩部尺度、位置和跨模型
+锚点校验，归属不明确时进入安全暂停。兼容模式仍不能为每位入镜者分别输出骨架：若 BlazePose 改为追踪
+闯入者，它只能拒绝把该观测当成原目标，不能继续追踪已被挤出单骨架结果的用户。Debug UI 已接入
 标准姿态后端，专业模式仍仅保留受能力门控的入口；没有对应后端或标准模式依赖/本地权重时，界面会显示
 真实原因并恢复兼容后端，不会把兼容后端冒充标准或专业模式。本轮标准模式明确不加载或调用任何人脸验证、
 身份模板或 embedding 链路。项目已接受 AGPLv3；真实设备性能和权重再分发证据仍须分别关闭。
@@ -51,7 +54,7 @@ EchoPosture 需要在不破坏当前 MediaPipe 兼容路径的前提下增加标
 ## 不在本 ADR 范围内
 
 - 本轮只在 Debug UI 集成 YOLO26n-pose 标准姿态后端；不接入正式 EXE；
-- 不集成 AdaFace、CAFace、FaceMesh 裁剪、身份模板或任何 embedding；
+- 标准模式本轮不集成 AdaFace、CAFace、FaceMesh 裁剪、身份模板或任何 embedding；兼容模式的人脸归属安全链路不受此限制；
 - 不实现 TensorRT 专业后端，也不把本地权重纳入发行包；
 - 不提交真实人脸录像、原图、裁剪、模板或向量；
 - 不把候选模型的仓库许可证解释为其权重或训练数据许可证。

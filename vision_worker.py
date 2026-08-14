@@ -664,6 +664,15 @@ class VisionWorker:
             self._last_identity_state = target_update.state
             self._last_identity_track_id = target_update.target_track_id
             return
+        if observation.association_ambiguous:
+            # A face that cannot be attributed to the target body must never
+            # enter either enrollment or verification, including embeddings
+            # supplied directly by a backend.
+            if self._identity_enrollment_active:
+                self._reset_identity_enrollment()
+            self._last_identity_state = target_update.state
+            self._last_identity_track_id = target_update.target_track_id
+            return
         if observation.face_embedding is not None:
             self._submit_identity_observation(
                 FaceObservation(

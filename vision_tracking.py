@@ -39,8 +39,10 @@ class TargetManagerConfig:
     face_continuity_max_gap_seconds: float = 0.5
     face_reacquire_max_gap_seconds: float = 4.0
     max_face_center_distance_ratio: float = 1.5
+    max_ambiguous_face_center_distance_ratio: float = 0.45
     min_face_area_ratio: float = 0.35
     min_face_continuity_quality: float = 0.50
+    max_face_body_scale_change: float = 0.35
     moving_speed_ratio_per_second: float = 0.20
     # Activity classification is intentionally slower than association
     # prediction so detector jitter does not become user movement.
@@ -143,6 +145,7 @@ class TargetManager:
         self._multi_confirmed = False
         self._identity_pending = False
         self._identity_mismatch = False
+        self._target_face_body_scale_ratio: Optional[float] = None
 
     def reset(self) -> None:
         self._tracks.clear()
@@ -155,6 +158,7 @@ class TargetManager:
         self._multi_confirmed = False
         self._identity_pending = False
         self._identity_mismatch = False
+        self._target_face_body_scale_ratio = None
 
     def lock_target(self, track_id: Optional[int] = None) -> bool:
         """Lock only an existing, unambiguous track; never create one implicitly."""
@@ -182,6 +186,7 @@ class TargetManager:
         self._multi_confirmed = False
         self._identity_pending = False
         self._identity_mismatch = False
+        self._target_face_body_scale_ratio = self._face_body_scale_ratio(track.observation)
         return True
 
     def lock_calibration_target(self) -> bool:
@@ -224,8 +229,18 @@ class TargetManager:
             # one visible user into TARGET_OCCLUDED/TARGET_AMBIGUOUS.
             if (
                 track.track_id == self.target_track_id
+                and not self._target_scale_matches(observation)
+            ):
+                observation = replace(observation, association_ambiguous=True)
+            if (
+                track.track_id == self.target_track_id
                 and observation.association_ambiguous
-                and self._face_continuity_score(track, observation) is not None
+                and self._face_continuity_score(
+                    track,
+                    observation,
+                    require_body_scale_consistency=True,
+                )
+                is not None
             ):
                 observation = replace(observation, association_ambiguous=False)
             self._update_track(track, observation, match_score)
@@ -241,6 +256,16 @@ class TargetManager:
         target = self._tracks.get(self.target_track_id) if self.target_track_id else None
         target_observation = target.observation if target and target.missed_frames == 0 else None
         active_tracks = [track for track in self._tracks.values() if track.missed_frames == 0]
+        scene_person_count = max(
+            len(active_tracks),
+            max(
+                (
+                    observation.scene_person_count or 0
+                    for observation in observations
+                ),
+                default=0,
+            ),
+        )
         if target is not None and target_observation is None:
             candidate = self._face_reacquire_candidate(target, active_tracks)
             if candidate is not None:
@@ -264,6 +289,7 @@ class TargetManager:
                 target_observation = target.observation
                 active_tracks = [track for track in self._tracks.values() if track.missed_frames == 0]
         other_tracks = [track for track in active_tracks if track.track_id != self.target_track_id]
+        other_person_present = bool(other_tracks) or scene_person_count > 1
         target_ambiguous = self._track_is_ambiguous(self.target_track_id, candidate_scores)
 
         if self.target_track_id is None:
@@ -298,7 +324,7 @@ class TargetManager:
                 self._identity_pending = True
                 self.state = IDENTITY_UNCERTAIN
                 reason = "reacquired_candidate_needs_identity_confirmation"
-            elif other_tracks:
+            elif other_person_present:
                 self._multi_last_present_at = timestamp
                 if self._multi_started_at is None:
                     self._multi_started_at = timestamp
@@ -356,7 +382,7 @@ class TargetManager:
             target_track_id=self.target_track_id,
             target_observation=target_observation,
             tracks=tuple(self._freeze_track(track) for track in self._tracks.values()),
-            person_count=len(active_tracks),
+            person_count=scene_person_count,
             reason=reason,
             target_motion=target_motion,
             activity_state=activity_state,
@@ -464,7 +490,11 @@ class TargetManager:
         return best_matches, candidate_scores
 
     def _match_score(self, track: _Track, observation: PersonObservation) -> Optional[float]:
-        face_score = self._face_continuity_score(track, observation)
+        face_score = self._face_continuity_score(
+            track,
+            observation,
+            require_body_scale_consistency=observation.association_ambiguous,
+        )
         if observation.association_ambiguous:
             if track.track_id == self.target_track_id:
                 # Compatibility mode can mark a clear, continuous face as
@@ -504,6 +534,7 @@ class TargetManager:
         observation: PersonObservation,
         *,
         max_gap_seconds: Optional[float] = None,
+        require_body_scale_consistency: bool = False,
     ) -> Optional[float]:
         previous = track.observation.face_bbox_xyxy
         current = observation.face_bbox_xyxy
@@ -524,6 +555,19 @@ class TargetManager:
             else max_gap_seconds
         ):
             return None
+        if require_body_scale_consistency:
+            previous_scale = (
+                self._target_face_body_scale_ratio
+                if track.track_id == self.target_track_id
+                else self._face_body_scale_ratio(track.observation)
+            )
+            current_scale = self._face_body_scale_ratio(observation)
+            if previous_scale is None or current_scale is None or previous_scale <= 0:
+                return None
+            relative_scale = current_scale / previous_scale
+            scale_change = self.config.max_face_body_scale_change
+            if not 1.0 - scale_change <= relative_scale <= 1.0 + scale_change:
+                return None
 
         previous_diagonal = math.hypot(
             previous[2] - previous[0],
@@ -545,16 +589,44 @@ class TargetManager:
             current_area,
             1.0,
         )
+        max_center_distance = (
+            self.config.max_ambiguous_face_center_distance_ratio
+            if require_body_scale_consistency
+            else self.config.max_face_center_distance_ratio
+        )
         if (
-            center_distance > self.config.max_face_center_distance_ratio
+            center_distance > max_center_distance
             or area_ratio < self.config.min_face_area_ratio
         ):
             return None
         distance_score = max(
             0.0,
-            1.0 - center_distance / self.config.max_face_center_distance_ratio,
+            1.0 - center_distance / max_center_distance,
         )
         return distance_score * 0.75 + _iou(previous, current) * 0.20 + area_ratio * 0.05
+
+    def _target_scale_matches(self, observation: PersonObservation) -> bool:
+        reference = self._target_face_body_scale_ratio
+        current = self._face_body_scale_ratio(observation)
+        if reference is None or current is None or reference <= 0:
+            return True
+        relative_scale = current / reference
+        scale_change = self.config.max_face_body_scale_change
+        return 1.0 - scale_change <= relative_scale <= 1.0 + scale_change
+
+    @staticmethod
+    def _face_body_scale_ratio(observation: PersonObservation) -> Optional[float]:
+        if observation.face_body_scale_ratio is not None:
+            return observation.face_body_scale_ratio
+        features = observation.posture_features
+        if (
+            features is None
+            or features.interpupillary_px is None
+            or features.shoulder_width_px is None
+            or features.shoulder_width_px <= 0
+        ):
+            return None
+        return features.interpupillary_px / features.shoulder_width_px
 
     def _face_reacquire_candidate(
         self,

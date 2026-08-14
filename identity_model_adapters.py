@@ -10,8 +10,11 @@ or persists camera images.
 from __future__ import annotations
 
 import gc
+import importlib
 import os
+import subprocess
 import sys
+import warnings
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional, Sequence, Tuple
@@ -131,6 +134,8 @@ class CvlFaceAutoModelAdapter:
             # CVLFace's wrapper opens model.yaml with a relative path.
             # Keep the process-wide cwd change bounded to custom-code loading.
             os.chdir(local_path)
+            if "KP-RPE" in self.spec.architecture:
+                self._preload_kprpe(local_path)
             self._model = AutoModel.from_pretrained(
                 model_path_text,
                 local_files_only=True,
@@ -141,6 +146,36 @@ class CvlFaceAutoModelAdapter:
             sys.path.remove(model_path_text)
         self._model.to(self.device)
         self._model.eval()
+
+    @staticmethod
+    def _preload_kprpe(local_path: Path) -> None:
+        """Import RPE without letting upstream mutate the user environment."""
+
+        original_check_call = subprocess.check_call
+
+        def reject_upstream_install(command: Any, *_args: Any, **_kwargs: Any) -> None:
+            raise subprocess.CalledProcessError(1, command)
+
+        try:
+            # The upstream package runs ``setup.py install --user`` during an
+            # import when its optional accelerator is absent. Inference has a
+            # pure-Python fallback, so product startup must not attempt that
+            # process-wide installation.
+            subprocess.check_call = reject_upstream_install
+            with warnings.catch_warnings():
+                warnings.filterwarnings(
+                    "ignore",
+                    message=r"(?s).*Failed to install `rpe_ops`.*",
+                    category=UserWarning,
+                )
+                importlib.import_module("models.vit_kprpe.RPE")
+        except SystemExit as exc:
+            raise ModelDependencyError(
+                "CVLFace KP-RPE attempted to install a local extension and requested a restart."
+            ) from exc
+        finally:
+            subprocess.check_call = original_check_call
+            os.chdir(local_path)
 
     def embed_tensor(
         self,

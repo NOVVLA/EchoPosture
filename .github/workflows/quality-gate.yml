@@ -30,17 +30,21 @@ jobs:
           pip install -r requirements-dev.txt
 
       - name: Run Ruff static checks
-        run: ruff check .github/ai-flows/branch_preflight.py .github/ai-flows/common_ai_client.py .github/ai-flows/release_audit.py debug_ui.py gpu_blur_overlay.py onboarding_toast.py overlay_test.py posture_console.py posture_science.py test_ai_client_timeout.py test_ai_maintainer_manual_flows.py test_ai_pr_review_guards.py test_debug_ui.py test_feature_toggles.py test_posture_science.py test_startup_guards.py test_tray_flyout.py test_vision_replay.py test_vision_tracking.py test_vision_worker.py tray_app.py tray_flyout.py vision_test.py vision_worker.py
+        run: ruff check .github/ai-flows/branch_preflight.py .github/ai-flows/common_ai_client.py .github/ai-flows/release_audit.py debug_ui.py face_body_association.py gpu_blur_overlay.py i18n.py identity_model_adapters.py mediapipe_resources.py onboarding_toast.py overlay_test.py posture_console.py posture_science.py test_ai_client_timeout.py test_ai_maintainer_manual_flows.py test_ai_pr_review_guards.py test_compatibility_face_detection.py test_debug_ui.py test_face_body_association.py test_feature_toggles.py test_identity_model_adapters.py test_posture_science.py test_startup_guards.py test_tray_flyout.py test_vision_replay.py test_vision_tracking.py test_vision_worker.py tray_app.py tray_flyout.py vision_backend.py vision_test.py vision_tracking.py vision_worker.py
 
       - name: Compile Python source
         shell: pwsh
         run: |
           $files = @(
             "debug_ui.py",
+            "face_body_association.py",
             ".github/ai-flows/branch_preflight.py",
             ".github/ai-flows/common_ai_client.py",
             ".github/ai-flows/release_audit.py",
             "gpu_blur_overlay.py",
+            "i18n.py",
+            "identity_model_adapters.py",
+            "mediapipe_resources.py",
             "onboarding_toast.py",
             "overlay_test.py",
             "posture_console.py",
@@ -48,8 +52,11 @@ jobs:
             "test_ai_client_timeout.py",
             "test_ai_maintainer_manual_flows.py",
             "test_ai_pr_review_guards.py",
+            "test_compatibility_face_detection.py",
             "test_debug_ui.py",
+            "test_face_body_association.py",
             "test_feature_toggles.py",
+            "test_identity_model_adapters.py",
             "test_posture_science.py",
             "test_startup_guards.py",
             "test_tray_flyout.py",
@@ -58,7 +65,9 @@ jobs:
             "test_vision_worker.py",
             "tray_app.py",
             "tray_flyout.py",
+            "vision_backend.py",
             "vision_test.py",
+            "vision_tracking.py",
             "vision_worker.py"
           )
           python -m py_compile @files
@@ -71,6 +80,9 @@ jobs:
           python test_feature_toggles.py
           python test_vision_worker.py
           python test_vision_tracking.py
+          python test_face_body_association.py
+          python test_compatibility_face_detection.py
+          python test_identity_model_adapters.py
           python test_debug_ui.py
           python test_vision_replay.py
           python test_ai_client_timeout.py

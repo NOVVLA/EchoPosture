@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import numpy as np
 
+import identity_model_adapters
 from identity_model_adapters import (
     CvlFaceAutoModelAdapter,
     IR101_WEBFACE4M,
@@ -100,6 +102,35 @@ def test_rgb_adapter_requires_real_five_points_only_for_kprpe() -> None:
     ir101.embed_tensor = fake_embed_tensor
     assert ir101.embed_rgb_image(image, None) == (1.0, 0.0)
     assert captured["keypoints"] is None
+
+
+def test_kprpe_preload_restores_model_root_after_upstream_chdir() -> None:
+    model_root = Path.cwd()
+    original_import_module = identity_model_adapters.importlib.import_module
+    original_check_call = identity_model_adapters.subprocess.check_call
+    install_blocked = False
+
+    def fake_import_module(name: str):
+        nonlocal install_blocked
+        assert name == "models.vit_kprpe.RPE"
+        os.chdir(model_root.parent)
+        try:
+            identity_model_adapters.subprocess.check_call(["setup.py", "install", "--user"])
+        except identity_model_adapters.subprocess.CalledProcessError:
+            install_blocked = True
+        else:
+            raise AssertionError("KP-RPE preload must block upstream user-site installation")
+        return object()
+
+    identity_model_adapters.importlib.import_module = fake_import_module
+    try:
+        CvlFaceAutoModelAdapter._preload_kprpe(model_root)
+        assert Path.cwd() == model_root
+        assert install_blocked
+        assert identity_model_adapters.subprocess.check_call is original_check_call
+    finally:
+        identity_model_adapters.importlib.import_module = original_import_module
+        os.chdir(model_root)
 
 
 if __name__ == "__main__":

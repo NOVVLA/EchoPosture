@@ -228,7 +228,11 @@ def make_production_dual_sample(
 
 
 class ImmediateEmbeddingPipeline:
+    def __init__(self) -> None:
+        self.request_count = 0
+
     def request(self, _frame, observation):
+        self.request_count += 1
         future = Future()
         future.set_result(
             FaceObservation(
@@ -313,6 +317,57 @@ def test_worker_enrolls_embedding_already_supplied_by_backend() -> None:
     finally:
         verifier.close()
     print("test_worker_enrolls_embedding_already_supplied_by_backend OK")
+
+
+def test_worker_rejects_ambiguous_face_before_identity_embedding() -> None:
+    engine = FakeEngine()
+    analyzer = HighPrecisionPostureAnalyzer(auto_calibrate=False, require_dual_anchor=True)
+    verifier = IdentityVerifier(
+        PrecomputedEmbedder(),
+        IdentityVerifierConfig(min_frames=1, max_frames=2, debounce_results=1),
+    )
+    pipeline = ImmediateEmbeddingPipeline()
+    worker = VisionWorker(
+        engine_factory=lambda: engine,
+        analyzer=analyzer,
+        identity_verifier=verifier,
+        identity_embedding_pipeline=pipeline,
+    )
+    observation = replace(
+        observation_from_sample(make_production_dual_sample(datetime.now()))[0],
+        association_ambiguous=True,
+        face_embedding=(1.0, 0.0),
+    )
+    update = TargetUpdate(
+        state="TARGET_AMBIGUOUS",
+        target_track_id=1,
+        target_observation=observation,
+        tracks=(),
+        person_count=1,
+        reason="face_body_reference_scale_mismatch",
+    )
+    worker._identity_enrollment_active = True
+    worker._identity_enrollment_samples = [
+        FaceObservation(
+            timestamp=datetime.now(),
+            bbox_xyxy=(0.0, 0.0, 80.0, 80.0),
+            landmarks=((20.0, 20.0), (60.0, 20.0), (40.0, 40.0)),
+            embedding=(1.0, 0.0),
+        )
+    ]
+    try:
+        worker._schedule_identity_embedding(None, observation, update)
+        worker._schedule_identity_embedding(
+            object(),
+            replace(observation, face_embedding=None),
+            update,
+        )
+        assert not verifier.has_template
+        assert worker._identity_enrollment_samples == []
+        assert pipeline.request_count == 0
+    finally:
+        verifier.close()
+    print("test_worker_rejects_ambiguous_face_before_identity_embedding OK")
 
 
 def test_worker_ignores_late_embedding_after_enrollment_is_cancelled() -> None:
@@ -904,6 +959,7 @@ if __name__ == "__main__":
     test_production_worker_dual_anchor_requires_normal_range_before_exposure()
     test_worker_builds_session_identity_template_from_transient_embeddings()
     test_worker_enrolls_embedding_already_supplied_by_backend()
+    test_worker_rejects_ambiguous_face_before_identity_embedding()
     test_worker_ignores_late_embedding_after_enrollment_is_cancelled()
     test_worker_clears_identity_template_when_calibration_is_contaminated()
     test_worker_preserves_analyzer_environment_reason_over_target_state()

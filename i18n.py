@@ -284,6 +284,10 @@ _TEXTS: Dict[str, Dict[str, str]] = {
         "vision_mode_standard_unavailable": "标准模式不可用：缺少本地 YOLO26n-pose 权重或标准模式依赖。",
         "vision_mode_professional_unavailable": "专业模式 Beta 不可用：尚未提供 TensorRT 姿态后端。",
         "vision_mode_switch_failed": "模式切换失败，已恢复原后端：{detail}",
+        "vision_compat_face_detector_fallback": (
+            "BlazeFace 人脸检测不可用；当前仅使用 FaceMesh 降级路径，"
+            "多脸计数和人脸框可靠性会降低。原因：{detail}"
+        ),
 
         # ---- debug_ui: 动态 setText ----
         "debug_calib_no_sample": "还没有摄像头样本",
@@ -605,6 +609,10 @@ _TEXTS: Dict[str, Dict[str, str]] = {
         "vision_mode_standard_unavailable": "Standard mode unavailable: the local YOLO26n-pose weight or optional dependencies are missing.",
         "vision_mode_professional_unavailable": "Professional mode Beta unavailable: no TensorRT posture backend is installed.",
         "vision_mode_switch_failed": "Mode switch failed; restored the previous backend: {detail}",
+        "vision_compat_face_detector_fallback": (
+            "BlazeFace detection is unavailable. FaceMesh fallback is active, so multi-face "
+            "counts and face boxes are less reliable. Reason: {detail}"
+        ),
 
         # ---- debug_ui: 动态 setText ----
         "debug_calib_no_sample": "No camera sample yet",

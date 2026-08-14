@@ -23,6 +23,8 @@ from typing import Iterable, List, Optional, Tuple
 import cv2
 import mediapipe as mp
 
+from face_body_association import BodyGeometry, DetectedFace, select_face_for_body
+from mediapipe_resources import ensure_ascii_mediapipe_resource_path
 from posture_science import (
     CalibrationProfile,
     ExposureAccumulator,
@@ -72,6 +74,11 @@ class VisionSample:
     face_detected: bool
     pose_detected: bool
     face_count: int = 0
+    face_bbox_xyxy: Optional[Tuple[float, float, float, float]] = None
+    face_landmarks: Optional[Tuple[Point, ...]] = None
+    face_detector_landmarks: Optional[Tuple[Point, ...]] = None
+    face_association_ambiguous: bool = False
+    face_detector_score: Optional[float] = None
     frame_width: Optional[int] = None
     frame_height: Optional[int] = None
     left_eye_center: Optional[Point] = None
@@ -1626,10 +1633,24 @@ class VisionEngine:
         self._black_frame_count = 0
         self._target_fps = 15.0
 
+        ensure_ascii_mediapipe_resource_path(mp)
         self._mp_face_mesh = mp.solutions.face_mesh
         self._mp_pose = mp.solutions.pose
+        self._face_detection = None
+        self.face_detection_fallback_reason: Optional[str] = None
+        try:
+            self._mp_face_detection = mp.solutions.face_detection
+            self._face_detection = self._mp_face_detection.FaceDetection(
+                model_selection=1,
+                min_detection_confidence=min_detection_confidence,
+            )
+        except Exception as exc:
+            self._mp_face_detection = None
+            detail = " ".join(str(exc).split())
+            self.face_detection_fallback_reason = f"{type(exc).__name__}: {detail}"
         self._face_mesh = self._mp_face_mesh.FaceMesh(
-            max_num_faces=2,
+            static_image_mode=self._face_detection is not None,
+            max_num_faces=1 if self._face_detection is not None else 2,
             refine_landmarks=True,
             min_detection_confidence=min_detection_confidence,
             min_tracking_confidence=min_tracking_confidence,
@@ -1679,25 +1700,7 @@ class VisionEngine:
         frame_rgb.flags.writeable = False
         frame_h, frame_w = frame.shape[:2]
 
-        face_result = self._face_mesh.process(frame_rgb)
         pose_result = self._pose.process(frame_rgb)
-
-        (
-            left_eye_center,
-            right_eye_center,
-            face_nose_point,
-            face_left_mouth_point,
-            face_right_mouth_point,
-            face_count,
-        ) = self._measure_face_points(face_result, frame_w, frame_h)
-        interpupillary_px = None
-        head_turn_ratio = None
-        if left_eye_center is not None and right_eye_center is not None:
-            interpupillary_px = math.dist(left_eye_center, right_eye_center)
-            if face_nose_point is not None and interpupillary_px > 0:
-                eye_mid_x = (left_eye_center[0] + right_eye_center[0]) / 2.0
-                head_turn_ratio = (face_nose_point[0] - eye_mid_x) / interpupillary_px
-
         pose_values = self._measure_pose_points(pose_result, frame_w, frame_h)
 
         signed_shoulder_diff_px = None
@@ -1749,6 +1752,105 @@ class VisionEngine:
             if shoulder_center is not None and hip_center is not None:
                 torso_height_px = math.dist(shoulder_center, hip_center)
 
+        left_eye_center = None
+        right_eye_center = None
+        face_nose_point = None
+        face_left_mouth_point = None
+        face_right_mouth_point = None
+        face_bbox_xyxy = None
+        face_landmarks = None
+        face_detector_landmarks = None
+        face_detector_score = None
+        face_association_ambiguous = False
+        face_quality = None
+        face_count = 0
+
+        if self._face_detection is not None:
+            detection_result = self._face_detection.process(frame_rgb)
+            detected_faces = self._measure_face_detections(detection_result, frame_w, frame_h)
+            face_count = len(detected_faces)
+            selected_face = None
+            if shoulder_center is not None and shoulder_width_px is not None:
+                body = BodyGeometry(
+                    shoulder_center=shoulder_center,
+                    shoulder_width=shoulder_width_px,
+                    nose=nose_point,
+                    left_ear=left_ear_point,
+                    right_ear=right_ear_point,
+                )
+                selected_face, _association = select_face_for_body(detected_faces, body)
+                face_association_ambiguous = bool(detected_faces) and selected_face is None
+                if selected_face is None and len(detected_faces) == 1:
+                    # Preserve one auditable candidate for the target manager's
+                    # short-gap continuity rescue. It remains explicitly
+                    # ambiguous until scale and temporal continuity agree.
+                    selected_face = detected_faces[0]
+            if selected_face is not None:
+                face_bbox_xyxy = selected_face.bbox_xyxy
+                face_detector_score = selected_face.confidence
+                detector_points = (
+                    selected_face.left_eye,
+                    selected_face.right_eye,
+                    selected_face.nose,
+                    selected_face.mouth,
+                    selected_face.left_ear,
+                    selected_face.right_ear,
+                )
+                if all(point is not None for point in detector_points):
+                    face_detector_landmarks = tuple(detector_points)  # type: ignore[arg-type]
+                (
+                    left_eye_center,
+                    right_eye_center,
+                    face_nose_point,
+                    face_left_mouth_point,
+                    face_right_mouth_point,
+                    _mesh_face_count,
+                ) = self._measure_selected_face(frame_rgb, selected_face)
+                mesh_points = (
+                    left_eye_center,
+                    right_eye_center,
+                    face_nose_point,
+                    face_left_mouth_point,
+                    face_right_mouth_point,
+                )
+                if all(point is not None for point in mesh_points):
+                    face_landmarks = tuple(mesh_points)  # type: ignore[arg-type]
+                face_quality = self._score_face_quality(
+                    frame,
+                    selected_face,
+                    face_landmarks,
+                )
+        else:
+            face_result = self._face_mesh.process(frame_rgb)
+            (
+                left_eye_center,
+                right_eye_center,
+                face_nose_point,
+                face_left_mouth_point,
+                face_right_mouth_point,
+                face_count,
+            ) = self._measure_face_points(face_result, frame_w, frame_h)
+            fallback_points = (
+                left_eye_center,
+                right_eye_center,
+                face_nose_point,
+                face_left_mouth_point,
+                face_right_mouth_point,
+            )
+            if face_count == 1 and all(point is not None for point in fallback_points):
+                face_landmarks = tuple(fallback_points)  # type: ignore[arg-type]
+                face_bbox_xyxy = self._bbox_from_points(face_landmarks)
+                face_quality = 0.45
+            face_association_ambiguous = face_count > 1
+
+        interpupillary_px = None
+        head_turn_ratio = None
+        if left_eye_center is not None and right_eye_center is not None:
+            interpupillary_px = math.dist(left_eye_center, right_eye_center)
+            if face_nose_point is not None and interpupillary_px > 0:
+                eye_mid_x = (left_eye_center[0] + right_eye_center[0]) / 2.0
+                head_turn_ratio = (face_nose_point[0] - eye_mid_x) / interpupillary_px
+
         sample = VisionSample(
             timestamp=datetime.now(),
             interpupillary_px=interpupillary_px,
@@ -1756,9 +1858,14 @@ class VisionEngine:
             signed_shoulder_diff_px=signed_shoulder_diff_px,
             shoulder_width_px=shoulder_width_px,
             trunk_lean_deg=trunk_lean_deg,
-            face_detected=interpupillary_px is not None,
+            face_detected=face_bbox_xyxy is not None,
             pose_detected=shoulder_diff_px is not None,
             face_count=face_count,
+            face_bbox_xyxy=face_bbox_xyxy,
+            face_landmarks=face_landmarks,
+            face_detector_landmarks=face_detector_landmarks,
+            face_association_ambiguous=face_association_ambiguous,
+            face_detector_score=face_detector_score,
             frame_width=frame_w,
             frame_height=frame_h,
             left_eye_center=left_eye_center,
@@ -1777,7 +1884,7 @@ class VisionEngine:
             torso_height_px=torso_height_px,
             left_ear_point=left_ear_point,
             right_ear_point=right_ear_point,
-            face_quality=(1.0 if interpupillary_px is not None and face_count == 1 else None),
+            face_quality=face_quality,
             pose_quality=pose_quality,
             nose_confidence=nose_confidence,
             left_ear_confidence=left_ear_confidence,
@@ -1826,8 +1933,143 @@ class VisionEngine:
         if self._cap is not None:
             self._cap.release()
             self._cap = None
+        if self._face_detection is not None:
+            self._face_detection.close()
+            self._face_detection = None
         self._face_mesh.close()
         self._pose.close()
+
+    def _measure_face_detections(
+        self,
+        detection_result,
+        width: int,
+        height: int,
+    ) -> Tuple[DetectedFace, ...]:
+        if detection_result is None or not detection_result.detections:
+            return ()
+
+        def point(detection, key) -> Point:
+            relative = self._mp_face_detection.get_key_point(detection, key)
+            return relative.x * width, relative.y * height
+
+        key = self._mp_face_detection.FaceKeyPoint
+        faces = []
+        for detection in detection_result.detections:
+            relative_bbox = detection.location_data.relative_bounding_box
+            left = max(0.0, relative_bbox.xmin * width)
+            top = max(0.0, relative_bbox.ymin * height)
+            right = min(float(width), (relative_bbox.xmin + relative_bbox.width) * width)
+            bottom = min(float(height), (relative_bbox.ymin + relative_bbox.height) * height)
+            if right - left <= 1.0 or bottom - top <= 1.0:
+                continue
+            confidence = float(detection.score[0]) if detection.score else 0.0
+            faces.append(
+                DetectedFace(
+                    bbox_xyxy=(left, top, right, bottom),
+                    confidence=confidence,
+                    left_eye=point(detection, key.LEFT_EYE),
+                    right_eye=point(detection, key.RIGHT_EYE),
+                    nose=point(detection, key.NOSE_TIP),
+                    mouth=point(detection, key.MOUTH_CENTER),
+                    left_ear=point(detection, key.LEFT_EAR_TRAGION),
+                    right_ear=point(detection, key.RIGHT_EAR_TRAGION),
+                )
+            )
+        return tuple(faces)
+
+    def _measure_selected_face(
+        self,
+        frame_rgb,
+        face: DetectedFace,
+    ) -> Tuple[
+        Optional[Point],
+        Optional[Point],
+        Optional[Point],
+        Optional[Point],
+        Optional[Point],
+        int,
+    ]:
+        frame_height, frame_width = frame_rgb.shape[:2]
+        left, top, right, bottom = face.bbox_xyxy
+        padding = max(right - left, bottom - top) * 0.25
+        crop_left = max(0, int(math.floor(left - padding)))
+        crop_top = max(0, int(math.floor(top - padding)))
+        crop_right = min(frame_width, int(math.ceil(right + padding)))
+        crop_bottom = min(frame_height, int(math.ceil(bottom + padding)))
+        if crop_right - crop_left < 2 or crop_bottom - crop_top < 2:
+            return None, None, None, None, None, 0
+        crop = frame_rgb[crop_top:crop_bottom, crop_left:crop_right]
+        result = self._face_mesh.process(crop)
+        values = self._measure_face_points(result, crop.shape[1], crop.shape[0])
+        return tuple(
+            None if value is None else (value[0] + crop_left, value[1] + crop_top)
+            for value in values[:5]
+        ) + (values[5],)
+
+    @staticmethod
+    def _bbox_from_points(points: Tuple[Point, ...]) -> Tuple[float, float, float, float]:
+        xs = [point[0] for point in points]
+        ys = [point[1] for point in points]
+        width = max(1.0, max(xs) - min(xs))
+        height = max(1.0, max(ys) - min(ys))
+        return (
+            min(xs) - width * 0.20,
+            min(ys) - height * 0.20,
+            max(xs) + width * 0.20,
+            max(ys) + height * 0.20,
+        )
+
+    @staticmethod
+    def _score_face_quality(
+        frame_bgr,
+        face: DetectedFace,
+        landmarks: Optional[Tuple[Point, ...]],
+    ) -> float:
+        frame_height, frame_width = frame_bgr.shape[:2]
+        left, top, right, bottom = face.bbox_xyxy
+        bbox_area_ratio = max(0.0, right - left) * max(0.0, bottom - top) / max(
+            1.0,
+            float(frame_width * frame_height),
+        )
+        size_score = min(1.0, math.sqrt(bbox_area_ratio / 0.02))
+        detector_score = max(0.0, min(1.0, (face.confidence - 0.50) / 0.50))
+
+        geometry_score = 0.0
+        if landmarks is not None and len(landmarks) == 5:
+            left_eye, right_eye, nose, left_mouth, right_mouth = landmarks
+            eye_center_y = (left_eye[1] + right_eye[1]) / 2.0
+            mouth_center_y = (left_mouth[1] + right_mouth[1]) / 2.0
+            face_width = max(1.0, right - left)
+            eye_ratio = math.dist(left_eye, right_eye) / face_width
+            ordered = eye_center_y < nose[1] < mouth_center_y
+            geometry_score = 1.0 if ordered and 0.18 <= eye_ratio <= 0.75 else 0.20
+
+        crop_left = max(0, int(math.floor(left)))
+        crop_top = max(0, int(math.floor(top)))
+        crop_right = min(frame_width, int(math.ceil(right)))
+        crop_bottom = min(frame_height, int(math.ceil(bottom)))
+        image_score = 0.0
+        if crop_right - crop_left >= 2 and crop_bottom - crop_top >= 2:
+            gray = cv2.cvtColor(
+                frame_bgr[crop_top:crop_bottom, crop_left:crop_right],
+                cv2.COLOR_BGR2GRAY,
+            )
+            mean_luma = float(gray.mean())
+            contrast = float(gray.std())
+            brightness_score = max(0.0, 1.0 - abs(mean_luma - 135.0) / 115.0)
+            contrast_score = min(1.0, contrast / 45.0)
+            image_score = brightness_score * 0.55 + contrast_score * 0.45
+
+        return max(
+            0.0,
+            min(
+                1.0,
+                detector_score * 0.40
+                + size_score * 0.20
+                + geometry_score * 0.25
+                + image_score * 0.15,
+            ),
+        )
 
     @staticmethod
     def _landmark_center(landmarks: Iterable, indexes: Iterable[int], width: int, height: int) -> Point:

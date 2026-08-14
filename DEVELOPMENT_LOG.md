@@ -332,7 +332,10 @@
 - Scope: association keeps the raw velocity predictor, while activity classification now uses a configurable 0.20-second low-pass velocity (`motion_smoothing_seconds`). Genuine sustained translation remains above the existing `MOVING` product threshold.
 - Debug UI: the camera-visible calibration banner is now nearly full-width with stronger border, font, and phase-specific accessible name; the preferred and relaxed stages remain a single dual-anchor flow with only the preferred countdown.
 - Verification: `runtime\\python311\\python.exe test_vision_tracking.py`, `test_feature_toggles.py`, `test_debug_ui.py`, `test_vision_replay.py`, and modified-file `py_compile` passed. A 2,000-frame production-chain replay at 72 FPS with fixed-seed one-pixel Gaussian landmark jitter produced `GOOD=2000`, maximum normalized motion `0.0709`, posture deviation `0`, and exposure `0`.
-- Gaps: the bundled MediaPipe artifact `face_landmark_front_cpu.binarypb` is still missing, so real-camera and packaged-rendering validation remain unverified. No medical or hardware-level validation is claimed.
+- Gaps (corrected 2026-08-14): this run attributed the failure to a missing bundled
+  `face_landmark_front_cpu.binarypb`; later direct inspection confirmed the file existed and the actual failure was
+  MediaPipe's Windows C++ loader resolving the non-ASCII workspace path incorrectly. Real-camera and packaged-rendering
+  validation was still not performed in this historical run. No medical or hardware-level validation is claimed.
 
 ## 2026-08-13 - Harden normal-posture exposure and clarify Debug UI stages
 
@@ -342,7 +345,10 @@
 - Scope: posture groups now require a second independent feature to reach the product support floor before contributing to posture deviation. A lone excursion is reported as `UNKNOWN` with `posture_evidence_inconclusive`, pauses exposure, and cannot enter `BAD` or `CRITICAL`. Head-turn and moving states remain visible as `WATCH`/observation states but pause exposure and carry zero posture deviation.
 - Debug UI: preferred collection retains the full visible 5-second countdown; the approximately 1-second transition explicitly prompts relaxation; relaxed collection runs for its approximately 5-second bounded window with a persistent purple stage banner and indeterminate progress bar, without a second countdown. Stage title, badge, colors, and camera banner are distinct for preferred, transition, relaxed, active, and failed states.
 - Verification: `runtime\\python311\\python.exe test_posture_science.py`, `test_feature_toggles.py`, `test_vision_worker.py`, `test_vision_tracking.py`, `test_startup_guards.py`, `test_debug_ui.py`, `test_vision_replay.py`, bundled `py_compile`, `ruff check` on modified files, and `git diff --check` all passed. Debug UI emitted only the existing bundled Qt missing-font-directory warning.
-- Gaps: bundled MediaPipe is missing `face_landmark_front_cpu.binarypb`, so real-camera calibration, packaged font fidelity, cross-device SEM/MDC, consented recording, and external-validity evidence remain unverified. Synthetic tests do not replace those gates.
+- Gaps (corrected 2026-08-14): this run attributed the failure to a missing bundled
+  `face_landmark_front_cpu.binarypb`; the artifact existed, and the actual failure was non-ASCII Windows path handling
+  in MediaPipe's C++ loader. Real-camera calibration, packaged font fidelity, cross-device SEM/MDC, consented recording,
+  and external-validity evidence remained unverified in this historical run. Synthetic tests do not replace those gates.
 - Conclusion: deterministic protections and stage affordances are ready to deliver through PR `#23`; only the named tracked files for this fix will be staged.
 
 ## 2026-08-12 - Correct dual-anchor normal-band semantics and calibration guidance
@@ -1323,9 +1329,10 @@
   - Added localized diagnostics for `no_posture_features` in Chinese and English.
 - Verification: `runtime\\python311\\python.exe test_posture_science.py`, `test_vision_worker.py`, and
   `test_vision_tracking.py` all pass; source compiles and `git diff --check` passes.
-- Evidence boundary: the local bundled MediaPipe install is missing
-  `mediapipe/modules/face_landmark/face_landmark_front_cpu.binarypb`, so a real-camera rerun is still blocked by the
-  runtime artifact and is not claimed as complete.
+- Evidence boundary (corrected 2026-08-14): this run reported
+  `mediapipe/modules/face_landmark/face_landmark_front_cpu.binarypb` as missing. Later byte-level inspection confirmed
+  the artifact existed; MediaPipe's Windows C++ loader was failing on the non-ASCII workspace path. A real-camera
+  rerun was not performed in this historical run and is not retroactively claimed as complete.
 
 ## 2026-08-12 - Prevent relaxed-anchor startup exposure and noise amplification
 
@@ -1531,8 +1538,8 @@
   - Passed `test_feature_toggles.py`, including distance-scale replay and no-exposure head-turn/movement abstention.
   - Passed `test_posture_science.py`, `test_vision_worker.py`, and `test_debug_ui.py`; the worker test now covers stable
     borderline pose quality completing both anchors.
-  - Real-camera validation remains unavailable because the bundled MediaPipe face-landmark model artifact is missing;
-    no live-camera success is claimed.
+  - Correction added 2026-08-14: the bundled face-landmark artifact existed; this historical run was blocked by
+    MediaPipe's non-ASCII Windows resource-path handling. No live-camera success was claimed for this run.
 - Gaps: external camera/device repeatability and user-facing status wording for `UNKNOWN` remain evidence/follow-up work.
 
 ## 2026-08-13 - Compatibility identity recovery and three-mode debug contract
@@ -1692,3 +1699,74 @@
   approval were not performed and are not claimed complete.
 - Conclusion: AGPLv3 acceptance and the pose-only Standard mode Debug UI implementation are locally verified and ready
   for source review; production adoption and real-world evidence require follow-up.
+
+## 2026-08-14 - Compatibility face ownership safety and identity-loader repair
+
+- Source: the user clarified that the next work from
+  `docs/plans/EchoPosture_identity_tracking_detail_plan.md` was specifically the face-recognition path and
+  face-to-body ownership validation, with Debug UI diagnostics changed before the production Compatibility path.
+- Git: commit `pending`, branch `codex/pr2-phase1-calibration-safety`, PR `#23`, tag `none`.
+- Root causes:
+  - The old Compatibility adapter accepted a face inside a body box expanded upward by `1.25 * body_height`. For a
+    seated body this envelope could extend hundreds of pixels above the frame, so a standing intruder's face could be
+    combined with the seated user's BlazePose landmarks.
+  - `face_count` came from FaceMesh and was capped at two; the selected face box was reconstructed from five points;
+    `face_quality` was effectively a Boolean `1.0`; and the short-gap continuity rescue could clear an ownership
+    ambiguity without checking the locked user's face/body scale or a sufficiently strict face-centre displacement.
+  - MediaPipe's face graph existed in the bundled runtime. Its Windows C++ resource loader failed on the non-ASCII
+    repository path, which earlier development-log entries incorrectly diagnosed as a missing artifact.
+  - CVLFace KP-RPE changes the process cwd if its optional extension import fails, then attempts
+    `setup.py install --user`. This broke the wrapper's relative `pretrained_model/model.pt` lookup and introduced an
+    unacceptable startup-time environment mutation.
+  - Follow-up audit found that a target observation newly marked `association_ambiguous` could still reach the formal
+    Worker embedding path. During enrollment that could mix a face with unproven body ownership into the session
+    template even though TargetManager had already abstained from posture ownership.
+- Changes, in the requested order:
+  - Debug UI now reads the active backend's diagnostic notice after startup and every mode transition. If BlazeFace
+    initialization fails, it explicitly reports the FaceMesh fallback and the real exception; returning to
+    Compatibility refreshes the current notice instead of retaining stale Standard/Professional text.
+  - Added an ASCII MediaPipe resource bridge under
+    `%LOCALAPPDATA%\\EchoPosture\\mediapipe-resources\\<fingerprint>` and corrected the historical log entries without
+    retroactively claiming that their live-camera checks succeeded.
+  - Compatibility mode now runs BlazeFace full-range detection for real face boxes, detector scores, six anchors, and
+    uncapped face counts. It selects a face only when shoulder-relative vertical/horizontal position, eye/shoulder
+    scale, and cross-model nose or ear anchors agree; only that selected crop is sent to FaceMesh for five-point iris
+    geometry. Detector confidence, face size, five-point geometry, brightness, and contrast form a continuous
+    `[0, 1]` quality value.
+  - TargetManager stores the locked user's face/body scale, rejects drift outside `+/-35%`, and requires both that
+    scale consistency and a stricter `0.45` face-centre displacement limit before short-gap continuity may rescue an
+    ownership ambiguity. BlazeFace scene counts propagate separately from the single BlazePose track, so additional
+    faces remain visible as `MULTI_PRESENT` without silently replacing the target.
+  - VisionWorker now refuses both backend-supplied embeddings and asynchronous crop requests whenever
+    `association_ambiguous=True`; active enrollment samples are cleared immediately. This closes the ownership-to-ID
+    gap and prevents a geometrically unowned face from contaminating the session template.
+  - KP-RPE is preloaded while cwd restoration is bounded to the model root. The adapter blocks the upstream user-site
+    install attempt and retains the pure-Python fallback instead of compiling or installing code during app startup.
+  - ADR-0001 records the honest Compatibility limit: one BlazePose skeleton can reject a mismatched observation but
+    cannot continuously track every person when the detector changes subjects. CI now compiles, lints, and runs the
+    new face-ownership, Compatibility detection, identity-adapter, tracking, and Worker guards.
+- Verification from `C:\Users\aaabb\Documents\ICC驼背项目`:
+  - Passed `test_face_body_association.py`, `test_compatibility_face_detection.py`,
+    `test_identity_model_adapters.py`, `test_vision_tracking.py`, and `test_vision_worker.py`. Coverage includes a high
+    standing intruder, a same-height lateral face, an intruder-only detection, uncapped three-face counting, selected
+    crop-only FaceMesh, normal single-user ownership, locked-scale drift, strict continuity rescue, continuous quality
+    rejection, and zero identity requests for ambiguous ownership.
+  - Passed `test_debug_ui.py`, `test_feature_toggles.py`, `test_posture_science.py`,
+    `test_standard_pose_backend.py`, `test_startup_guards.py`, `test_tray_flyout.py`, and `test_vision_replay.py`.
+  - From the Chinese repository path, bundled-runtime initialization reported BlazeFace, FaceMesh, and BlazePose all
+    available with no fallback reason. MediaPipe emitted only its normal TFLite/feedback-manager diagnostics.
+  - The real local ViT KP-RPE model loaded, returned a finite 512-dimensional embedding, and no longer launched an
+    extension build or user-site install. The measured run took 6.793 seconds to load and 0.162 seconds to embed; the
+    optional CUDA/C++ RPE accelerator remained unavailable and the pure-Python path was used.
+  - Changed-file Ruff, target-module `py_compile`, and `git diff --check` passed before this final audit entry; they are
+    rerun after the entry as the delivery gate.
+- Privacy and evidence boundary: no frame, face crop, embedding, template, or movement history is persisted by these
+  changes. No real-person camera recording, consented multi-person trial, cross-device validation, medical/clinical
+  claim, packaged EXE rebuild, or model-weight redistribution approval is claimed.
+- Remaining identity deployment gap: the production packaged runtime still lacks Torch/Transformers and ONNX Runtime
+  identity dependencies. EP-ID-010 (Torch package versus ONNX versus a separate process), real-model A/B evidence,
+  threshold validation, and the plan's graded identity fallback remain open; this change repairs the loader and the
+  ownership safety boundary but does not claim that production face recognition is deployed.
+- Conclusion: P0 Compatibility ownership safety and the EP-ID-009 KP-RPE loader repair are implemented with
+  deterministic and real local model evidence. The untracked user-authored detail plan remains a read-only input and
+  is not part of the staged delivery set.

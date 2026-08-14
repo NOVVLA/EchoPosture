@@ -99,6 +99,13 @@ class FakeDebugBackend:
         self.closed = True
 
 
+class FakeDegradedCompatibilityBackend(FakeDebugBackend):
+    diagnostic_notice = (
+        "vision_compat_face_detector_fallback",
+        {"detail": "synthetic detector failure"},
+    )
+
+
 def make_window(app: QApplication, backend: FakeDebugBackend) -> DebugWindow:
     return DebugWindow(
         camera_id=0,
@@ -209,6 +216,20 @@ def test_unavailable_mode_keeps_actual_compatibility_backend_visible() -> None:
         window.close()
         app.processEvents()
     print("test_unavailable_mode_keeps_actual_compatibility_backend_visible OK")
+
+
+def test_compatibility_face_detector_fallback_is_visible_after_start() -> None:
+    app = QApplication.instance() or QApplication([])
+    compatibility = FakeDegradedCompatibilityBackend()
+    window = make_window(app, compatibility)
+    try:
+        text = window.vision_backend_label.text()
+        assert "FaceMesh" in text
+        assert "synthetic detector failure" in text
+    finally:
+        window.close()
+        app.processEvents()
+    print("test_compatibility_face_detector_fallback_is_visible_after_start OK")
 
 
 def test_debug_panel_exposes_projected_axes_and_target_activity() -> None:
@@ -506,6 +527,7 @@ if __name__ == "__main__":
     test_debug_panel_exposes_non_intervention_statuses()
     test_debug_panel_exposes_three_vision_modes_and_explicit_availability()
     test_unavailable_mode_keeps_actual_compatibility_backend_visible()
+    test_compatibility_face_detector_fallback_is_visible_after_start()
     test_debug_panel_exposes_projected_axes_and_target_activity()
     test_debug_panel_runs_full_dual_anchor_calibration()
     test_debug_panel_places_stage_card_above_camera()

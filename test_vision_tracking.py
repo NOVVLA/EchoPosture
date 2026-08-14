@@ -409,7 +409,10 @@ def test_face_continuity_survives_side_recline_body_box_jump():
 
 def test_face_continuity_resolves_compatibility_face_body_ambiguity():
     manager = TargetManager()
-    upright = observation(None, T0, 100.0)
+    upright = replace(
+        observation(None, T0, 100.0),
+        face_body_scale_ratio=0.30,
+    )
     manager.update([upright])
     assert manager.lock_calibration_target()
 
@@ -417,6 +420,7 @@ def test_face_continuity_resolves_compatibility_face_body_ambiguity():
         observation(None, T0 + timedelta(seconds=0.1), 420.0, ambiguous=True),
         face_bbox_xyxy=upright.face_bbox_xyxy,
         face_quality=0.95,
+        face_body_scale_ratio=0.31,
     )
     update = manager.update([reclined])
 
@@ -425,6 +429,51 @@ def test_face_continuity_resolves_compatibility_face_body_ambiguity():
     assert update.target_observation is not None
     assert not update.target_observation.association_ambiguous
     print("test_face_continuity_resolves_compatibility_face_body_ambiguity OK")
+
+
+def test_face_continuity_does_not_rescue_scale_inconsistent_intruder() -> None:
+    manager = TargetManager()
+    upright = replace(
+        observation(None, T0, 100.0),
+        face_body_scale_ratio=0.30,
+    )
+    manager.update([upright])
+    assert manager.lock_calibration_target()
+
+    intruder = replace(
+        observation(None, T0 + timedelta(seconds=0.1), 420.0, ambiguous=True),
+        face_bbox_xyxy=upright.face_bbox_xyxy,
+        face_quality=0.95,
+        face_body_scale_ratio=0.15,
+    )
+    update = manager.update([intruder])
+
+    assert update.state == TARGET_AMBIGUOUS, update
+    assert update.target_observation is None
+    print("test_face_continuity_does_not_rescue_scale_inconsistent_intruder OK")
+
+
+def test_locked_target_scale_baseline_marks_unflagged_face_shift_ambiguous() -> None:
+    manager = TargetManager()
+    upright = replace(
+        observation(None, T0, 100.0),
+        face_body_scale_ratio=0.30,
+    )
+    manager.update([upright])
+    assert manager.lock_calibration_target()
+
+    wrong_face = replace(
+        observation(None, T0 + timedelta(seconds=0.1), 100.0),
+        face_bbox_xyxy=upright.face_bbox_xyxy,
+        face_quality=0.95,
+        face_body_scale_ratio=0.15,
+    )
+    update = manager.update([wrong_face])
+
+    assert update.state == TARGET_AMBIGUOUS, update
+    assert update.target_observation is not None
+    assert update.target_observation.association_ambiguous
+    print("test_locked_target_scale_baseline_marks_unflagged_face_shift_ambiguous OK")
 
 
 def test_face_reacquisition_abstains_for_multiple_similar_candidates():
@@ -870,6 +919,8 @@ if __name__ == "__main__":
     test_occlusion_reacquisition_and_no_silent_promotion()
     test_face_continuity_survives_side_recline_body_box_jump()
     test_face_continuity_resolves_compatibility_face_body_ambiguity()
+    test_face_continuity_does_not_rescue_scale_inconsistent_intruder()
+    test_locked_target_scale_baseline_marks_unflagged_face_shift_ambiguous()
     test_face_reacquisition_abstains_for_multiple_similar_candidates()
     test_face_reacquisition_abstains_after_timeout_or_with_low_quality()
     test_compatibility_without_stable_detection_id_requires_reacquire_check()

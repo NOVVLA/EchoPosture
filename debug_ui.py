@@ -624,6 +624,7 @@ class DebugWindow(QMainWindow):
         self.dual_calibration_timer.timeout.connect(self._advance_dual_anchor_calibration)
 
         self.engine.start()
+        self._refresh_runtime_backend_status()
         self.precision_checkbox.setChecked(True)
         self.performance_checkbox.setChecked(True)
 
@@ -809,12 +810,20 @@ class DebugWindow(QMainWindow):
         self._vision_backend_notice_kwargs = reason_kwargs
         self._render_vision_backend_status()
 
+    def _refresh_runtime_backend_status(self) -> None:
+        notice = getattr(self.engine, "diagnostic_notice", None)
+        if notice is None:
+            self._set_vision_backend_status()
+            return
+        reason_key, reason_kwargs = notice
+        self._set_vision_backend_status(reason_key, **reason_kwargs)
+
     def _switch_vision_mode(self, index: int) -> None:
         requested_mode = self.vision_mode_combo.itemData(index)
         if not requested_mode:
             return
         if requested_mode == self.vision_mode:
-            self._set_vision_backend_status()
+            self._refresh_runtime_backend_status()
             return
         factory = self._backend_factories.get(requested_mode)
         if factory is None:
@@ -866,7 +875,7 @@ class DebugWindow(QMainWindow):
         )
         self._set_calibration_message("debug_calib_init")
         self._set_calibration_stage_visual("idle")
-        self._set_vision_backend_status()
+        self._refresh_runtime_backend_status()
         self.timer.start(self._interval_ms(self.normal_fps))
 
     def _activate_vision_mode(self, index: int) -> None:
@@ -874,7 +883,7 @@ class DebugWindow(QMainWindow):
 
         requested_mode = self.vision_mode_combo.itemData(index)
         if requested_mode == self.vision_mode:
-            self._set_vision_backend_status()
+            self._refresh_runtime_backend_status()
 
     def update_frame(self) -> None:
         try:
