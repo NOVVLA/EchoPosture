@@ -76,7 +76,13 @@ def observation(
         body_keypoints=(),
         body_confidence=0.9,
         face_bbox_xyxy=(left + 25.0, top, left + 75.0, top + 60.0),
-        face_landmarks=None,
+        face_landmarks=(
+            (left + 35.0, top + 20.0),
+            (left + 65.0, top + 20.0),
+            (left + 50.0, top + 32.0),
+            (left + 40.0, top + 46.0),
+            (left + 60.0, top + 46.0),
+        ),
         face_quality=0.9,
         association_ambiguous=ambiguous,
         posture_features=posture_features,
@@ -92,7 +98,7 @@ def test_compatibility_observation_contract():
     assert not person.association_ambiguous
 
     missing_face_anchor = observation_from_sample(replace(make_sample(), face_nose_point=None))[0]
-    assert missing_face_anchor.association_ambiguous
+    assert not missing_face_anchor.association_ambiguous
 
     multi = observation_from_sample(make_sample(face_count=2))[0]
     assert multi.association_ambiguous
@@ -339,17 +345,19 @@ def test_occlusion_reacquisition_and_no_silent_promotion():
         [observation(2, T0 + timedelta(seconds=1), 400.0)],
         timestamp=T0 + timedelta(seconds=1),
     )
-    # A visible non-target candidate means the target is being reacquired,
-    # not that the entire scene is simply occluded.
-    assert occluded.state == TARGET_REACQUIRING
+    # A unique clear non-target candidate is submitted to the face verifier,
+    # but it must not be silently promoted to the calibrated target.
+    assert occluded.state == IDENTITY_UNCERTAIN
     assert occluded.target_track_id == target_id
     assert occluded.target_observation is None
+    assert occluded.identity_candidate_observation is not None
+    assert occluded.identity_candidate_track_id != target_id
 
     reacquiring = manager.update(
         [observation(2, T0 + timedelta(seconds=3), 390.0)],
         timestamp=T0 + timedelta(seconds=3),
     )
-    assert reacquiring.state == TARGET_REACQUIRING
+    assert reacquiring.state == IDENTITY_UNCERTAIN
     assert reacquiring.target_track_id == target_id
     assert reacquiring.target_observation is None
 
@@ -361,7 +369,7 @@ def test_occlusion_reacquisition_and_no_silent_promotion():
     )
     assert returned.state == IDENTITY_UNCERTAIN
     assert returned.target_observation.detection_id == 1
-    manager.resolve_identity(True)
+    assert manager.resolve_identity(True, returned.identity_candidate_track_id)
     confirmed = manager.update(
         [
             observation(1, T0 + timedelta(seconds=4.1), 125.0),
@@ -407,73 +415,83 @@ def test_face_continuity_survives_side_recline_body_box_jump():
     print("test_face_continuity_survives_side_recline_body_box_jump OK")
 
 
-def test_face_continuity_resolves_compatibility_face_body_ambiguity():
+def test_ambiguous_independent_candidate_requires_identity_confirmation():
     manager = TargetManager()
-    upright = replace(
-        observation(None, T0, 100.0),
-        face_body_scale_ratio=0.30,
-    )
+    upright = observation(None, T0, 100.0)
     manager.update([upright])
     assert manager.lock_calibration_target()
 
-    reclined = replace(
-        observation(None, T0 + timedelta(seconds=0.1), 420.0, ambiguous=True),
+    candidate = replace(
+        observation(None, T0 + timedelta(seconds=0.7), 800.0),
         face_bbox_xyxy=upright.face_bbox_xyxy,
         face_quality=0.95,
-        face_body_scale_ratio=0.31,
     )
-    update = manager.update([reclined])
+    update = manager.update([candidate])
 
-    assert update.state == TARGET_LOCKED, update
+    assert update.state == IDENTITY_UNCERTAIN, update
     assert update.target_track_id == 1
-    assert update.target_observation is not None
-    assert not update.target_observation.association_ambiguous
-    print("test_face_continuity_resolves_compatibility_face_body_ambiguity OK")
-
-
-def test_face_continuity_does_not_rescue_scale_inconsistent_intruder() -> None:
-    manager = TargetManager()
-    upright = replace(
-        observation(None, T0, 100.0),
-        face_body_scale_ratio=0.30,
+    assert update.target_observation is None
+    assert update.identity_candidate_observation == candidate
+    candidate_id = update.identity_candidate_track_id
+    assert candidate_id is not None and candidate_id != update.target_track_id
+    assert not manager.resolve_identity(True, candidate_id + 100)
+    still_pending = manager.update(
+        [replace(candidate, timestamp=T0 + timedelta(seconds=0.75))]
     )
+    assert still_pending.state == IDENTITY_UNCERTAIN
+    assert still_pending.target_observation is None
+    assert manager.resolve_identity(True, candidate_id)
+    rebound = manager.update(
+        [replace(candidate, timestamp=T0 + timedelta(seconds=0.8))]
+    )
+    assert rebound.state == TARGET_LOCKED
+    assert rebound.target_track_id == 1
+    assert rebound.target_observation is not None
+    print("test_ambiguous_independent_candidate_requires_identity_confirmation OK")
+
+
+def test_identity_mismatch_never_rebinds_independent_candidate() -> None:
+    manager = TargetManager()
+    upright = observation(None, T0, 100.0)
     manager.update([upright])
     assert manager.lock_calibration_target()
 
     intruder = replace(
-        observation(None, T0 + timedelta(seconds=0.1), 420.0, ambiguous=True),
+        observation(None, T0 + timedelta(seconds=0.7), 800.0),
         face_bbox_xyxy=upright.face_bbox_xyxy,
         face_quality=0.95,
-        face_body_scale_ratio=0.15,
     )
     update = manager.update([intruder])
 
-    assert update.state == TARGET_AMBIGUOUS, update
+    assert update.state == IDENTITY_UNCERTAIN, update
     assert update.target_observation is None
-    print("test_face_continuity_does_not_rescue_scale_inconsistent_intruder OK")
-
-
-def test_locked_target_scale_baseline_marks_unflagged_face_shift_ambiguous() -> None:
-    manager = TargetManager()
-    upright = replace(
-        observation(None, T0, 100.0),
-        face_body_scale_ratio=0.30,
+    assert manager.resolve_identity(False, update.identity_candidate_track_id)
+    rejected = manager.update(
+        [replace(intruder, timestamp=T0 + timedelta(seconds=0.8))]
     )
+    assert rejected.state == "PROFILE_MISMATCH"
+    assert rejected.reason == "reacquired_candidate_identity_mismatch"
+    assert rejected.target_observation is None
+    print("test_identity_mismatch_never_rebinds_independent_candidate OK")
+
+
+def test_face_scale_change_is_not_an_identity_decision() -> None:
+    manager = TargetManager()
+    upright = observation(1, T0, 100.0)
     manager.update([upright])
     assert manager.lock_calibration_target()
 
-    wrong_face = replace(
-        observation(None, T0 + timedelta(seconds=0.1), 100.0),
-        face_bbox_xyxy=upright.face_bbox_xyxy,
+    scale_changed = replace(
+        observation(1, T0 + timedelta(seconds=0.1), 100.0),
+        face_bbox_xyxy=(110.0, 80.0, 190.0, 176.0),
         face_quality=0.95,
-        face_body_scale_ratio=0.15,
     )
-    update = manager.update([wrong_face])
+    update = manager.update([scale_changed])
 
-    assert update.state == TARGET_AMBIGUOUS, update
+    assert update.state == TARGET_LOCKED, update
     assert update.target_observation is not None
-    assert update.target_observation.association_ambiguous
-    print("test_locked_target_scale_baseline_marks_unflagged_face_shift_ambiguous OK")
+    assert not update.target_observation.association_ambiguous
+    print("test_face_scale_change_is_not_an_identity_decision OK")
 
 
 def test_face_reacquisition_abstains_for_multiple_similar_candidates():
@@ -494,34 +512,42 @@ def test_face_reacquisition_abstains_for_multiple_similar_candidates():
     ]
     update = manager.update(candidates)
 
-    assert update.state == TARGET_REACQUIRING, update
+    assert update.state == TARGET_AMBIGUOUS, update
     assert update.target_observation is None
     assert update.target_track_id == 1
+    assert update.identity_candidate_observation is None
     print("test_face_reacquisition_abstains_for_multiple_similar_candidates OK")
 
 
-def test_face_reacquisition_abstains_after_timeout_or_with_low_quality():
-    for candidate in (
-        replace(
-            observation(2, T0 + timedelta(seconds=4.1), 400.0),
-            face_bbox_xyxy=observation(1, T0, 100.0).face_bbox_xyxy,
-        ),
-        replace(
-            observation(2, T0 + timedelta(seconds=1), 400.0),
-            face_bbox_xyxy=observation(1, T0, 100.0).face_bbox_xyxy,
-            face_quality=0.1,
-        ),
-    ):
-        manager = TargetManager()
-        manager.update([observation(1, T0, 100.0)])
-        assert manager.lock_calibration_target()
+def test_long_absence_still_submits_unique_clear_candidate_for_identity() -> None:
+    manager = TargetManager()
+    initial = observation(1, T0, 100.0)
+    manager.update([initial])
+    assert manager.lock_calibration_target()
+    manager.update([], timestamp=T0 + timedelta(seconds=4.0))
 
-        update = manager.update([candidate])
+    candidate = observation(2, T0 + timedelta(seconds=4.1), 400.0)
+    update = manager.update([candidate])
 
-        assert update.state == TARGET_REACQUIRING, update
-        assert update.target_observation is None
-        assert update.target_track_id == 1
-    print("test_face_reacquisition_abstains_after_timeout_or_with_low_quality OK")
+    assert update.state == IDENTITY_UNCERTAIN, update
+    assert update.target_observation is None
+    assert update.identity_candidate_observation == candidate
+    assert update.identity_candidate_track_id is not None
+    print("test_long_absence_still_submits_unique_clear_candidate_for_identity OK")
+
+
+def test_low_quality_candidate_is_not_submitted_for_identity() -> None:
+    manager = TargetManager()
+    manager.update([observation(1, T0, 100.0)])
+    assert manager.lock_calibration_target()
+    candidate = replace(
+        observation(2, T0 + timedelta(seconds=1), 400.0),
+        face_quality=0.1,
+    )
+    update = manager.update([candidate])
+    assert update.state == TARGET_REACQUIRING, update
+    assert update.identity_candidate_observation is None
+    print("test_low_quality_candidate_is_not_submitted_for_identity OK")
 
 
 def test_compatibility_without_stable_detection_id_requires_reacquire_check():
@@ -553,7 +579,8 @@ def test_separate_face_rebind_always_requires_identity_confirmation():
 
     assert update.state == IDENTITY_UNCERTAIN, update
     assert update.target_track_id == 1
-    assert update.target_observation == candidate
+    assert update.target_observation is None
+    assert update.identity_candidate_observation == candidate
     print("test_separate_face_rebind_always_requires_identity_confirmation OK")
 
 
@@ -918,11 +945,12 @@ if __name__ == "__main__":
     test_association_budget_excess_abstains_and_recovers()
     test_occlusion_reacquisition_and_no_silent_promotion()
     test_face_continuity_survives_side_recline_body_box_jump()
-    test_face_continuity_resolves_compatibility_face_body_ambiguity()
-    test_face_continuity_does_not_rescue_scale_inconsistent_intruder()
-    test_locked_target_scale_baseline_marks_unflagged_face_shift_ambiguous()
+    test_ambiguous_independent_candidate_requires_identity_confirmation()
+    test_identity_mismatch_never_rebinds_independent_candidate()
+    test_face_scale_change_is_not_an_identity_decision()
     test_face_reacquisition_abstains_for_multiple_similar_candidates()
-    test_face_reacquisition_abstains_after_timeout_or_with_low_quality()
+    test_long_absence_still_submits_unique_clear_candidate_for_identity()
+    test_low_quality_candidate_is_not_submitted_for_identity()
     test_compatibility_without_stable_detection_id_requires_reacquire_check()
     test_separate_face_rebind_always_requires_identity_confirmation()
     test_numeric_timestamp_contract()

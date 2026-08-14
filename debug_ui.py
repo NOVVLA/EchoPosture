@@ -78,6 +78,22 @@ from vision_test import (
     format_value,
 )
 from vision_backend import CompatibilityBackend, PersonObservation, PostureFeatureExtractor
+from face_embedding import FaceEmbeddingPipeline, FaceEmbeddingUnavailable
+from face_observation_enhancer import (
+    FaceObservationEnhancer,
+    face_enhanced_backend_factories,
+)
+from identity_model_adapters import VIT_KPRPE_WEBFACE4M
+from identity_model_process import create_identity_model_adapter
+from identity_verifier import (
+    FaceObservation,
+    IdentityVerifier,
+    IDENTITY_CONFIRMED,
+    IDENTITY_MISMATCH,
+    TRIGGER_EXPLICIT,
+    TRIGGER_HEARTBEAT,
+    TRIGGER_REACQUIRED,
+)
 from vision_tracking import TargetManager, TargetUpdate
 from vision_modes import (
     VISION_MODE_COMPATIBILITY,
@@ -148,8 +164,6 @@ REASON_TEXT: Dict[str, str] = {
     "user_away_s": "reason.user_away_s",
     "user_missing_observing_s": "reason.user_missing_observing_s",
     "profile_check_waiting": "reason.profile_check_waiting",
-    "profile_face_shoulder_delta": "reason.profile_face_shoulder_delta",
-    "profile_torso_shoulder_delta": "reason.profile_torso_shoulder_delta",
     "distance_too_close": "reason.distance_too_close",
     "distance_near": "reason.distance_near",
     "distance_too_far": "reason.distance_too_far",
@@ -175,7 +189,7 @@ REASON_TEXT: Dict[str, str] = {
     "target_geometry_association_ambiguous": "reason.target_geometry_association_ambiguous",
     "association_budget_exceeded": "reason.association_budget_exceeded",
     "reacquired_candidate_needs_identity_confirmation": "reason.reacquired_candidate_needs_identity_confirmation",
-    "reacquired_candidate_profile_mismatch": "reason.reacquired_candidate_profile_mismatch",
+    "reacquired_candidate_identity_mismatch": "reason.reacquired_candidate_identity_mismatch",
     "other_track_present": "reason.other_track_present",
     "multi_present_observing": "reason.multi_present_observing",
     "multi_exit_stabilizing_s": "reason.multi_exit_stabilizing_s",
@@ -437,6 +451,10 @@ class DebugWindow(QMainWindow):
         backend_factories: Optional[Dict[str, Callable[[], object]]] = None,
         initial_vision_mode: str = VISION_MODE_COMPATIBILITY,
         standard_model_path: Optional[str] = None,
+        identity_model=None,
+        identity_verifier: Optional[IdentityVerifier] = None,
+        identity_embedding_pipeline: Optional[FaceEmbeddingPipeline] = None,
+        face_enhancer_factory: Callable[[], FaceObservationEnhancer] = FaceObservationEnhancer,
     ) -> None:
         super().__init__()
         self.setWindowTitle("EchoPosture Debug Monitor")
@@ -447,13 +465,13 @@ class DebugWindow(QMainWindow):
                 lambda: VisionEngine(camera_id=camera_id, width=width, height=height)
             )
         )
-        self._backend_factories = dict(backend_factories or {})
-        self._backend_factories.setdefault(VISION_MODE_COMPATIBILITY, compatibility_factory)
+        raw_backend_factories = dict(backend_factories or {})
+        raw_backend_factories.setdefault(VISION_MODE_COMPATIBILITY, compatibility_factory)
         # A caller that injects a compatibility backend (the offscreen tests
         # and diagnostic embedders) must also opt in to any injected Standard
         # backend. The normal Debug UI path registers the real local model.
         if backend_factory is None:
-            self._backend_factories.setdefault(
+            raw_backend_factories.setdefault(
                 VISION_MODE_STANDARD,
                 lambda: _create_standard_pose_backend(
                     camera_id=camera_id,
@@ -463,6 +481,10 @@ class DebugWindow(QMainWindow):
                     model_path=standard_model_path,
                 ),
             )
+        self._backend_factories = face_enhanced_backend_factories(
+            raw_backend_factories,
+            enhancer_factory=face_enhancer_factory,
+        )
         if initial_vision_mode not in self._backend_factories:
             initial_vision_mode = VISION_MODE_COMPATIBILITY
         self.vision_mode = initial_vision_mode
@@ -472,6 +494,7 @@ class DebugWindow(QMainWindow):
         self.current_sample: Optional[VisionSample] = None
         self.current_raw_sample: Optional[VisionSample] = None
         self.current_target_update: Optional[TargetUpdate] = None
+        self._current_observations: tuple[PersonObservation, ...] = ()
         self._last_frame_error_detail: Optional[str] = None
         self.normal_fps = fps
         self.high_performance_fps = 72.0
@@ -482,6 +505,28 @@ class DebugWindow(QMainWindow):
         self._scientific_profile: Optional[CalibrationProfile] = None
         self._calibration_message_key = "debug_calib_init"
         self._calibration_message_kwargs: dict[str, object] = {}
+        self.identity_model = identity_model
+        self.identity_verifier = identity_verifier
+        self.identity_embedding_pipeline = identity_embedding_pipeline
+        self.identity_model_error: Optional[str] = None
+        self._identity_verifier_owned = False
+        self._identity_pipeline_owned = False
+        self._identity_embedding_future = None
+        self._identity_embedding_context: Optional[tuple[int, str, str, Optional[int]]] = None
+        self._identity_future = None
+        self._identity_future_context: Optional[tuple[int, Optional[int]]] = None
+        self._identity_enrollment_samples: list[FaceObservation] = []
+        self._identity_enrollment_active = False
+        self._identity_generation = 0
+        self._last_identity_embedding_at: dict[tuple[str, Optional[int]], float] = {}
+        self._identity_model_owned = False
+        if (
+            backend_factory is None
+            or identity_model is not None
+            or identity_verifier is not None
+            or identity_embedding_pipeline is not None
+        ):
+            self._prepare_identity_components()
         self.intervention_overlay = (
             PostureInterventionOverlay() if intervention_enabled else None
         )
@@ -822,12 +867,181 @@ class DebugWindow(QMainWindow):
         self._render_vision_backend_status()
 
     def _refresh_runtime_backend_status(self) -> None:
+        if self.identity_model_error is not None:
+            self._set_vision_backend_status(
+                "vision_identity_model_unavailable",
+                detail=self.identity_model_error,
+            )
+            return
         notice = getattr(self.engine, "diagnostic_notice", None)
         if notice is None:
             self._set_vision_backend_status()
             return
         reason_key, reason_kwargs = notice
         self._set_vision_backend_status(reason_key, **reason_kwargs)
+
+    def _prepare_identity_components(self) -> None:
+        if self.identity_verifier is not None and self.identity_embedding_pipeline is not None:
+            return
+        model = self.identity_model
+        created_model = model is None
+        try:
+            if model is None:
+                model = create_identity_model_adapter(VIT_KPRPE_WEBFACE4M)
+                self.identity_model = model
+            self._identity_model_owned = created_model
+            if not getattr(model, "loaded", True):
+                model.load()
+        except Exception as exc:
+            self.identity_model_error = f"{type(exc).__name__}: {exc}"
+            return
+        if self.identity_verifier is None:
+            self.identity_verifier = IdentityVerifier(model)
+            self._identity_verifier_owned = True
+        if self.identity_embedding_pipeline is None:
+            self.identity_embedding_pipeline = FaceEmbeddingPipeline(model)
+            self._identity_pipeline_owned = True
+
+    def _reset_identity_session(self, *, enroll: bool = False) -> None:
+        self._identity_generation += 1
+        self._identity_enrollment_samples = []
+        self._identity_enrollment_active = enroll and self.identity_verifier is not None
+        self._last_identity_embedding_at.clear()
+        for future in (self._identity_embedding_future, self._identity_future):
+            if future is not None:
+                future.cancel()
+        self._identity_embedding_future = None
+        self._identity_embedding_context = None
+        self._identity_future = None
+        self._identity_future_context = None
+        if self.identity_verifier is not None:
+            self.identity_verifier.clear_template()
+
+    @staticmethod
+    def _timestamp_seconds(value) -> float:
+        return value.timestamp() if isinstance(value, datetime) else float(value)
+
+    def _schedule_identity(
+        self,
+        frame,
+        observations: Sequence[PersonObservation],
+        target_update: Optional[TargetUpdate],
+    ) -> None:
+        verifier = self.identity_verifier
+        pipeline = self.identity_embedding_pipeline
+        if verifier is None or pipeline is None or target_update is None:
+            return
+        observation = (
+            target_update.identity_candidate_observation
+            or target_update.target_observation
+        )
+        track_id = (
+            target_update.identity_candidate_track_id
+            if target_update.identity_candidate_observation is not None
+            else target_update.target_track_id
+        )
+        if observation is None and self._identity_enrollment_active:
+            eligible = tuple(
+                candidate
+                for candidate in observations
+                if not candidate.association_ambiguous
+                and candidate.face_bbox_xyxy is not None
+                and len(candidate.face_landmarks or ()) >= 3
+            )
+            observation = eligible[0] if len(eligible) == 1 else None
+        if (
+            observation is None
+            or observation.face_bbox_xyxy is None
+            or observation.association_ambiguous
+            or self._identity_embedding_future is not None
+        ):
+            return
+        if self._identity_enrollment_active:
+            kind = "enroll"
+            trigger = TRIGGER_EXPLICIT
+            interval = 0.0
+        else:
+            kind = "verify"
+            trigger = (
+                TRIGGER_REACQUIRED
+                if target_update.state == "IDENTITY_UNCERTAIN"
+                else TRIGGER_HEARTBEAT
+            )
+            interval = (
+                verifier.config.min_event_interval_seconds
+                if trigger == TRIGGER_REACQUIRED
+                else verifier.config.heartbeat_seconds
+            )
+        key = (trigger, track_id)
+        now = self._timestamp_seconds(observation.timestamp)
+        previous = self._last_identity_embedding_at.get(key)
+        if previous is not None and now - previous < interval:
+            return
+        try:
+            self._identity_embedding_future = pipeline.request(frame, observation)
+        except (FaceEmbeddingUnavailable, RuntimeError, ValueError):
+            return
+        self._last_identity_embedding_at[key] = now
+        self._identity_embedding_context = (
+            self._identity_generation,
+            kind,
+            trigger,
+            track_id,
+        )
+
+    def _apply_identity_results(self) -> None:
+        embedding_future = self._identity_embedding_future
+        if embedding_future is not None and embedding_future.done():
+            context = self._identity_embedding_context
+            self._identity_embedding_future = None
+            self._identity_embedding_context = None
+            try:
+                observation = embedding_future.result()
+            except Exception:
+                observation = None
+            if observation is not None and context is not None and context[0] == self._identity_generation:
+                _generation, kind, trigger, track_id = context
+                verifier = self.identity_verifier
+                if verifier is not None and kind == "enroll":
+                    self._identity_enrollment_samples.append(observation)
+                    self._identity_enrollment_samples = self._identity_enrollment_samples[
+                        -verifier.config.max_frames:
+                    ]
+                    if len(self._identity_enrollment_samples) >= verifier.config.min_frames:
+                        result = verifier.enroll(self._identity_enrollment_samples)
+                        if result.ok:
+                            self._identity_enrollment_active = False
+                            self._identity_enrollment_samples = []
+                elif verifier is not None:
+                    future = verifier.request(
+                        observation,
+                        trigger=trigger,
+                        track_id=track_id,
+                        force=True,
+                    )
+                    if future is not None:
+                        self._identity_future = future
+                        self._identity_future_context = (self._identity_generation, track_id)
+
+        identity_future = self._identity_future
+        if identity_future is None or not identity_future.done():
+            return
+        context = self._identity_future_context
+        self._identity_future = None
+        self._identity_future_context = None
+        if context is None or context[0] != self._identity_generation or self.target_manager is None:
+            return
+        try:
+            result = identity_future.result()
+        except Exception:
+            self.target_manager.resolve_identity(None, context[1])
+            return
+        if result.state == IDENTITY_CONFIRMED:
+            self.target_manager.resolve_identity(True, context[1])
+        elif result.state == IDENTITY_MISMATCH:
+            self.target_manager.resolve_identity(False, context[1])
+        else:
+            self.target_manager.resolve_identity(None, context[1])
 
     def _switch_vision_mode(self, index: int) -> None:
         requested_mode = self.vision_mode_combo.itemData(index)
@@ -851,6 +1065,7 @@ class DebugWindow(QMainWindow):
         previous_mode = self.vision_mode
         previous_factory = self._backend_factories[previous_mode]
         self.cancel_dual_anchor_calibration()
+        self._reset_identity_session()
         self.engine.close()
         next_engine = None
         try:
@@ -881,6 +1096,7 @@ class DebugWindow(QMainWindow):
         self.current_sample = None
         self.current_raw_sample = None
         self.current_target_update = None
+        self._current_observations = ()
         self._last_frame_error_detail = None
         self._scientific_profile = None
         self.analyzer = HighPrecisionPostureAnalyzer(
@@ -925,14 +1141,17 @@ class DebugWindow(QMainWindow):
             return
 
         self._last_frame_error_detail = None
+        self._apply_identity_results()
         self.current_raw_sample = raw_sample
         observations = tuple(self.engine.observations_for_last_sample())
+        self._current_observations = observations
         target_update = None
         if self.target_manager is not None:
             target_update = self.target_manager.update(
                 observations,
                 timestamp=raw_sample.timestamp,
             )
+        self._schedule_identity(frame, observations, target_update)
         sample = self._sample_for_target(raw_sample, target_update)
         self.current_sample = sample
         self.current_target_update = target_update
@@ -968,6 +1187,7 @@ class DebugWindow(QMainWindow):
         if self.target_manager is not None:
             self.target_manager.reset()
             self.current_target_update = None
+        self._reset_identity_session(enroll=True)
         self._dual_calibration_accumulator = CalibrationAccumulator(self.calibration_plan)
         self._dual_calibration_last_rejection = None
         self.calibrate_button.setText(_t("debug_dual_cancel_btn"))
@@ -1013,6 +1233,7 @@ class DebugWindow(QMainWindow):
         self.dual_calibration_timer.stop()
         self.calibration_camera_prompt_timer.stop()
         self.calibration_camera_prompt.hide()
+        self._reset_identity_session()
         self._restore_calibration_controls()
         self._set_calibration_stage_visual("idle")
         self._set_calibration_message("debug_dual_calib_cancelled")
@@ -1098,7 +1319,7 @@ class DebugWindow(QMainWindow):
             return
         if self.target_manager is not None and self.current_raw_sample is not None:
             self.current_target_update = self.target_manager.update(
-                self.engine.observations_for_last_sample(),
+                self._current_observations,
                 timestamp=self.current_raw_sample.timestamp,
             )
             self.current_sample = self._sample_for_target(
@@ -1144,9 +1365,11 @@ class DebugWindow(QMainWindow):
             self._set_calibration_message("debug_target_calib_fail")
             return
 
+        self._reset_identity_session(enroll=True)
+
         if self.target_manager is not None and self.current_raw_sample is not None:
             self.current_target_update = self.target_manager.update(
-                self.engine.observations_for_last_sample(),
+                self._current_observations,
                 timestamp=self.current_raw_sample.timestamp,
             )
             self.current_sample = self._sample_for_target(
@@ -1169,6 +1392,7 @@ class DebugWindow(QMainWindow):
         if not self.analyzer.set_baseline_from_sample(self.current_sample, distance_cm):
             if self.target_manager is not None:
                 self.target_manager.reset()
+            self._reset_identity_session()
             self._set_calibration_message("debug_calib_fail")
             return
 
@@ -1629,6 +1853,27 @@ class DebugWindow(QMainWindow):
                 2,
                 cv2.LINE_AA,
             )
+            face_values = observation.face_bbox_xyxy
+            if (
+                face_values is None
+                or len(face_values) != 4
+                or not all(math.isfinite(value) for value in face_values)
+            ):
+                continue
+            face_left = max(0, min(width - 1, int(round(face_values[0]))))
+            face_top = max(0, min(height - 1, int(round(face_values[1]))))
+            face_right = max(0, min(width - 1, int(round(face_values[2]))))
+            face_bottom = max(0, min(height - 1, int(round(face_values[3]))))
+            if face_right <= face_left or face_bottom <= face_top:
+                continue
+            cv2.rectangle(
+                frame,
+                (face_left, face_top),
+                (face_right, face_bottom),
+                (255, 180, 70),
+                2,
+                cv2.LINE_AA,
+            )
 
     def _draw_landmarks(self, frame, sample: VisionSample) -> None:
         eye_color = (0, 220, 255)
@@ -1901,12 +2146,6 @@ class DebugWindow(QMainWindow):
         if not reason:
             return "--"
 
-        if (
-            self.vision_mode == VISION_MODE_STANDARD
-            and reason == "reacquired_candidate_needs_identity_confirmation"
-        ):
-            return _t("reason.standard_identity_confirmation_unavailable")
-
         # 用 reason key 直接替换为本地化文本（_t 自动按当前语言返回）
         translated = reason
         for key, tkey in REASON_TEXT.items():
@@ -1953,10 +2192,20 @@ class DebugWindow(QMainWindow):
         remove_listener(self._on_language_changed)
         self.timer.stop()
         self.dual_calibration_timer.stop()
+        self._reset_identity_session()
         if self.intervention_overlay is not None:
             self.intervention_overlay.force_clear()
             self.intervention_overlay.close()
         self.engine.close()
+        if self._identity_pipeline_owned and self.identity_embedding_pipeline is not None:
+            self.identity_embedding_pipeline.close()
+            self.identity_embedding_pipeline = None
+        if self._identity_verifier_owned and self.identity_verifier is not None:
+            self.identity_verifier.close()
+            self.identity_verifier = None
+        if self._identity_model_owned and self.identity_model is not None:
+            self.identity_model.close()
+            self.identity_model = None
         super().closeEvent(event)
 
 

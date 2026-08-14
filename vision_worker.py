@@ -185,6 +185,7 @@ class VisionWorker:
         self._preferred_cutoff_at = None
         self._calib_request_seq = 0
         self._identity_future = None
+        self._identity_future_context: Optional[int] = None
         self._identity_embedding_future = None
         self._identity_embedding_context: Optional[tuple[str, str, Optional[int]]] = None
         self._identity_enrollment_samples: list[FaceObservation] = []
@@ -340,16 +341,6 @@ class VisionWorker:
                     sample, target_update = self._read_sample(engine)
                     decision = self.analyzer.evaluate(sample)
                     if target_update is not None:
-                        if target_update.state == "IDENTITY_UNCERTAIN":
-                            if decision.status == "PROFILE_MISMATCH":
-                                self.target_manager.resolve_identity(False)
-                            elif decision.status not in {
-                                "IDENTITY_UNCERTAIN",
-                                "TARGET_AMBIGUOUS",
-                                "TARGET_OCCLUDED",
-                                "TARGET_REACQUIRING",
-                            }:
-                                self.target_manager.resolve_identity(True)
                         decision = self._attach_target_context(decision, target_update)
                 except Exception as exc:
                     self._publish_error(exc)
@@ -628,7 +619,15 @@ class VisionWorker:
         provider = getattr(engine, "observations_for_last_sample", None)
         observations = provider() if provider is not None else observation_from_sample(sample)
         target_update = self.target_manager.update(observations, timestamp=sample.timestamp)
-        identity_observation = target_update.target_observation
+        identity_observation = (
+            target_update.identity_candidate_observation
+            or target_update.target_observation
+        )
+        identity_track_id = (
+            target_update.identity_candidate_track_id
+            if target_update.identity_candidate_observation is not None
+            else target_update.target_track_id
+        )
         if identity_observation is None and self._mode == MODE_CALIBRATING:
             eligible = tuple(
                 observation
@@ -637,7 +636,13 @@ class VisionWorker:
                 and observation.face_bbox_xyxy is not None
             )
             identity_observation = eligible[0] if len(eligible) == 1 else None
-        self._schedule_identity_embedding(frame, identity_observation, target_update)
+            identity_track_id = target_update.target_track_id
+        self._schedule_identity_embedding(
+            frame,
+            identity_observation,
+            identity_track_id,
+            target_update,
+        )
         if target_update.target_observation is not None:
             sample = PostureFeatureExtractor.to_sample(target_update.target_observation)
         sample = replace(
@@ -656,13 +661,14 @@ class VisionWorker:
         self,
         frame,
         observation,
+        identity_track_id: Optional[int],
         target_update: TargetUpdate,
     ) -> None:
         pipeline = self.identity_embedding_pipeline
         verifier = self.identity_verifier
         if verifier is None or observation is None or observation.face_bbox_xyxy is None:
             self._last_identity_state = target_update.state
-            self._last_identity_track_id = target_update.target_track_id
+            self._last_identity_track_id = identity_track_id
             return
         if observation.association_ambiguous:
             # A face that cannot be attributed to the target body must never
@@ -671,7 +677,7 @@ class VisionWorker:
             if self._identity_enrollment_active:
                 self._reset_identity_enrollment()
             self._last_identity_state = target_update.state
-            self._last_identity_track_id = target_update.target_track_id
+            self._last_identity_track_id = identity_track_id
             return
         if observation.face_embedding is not None:
             self._submit_identity_observation(
@@ -682,6 +688,7 @@ class VisionWorker:
                     detector_quality=observation.face_quality or 0.0,
                     embedding=observation.face_embedding,
                 ),
+                identity_track_id,
                 target_update,
             )
             return
@@ -689,20 +696,13 @@ class VisionWorker:
             return
 
         if self._identity_enrollment_active:
-            context = (TRIGGER_EXPLICIT, target_update.target_track_id)
+            context = (TRIGGER_EXPLICIT, identity_track_id)
             kind = "enroll"
             interval = 0.0
         else:
-            reacquired = (
-                self._last_identity_track_id != target_update.target_track_id
-                or self._last_identity_state in {
-                    "TARGET_REACQUIRING",
-                    "AWAY",
-                    "TARGET_OCCLUDED",
-                }
-            )
+            reacquired = target_update.state == "IDENTITY_UNCERTAIN"
             trigger = TRIGGER_REACQUIRED if reacquired else TRIGGER_HEARTBEAT
-            context = (trigger, target_update.target_track_id)
+            context = (trigger, identity_track_id)
             kind = "verify"
             interval = (
                 verifier.config.min_event_interval_seconds
@@ -717,16 +717,17 @@ class VisionWorker:
             self._identity_embedding_future = pipeline.request(frame, observation)
         except (FaceEmbeddingUnavailable, RuntimeError, ValueError):
             self._last_identity_state = target_update.state
-            self._last_identity_track_id = target_update.target_track_id
+            self._last_identity_track_id = identity_track_id
             return
         self._last_identity_embedding_at[context] = now
         self._identity_embedding_context = (kind, context[0], context[1])
         self._last_identity_state = target_update.state
-        self._last_identity_track_id = target_update.target_track_id
+        self._last_identity_track_id = identity_track_id
 
     def _submit_identity_observation(
         self,
         face_observation: FaceObservation,
+        identity_track_id: Optional[int],
         target_update: TargetUpdate,
     ) -> None:
         verifier = self.identity_verifier
@@ -750,20 +751,18 @@ class VisionWorker:
                     self._identity_enrollment_active = False
                     self._identity_enrollment_samples = []
             return
-        reacquired = (
-            self._last_identity_track_id != target_update.target_track_id
-            or self._last_identity_state in {"TARGET_REACQUIRING", "AWAY", "TARGET_OCCLUDED"}
-        )
+        reacquired = target_update.state == "IDENTITY_UNCERTAIN"
         trigger = TRIGGER_REACQUIRED if reacquired else TRIGGER_HEARTBEAT
         future = verifier.request(
             face_observation,
             trigger=trigger,
-            track_id=target_update.target_track_id,
+            track_id=identity_track_id,
         )
         if future is not None:
             self._identity_future = future
+            self._identity_future_context = identity_track_id
         self._last_identity_state = target_update.state
-        self._last_identity_track_id = target_update.target_track_id
+        self._last_identity_track_id = identity_track_id
 
     def _apply_identity_embedding_result(self) -> None:
         future = self._identity_embedding_future
@@ -803,6 +802,7 @@ class VisionWorker:
         )
         if future is not None:
             self._identity_future = future
+            self._identity_future_context = track_id
 
     @staticmethod
     def _timestamp_seconds(value) -> float:
@@ -822,17 +822,19 @@ class VisionWorker:
         if future is None or not future.done():
             return
         self._identity_future = None
+        candidate_track_id = self._identity_future_context
+        self._identity_future_context = None
         try:
             result = future.result()
         except Exception:
-            self.target_manager.resolve_identity(None)
+            self.target_manager.resolve_identity(None, candidate_track_id)
             return
         if result.state == IDENTITY_CONFIRMED:
-            self.target_manager.resolve_identity(True)
+            self.target_manager.resolve_identity(True, candidate_track_id)
         elif result.state == IDENTITY_MISMATCH:
-            self.target_manager.resolve_identity(False)
+            self.target_manager.resolve_identity(False, candidate_track_id)
         else:
-            self.target_manager.resolve_identity(None)
+            self.target_manager.resolve_identity(None, candidate_track_id)
 
     def _publish_snapshot(
         self,

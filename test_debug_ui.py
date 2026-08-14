@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 from dataclasses import replace
 from datetime import datetime, timedelta
+from types import SimpleNamespace
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -43,6 +44,8 @@ def make_sample(timestamp: datetime = T0, relaxed: float = 0.0) -> VisionSample:
         left_eye_center=(290.0, 150.0),
         right_eye_center=(350.0, 150.0),
         face_nose_point=(320.0, 170.0),
+        face_left_mouth_point=(300.0, 190.0),
+        face_right_mouth_point=(340.0, 190.0),
         nose_point=(320.0, 170.0),
         left_shoulder_point=(220.0, 240.0),
         right_shoulder_point=(420.0, 244.0 + relaxed * 18.0),
@@ -81,7 +84,13 @@ class FakeDebugBackend:
         self.capabilities = type(
             "Capabilities",
             (),
-            {"backend_name": "fake-compatibility"},
+            {
+                "backend_name": "fake-compatibility",
+                "supports_multi_person_pose": False,
+                "supports_gpu": False,
+                "supports_world_coordinates": False,
+                "supports_face_bbox": True,
+            },
         )()
 
     def start(self) -> None:
@@ -120,6 +129,63 @@ class FailOnceDebugBackend(FakeDebugBackend):
         return super().read_frame_sample()
 
 
+class FakeFaceEnhancer:
+    def __init__(self) -> None:
+        self.closed = False
+
+    def enrich(self, _frame, observations):
+        enriched = []
+        for observation in observations:
+            features = replace(
+                observation.posture_features,
+                interpupillary_px=60.0,
+                face_detected=True,
+                left_eye_center=(290.0, 150.0),
+                right_eye_center=(350.0, 150.0),
+                face_nose_point=(320.0, 170.0),
+                face_left_mouth_point=(300.0, 190.0),
+                face_right_mouth_point=(340.0, 190.0),
+                face_quality=0.95,
+                face_required_for_calibration=True,
+            )
+            enriched.append(
+                replace(
+                    observation,
+                    face_bbox_xyxy=(270.0, 110.0, 370.0, 215.0),
+                    face_landmarks=(
+                        (290.0, 150.0),
+                        (350.0, 150.0),
+                        (320.0, 170.0),
+                        (300.0, 190.0),
+                        (340.0, 190.0),
+                    ),
+                    face_quality=0.95,
+                    posture_features=features,
+                )
+            )
+        return tuple(enriched)
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class FakeIdentityVerifier:
+    def __init__(self) -> None:
+        self.clear_count = 0
+        self.config = SimpleNamespace(
+            heartbeat_seconds=5.0,
+            min_event_interval_seconds=0.25,
+        )
+
+    def clear_template(self) -> None:
+        self.clear_count += 1
+
+
+class FakeIdentityPipeline:
+    def request(self, _frame, _observation):
+        raise RuntimeError("synthetic pipeline disabled")
+
+
 def make_window(app: QApplication, backend: FakeDebugBackend) -> DebugWindow:
     return DebugWindow(
         camera_id=0,
@@ -145,9 +211,10 @@ def test_debug_panel_exposes_non_intervention_statuses() -> None:
 def test_debug_panel_exposes_three_vision_modes_and_explicit_availability() -> None:
     app = QApplication.instance() or QApplication([])
     compatibility = FakeDebugBackend()
-    standard = FakeDebugBackend()
-    standard.capabilities.backend_name = "fake-standard"
-    standard.sample = make_pose_only_sample()
+    standard_pose = FakeDebugBackend()
+    standard_pose.capabilities.backend_name = "fake-standard"
+    standard_pose.sample = make_pose_only_sample()
+    verifier = FakeIdentityVerifier()
     window = DebugWindow(
         camera_id=0,
         fps=4.0,
@@ -156,7 +223,10 @@ def test_debug_panel_exposes_three_vision_modes_and_explicit_availability() -> N
         intervention_enabled=False,
         target_panel=True,
         backend_factory=lambda: compatibility,
-        backend_factories={VISION_MODE_STANDARD: lambda: standard},
+        backend_factories={VISION_MODE_STANDARD: lambda: standard_pose},
+        identity_verifier=verifier,
+        identity_embedding_pipeline=FakeIdentityPipeline(),
+        face_enhancer_factory=FakeFaceEnhancer,
     )
     try:
         modes = {
@@ -175,7 +245,7 @@ def test_debug_panel_exposes_three_vision_modes_and_explicit_availability() -> N
             window._vision_mode_index(VISION_MODE_STANDARD)
         )
         assert compatibility.closed
-        assert standard.started
+        assert standard_pose.started
         assert window.vision_mode == VISION_MODE_STANDARD
         assert "标准模式" in window.vision_backend_label.text()
         assert "fake-standard" in window.vision_backend_label.text()
@@ -190,11 +260,13 @@ def test_debug_panel_exposes_three_vision_modes_and_explicit_availability() -> N
         finally:
             debug_ui_module.cv2.rectangle = original_rectangle
         assert window.current_sample is not None
-        assert window.current_sample.face_required_for_calibration is False
-        assert "不处理人脸" in window.face_label.text()
-        assert len(drawn_boxes) == 1
+        assert window.current_sample.face_required_for_calibration is True
+        assert "60.0" in window.face_label.text()
+        assert len(drawn_boxes) == 2
         assert drawn_boxes[0][0] == (204, 152)
         assert drawn_boxes[0][1] == (436, 408)
+        assert drawn_boxes[1][0] == (270, 110)
+        assert drawn_boxes[1][1] == (370, 215)
 
         window._show_target_metrics(
             TargetUpdate(
@@ -208,9 +280,11 @@ def test_debug_panel_exposes_three_vision_modes_and_explicit_availability() -> N
         )
         assert "人体轨迹" in window.target_state_label.text()
         assert "兼容模式" not in window.target_state_label.text()
-        assert "尚未接入人脸身份确认" in window._human_reason(
+        identity_reason = window._human_reason(
             "reacquired_candidate_needs_identity_confirmation"
         )
+        assert "重新出现的候选目标需确认" in identity_reason
+        assert "尚未接入" not in identity_reason
 
         window.vision_mode_combo.setCurrentIndex(
             window._vision_mode_index(VISION_MODE_PROFESSIONAL_BETA)
@@ -228,6 +302,7 @@ def test_debug_panel_exposes_three_vision_modes_and_explicit_availability() -> N
         assert "兼容模式" in window.vision_backend_label.text()
         assert "fake-compatibility" in window.vision_backend_label.text()
         assert "TensorRT" not in window.vision_backend_label.text()
+        assert verifier.clear_count >= 2
     finally:
         window.close()
         app.processEvents()

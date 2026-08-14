@@ -11,8 +11,8 @@ from face_body_association import (
 
 
 BODY = BodyGeometry(
+    bbox_xyxy=(180.0, 100.0, 460.0, 450.0),
     shoulder_center=(320.0, 242.0),
-    shoulder_width=200.0,
     nose=(320.0, 170.0),
     left_ear=(278.0, 168.0),
     right_ear=(362.0, 168.0),
@@ -40,7 +40,7 @@ def face(
 def test_normal_single_face_matches_body() -> None:
     result = evaluate_face_body_association(face(), BODY)
     assert result.matched, result
-    assert result.face_shoulder_ratio == 0.3
+    assert result.score > 0.5
 
 
 def test_high_intruder_face_is_rejected_by_cross_model_geometry() -> None:
@@ -55,14 +55,12 @@ def test_same_height_bystander_face_is_rejected() -> None:
     assert result.reason == "face_horizontal_position_mismatch"
 
 
-def test_reference_scale_rejects_wrong_face_during_continuity_rescue() -> None:
-    result = evaluate_face_body_association(
-        face(eye_distance=32.0),
-        BODY,
-        reference_face_shoulder_ratio=0.30,
-    )
-    assert not result.matched
-    assert result.reason == "face_body_reference_scale_mismatch"
+def test_eye_distance_change_neither_confirms_nor_rejects_identity() -> None:
+    normal = evaluate_face_body_association(face(eye_distance=60.0), BODY)
+    close_or_foreshortened = evaluate_face_body_association(face(eye_distance=32.0), BODY)
+    assert normal.matched
+    assert close_or_foreshortened.matched
+    assert normal.reason == close_or_foreshortened.reason == "face_body_geometry_matched"
 
 
 def test_clear_body_face_is_selected_while_intruder_remains_countable() -> None:
@@ -78,6 +76,6 @@ if __name__ == "__main__":
     test_normal_single_face_matches_body()
     test_high_intruder_face_is_rejected_by_cross_model_geometry()
     test_same_height_bystander_face_is_rejected()
-    test_reference_scale_rejects_wrong_face_during_continuity_rescue()
+    test_eye_distance_change_neither_confirms_nor_rejects_identity()
     test_clear_body_face_is_selected_while_intruder_remains_countable()
     print("ALL TESTS PASSED")

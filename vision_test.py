@@ -462,7 +462,6 @@ class HighPrecisionPostureAnalyzer(PostureAnalyzer):
         self._smoothed_score = 0.0
         self._away_started_at: Optional[datetime] = None
         self._multi_started_at: Optional[datetime] = None
-        self._requires_profile_check = False
         if calibration_profile is not None:
             self.set_calibration_profile(calibration_profile, calibrated_distance_cm)
 
@@ -1188,10 +1187,9 @@ class HighPrecisionPostureAnalyzer(PostureAnalyzer):
         if sample.target_state is not None:
             return self._tracked_presence_decision(sample)
 
-        # 离开/换人的内部状态始终跟踪（两项功能互相独立），
         # presence_check_enabled 只决定是否产出 AWAY/MULTI_USER 抑制决策。
+        # Identity is handled exclusively by TargetManager + CVLFace.
         if sample.face_count > 1:
-            self._requires_profile_check = True
             self._away_started_at = None
             if self.presence_check_enabled:
                 # The timestamp is based on capture timestamps, so the
@@ -1219,7 +1217,6 @@ class HighPrecisionPostureAnalyzer(PostureAnalyzer):
                 0.0,
                 (sample.timestamp - self._away_started_at).total_seconds(),
             )
-            self._requires_profile_check = True
             if self.presence_check_enabled:
                 self._reset_risk_state()
                 if away_seconds >= self.away_grace_seconds:
@@ -1233,16 +1230,6 @@ class HighPrecisionPostureAnalyzer(PostureAnalyzer):
             self._multi_started_at = None
             self._away_started_at = None
 
-        # 换人比对只在画面回到单人时进行：多人帧的“第一张脸”归属不可靠
-        if self._requires_profile_check and sample.face_count <= 1:
-            if not self.identity_check_enabled:
-                self._requires_profile_check = False
-                return None
-            profile_decision = self._profile_check_decision(sample)
-            if profile_decision is not None:
-                self._reset_risk_state()
-                return profile_decision
-            self._requires_profile_check = False
         return None
 
     def _tracked_presence_decision(self, sample: VisionSample) -> Optional[PostureDecision]:
@@ -1250,7 +1237,6 @@ class HighPrecisionPostureAnalyzer(PostureAnalyzer):
         if state in {"TARGET_LOCKED", "MULTI_PRESENT"} and sample.target_observed:
             self._away_started_at = None
             self._multi_started_at = None
-            self._requires_profile_check = False
             return None
         if (
             not self.presence_check_enabled
@@ -1277,19 +1263,11 @@ class HighPrecisionPostureAnalyzer(PostureAnalyzer):
             )
         if state == "IDENTITY_UNCERTAIN":
             if not self.identity_check_enabled:
-                self._requires_profile_check = False
                 return None
-            self._requires_profile_check = True
-            profile_decision = self._profile_check_decision(sample)
             self._reset_risk_state()
-            if profile_decision is None:
-                self._requires_profile_check = False
-                return None
-            if profile_decision.status == "PROFILE_MISMATCH":
-                return profile_decision
             return PostureDecision(
                 "IDENTITY_UNCERTAIN",
-                profile_decision.reason,
+                sample.target_reason or "collecting_identity_frames",
                 True,
             )
         if state == "PROFILE_MISMATCH":
@@ -1301,34 +1279,6 @@ class HighPrecisionPostureAnalyzer(PostureAnalyzer):
         if state == "ACQUIRING":
             self._reset_risk_state()
             return PostureDecision("ACQUIRING", sample.target_reason or "target_not_locked", True)
-        return None
-
-    def _profile_check_decision(self, sample: VisionSample) -> Optional[PostureDecision]:
-        if self.baseline is None:
-            return None
-
-        current_face_ratio, current_torso_ratio = self._profile_ratios(sample)
-        reasons = []
-        checked = False
-
-        if self.baseline.face_shoulder_ratio is not None and current_face_ratio is not None:
-            checked = True
-            delta = abs(current_face_ratio - self.baseline.face_shoulder_ratio)
-            relative_delta = delta / max(self.baseline.face_shoulder_ratio, 0.001)
-            if relative_delta > 0.45:
-                reasons.append(f"profile_face_shoulder_delta={relative_delta:.2f}")
-
-        if self.baseline.torso_shoulder_ratio is not None and current_torso_ratio is not None:
-            checked = True
-            delta = abs(current_torso_ratio - self.baseline.torso_shoulder_ratio)
-            relative_delta = delta / max(self.baseline.torso_shoulder_ratio, 0.001)
-            if relative_delta > 0.35:
-                reasons.append(f"profile_torso_shoulder_delta={relative_delta:.2f}")
-
-        if reasons:
-            return PostureDecision("PROFILE_MISMATCH", ",".join(reasons), True)
-        if not checked:
-            return PostureDecision("UNKNOWN", "profile_check_waiting", True)
         return None
 
     def _reset_risk_state(self) -> None:
@@ -1771,10 +1721,23 @@ class VisionEngine:
             detected_faces = self._measure_face_detections(detection_result, frame_w, frame_h)
             face_count = len(detected_faces)
             selected_face = None
-            if shoulder_center is not None and shoulder_width_px is not None:
+            body_points = tuple(
+                point
+                for point in (
+                    nose_point,
+                    left_ear_point,
+                    right_ear_point,
+                    left_shoulder_point,
+                    right_shoulder_point,
+                    left_hip_point,
+                    right_hip_point,
+                )
+                if point is not None
+            )
+            if body_points:
                 body = BodyGeometry(
+                    bbox_xyxy=self._bbox_from_points(body_points),
                     shoulder_center=shoulder_center,
-                    shoulder_width=shoulder_width_px,
                     nose=nose_point,
                     left_ear=left_ear_point,
                     right_ear=right_ear_point,
@@ -1783,8 +1746,8 @@ class VisionEngine:
                 face_association_ambiguous = bool(detected_faces) and selected_face is None
                 if selected_face is None and len(detected_faces) == 1:
                     # Preserve one auditable candidate for the target manager's
-                    # short-gap continuity rescue. It remains explicitly
-                    # ambiguous until scale and temporal continuity agree.
+                    # short-gap continuity path. It remains explicitly
+                    # ambiguous and can never establish identity.
                     selected_face = detected_faces[0]
             if selected_face is not None:
                 face_bbox_xyxy = selected_face.bbox_xyxy

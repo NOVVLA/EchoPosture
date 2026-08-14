@@ -9,17 +9,14 @@ from typing import Optional, Sequence, Tuple
 Point = Tuple[float, float]
 BBox = Tuple[float, float, float, float]
 
-# Initial product safety bounds. They are deliberately broad and must be
-# revised from consented real-camera evidence; they are not anatomical or
-# medical claims.
-MIN_FACE_ABOVE_SHOULDERS_RATIO = -1.60
-MAX_FACE_ABOVE_SHOULDERS_RATIO = -0.15
-MAX_FACE_SHOULDER_OFFSET_RATIO = 0.75
-MIN_EYE_SHOULDER_RATIO = 0.10
-MAX_EYE_SHOULDER_RATIO = 0.40
-MAX_REFERENCE_SCALE_CHANGE = 0.35
-MAX_EYE_EAR_OFFSET_RATIO = 0.50
-MAX_NOSE_OFFSET_RATIO = 0.45
+# These are broad image-space ownership envelopes, not anatomical thresholds.
+# Identity is decided only by the face embedding verifier. This module merely
+# decides which detected face can be submitted for which pose observation.
+MAX_FACE_CENTER_X_OFFSET = 0.60
+MIN_FACE_CENTER_Y = -0.20
+MAX_FACE_CENTER_Y = 0.50
+MAX_EYE_EAR_OFFSET_DIAGONAL = 0.18
+MAX_NOSE_OFFSET_DIAGONAL = 0.16
 MIN_SELECTION_MARGIN = 0.12
 
 
@@ -49,8 +46,8 @@ class DetectedFace:
 
 @dataclass(frozen=True)
 class BodyGeometry:
-    shoulder_center: Point
-    shoulder_width: float
+    bbox_xyxy: BBox
+    shoulder_center: Optional[Point] = None
     nose: Optional[Point] = None
     left_ear: Optional[Point] = None
     right_ear: Optional[Point] = None
@@ -61,7 +58,6 @@ class FaceBodyAssociation:
     matched: bool
     score: float
     reason: str
-    face_shoulder_ratio: Optional[float]
 
 
 def _midpoint(left: Point, right: Point) -> Point:
@@ -75,97 +71,84 @@ def _clamp01(value: float) -> float:
 def evaluate_face_body_association(
     face: DetectedFace,
     body: BodyGeometry,
-    *,
-    reference_face_shoulder_ratio: Optional[float] = None,
 ) -> FaceBodyAssociation:
-    """Evaluate whether one detected face can safely belong to one pose."""
+    """Score face ownership using only frame-space position and pose anchors."""
 
-    shoulder_width = float(body.shoulder_width)
-    if not math.isfinite(shoulder_width) or shoulder_width <= 1.0:
-        return FaceBodyAssociation(False, 0.0, "shoulder_scale_unavailable", None)
-    eye_center = face.eye_center
-    eye_distance = face.eye_distance
-    if eye_center is None or eye_distance is None or eye_distance <= 1.0:
-        return FaceBodyAssociation(False, 0.0, "face_eye_geometry_unavailable", None)
-
-    dx_ratio = (eye_center[0] - body.shoulder_center[0]) / shoulder_width
-    dy_ratio = (eye_center[1] - body.shoulder_center[1]) / shoulder_width
-    if not (
-        MIN_FACE_ABOVE_SHOULDERS_RATIO
-        <= dy_ratio
-        <= MAX_FACE_ABOVE_SHOULDERS_RATIO
+    left, top, right, bottom = body.bbox_xyxy
+    width = float(right - left)
+    height = float(bottom - top)
+    if (
+        width <= 1.0
+        or height <= 1.0
+        or not all(math.isfinite(float(value)) for value in body.bbox_xyxy)
     ):
-        return FaceBodyAssociation(False, 0.0, "face_vertical_position_mismatch", None)
-    if abs(dx_ratio) > MAX_FACE_SHOULDER_OFFSET_RATIO:
-        return FaceBodyAssociation(False, 0.0, "face_horizontal_position_mismatch", None)
+        return FaceBodyAssociation(False, 0.0, "body_bbox_unavailable")
+    face_center = _bbox_center(face.bbox_xyxy)
+    if face_center is None:
+        return FaceBodyAssociation(False, 0.0, "face_bbox_unavailable")
 
-    scale_ratio = eye_distance / shoulder_width
-    if not MIN_EYE_SHOULDER_RATIO <= scale_ratio <= MAX_EYE_SHOULDER_RATIO:
-        return FaceBodyAssociation(False, 0.0, "face_body_scale_mismatch", scale_ratio)
-    if reference_face_shoulder_ratio is not None and reference_face_shoulder_ratio > 0:
-        relative_scale = scale_ratio / reference_face_shoulder_ratio
-        if not (
-            1.0 - MAX_REFERENCE_SCALE_CHANGE
-            <= relative_scale
-            <= 1.0 + MAX_REFERENCE_SCALE_CHANGE
-        ):
-            return FaceBodyAssociation(False, 0.0, "face_body_reference_scale_mismatch", scale_ratio)
+    normalized_x = (face_center[0] - (left + right) / 2.0) / width
+    normalized_y = (face_center[1] - top) / height
+    if abs(normalized_x) > MAX_FACE_CENTER_X_OFFSET:
+        return FaceBodyAssociation(False, 0.0, "face_horizontal_position_mismatch")
+    if not MIN_FACE_CENTER_Y <= normalized_y <= MAX_FACE_CENTER_Y:
+        return FaceBodyAssociation(False, 0.0, "face_vertical_position_mismatch")
 
-    cross_model_anchor_available = False
-    ear_score = 1.0
+    diagonal = max(1.0, math.hypot(width, height))
+
+    anchor_scores = []
     if body.left_ear is not None and body.right_ear is not None:
-        cross_model_anchor_available = True
         body_ear_center = _midpoint(body.left_ear, body.right_ear)
-        ear_offset = math.dist(eye_center, body_ear_center) / shoulder_width
-        if ear_offset > MAX_EYE_EAR_OFFSET_RATIO:
-            return FaceBodyAssociation(False, 0.0, "face_pose_ear_mismatch", scale_ratio)
-        ear_score = 1.0 - ear_offset / MAX_EYE_EAR_OFFSET_RATIO
+        face_ear_center = face.eye_center or face_center
+        ear_offset = math.dist(face_ear_center, body_ear_center) / diagonal
+        if ear_offset > MAX_EYE_EAR_OFFSET_DIAGONAL:
+            return FaceBodyAssociation(False, 0.0, "face_pose_ear_mismatch")
+        anchor_scores.append(1.0 - ear_offset / MAX_EYE_EAR_OFFSET_DIAGONAL)
 
-    nose_score = 1.0
     if body.nose is not None and face.nose is not None:
-        cross_model_anchor_available = True
-        nose_offset = math.dist(face.nose, body.nose) / shoulder_width
-        if nose_offset > MAX_NOSE_OFFSET_RATIO:
-            return FaceBodyAssociation(False, 0.0, "face_pose_nose_mismatch", scale_ratio)
-        nose_score = 1.0 - nose_offset / MAX_NOSE_OFFSET_RATIO
-    if not cross_model_anchor_available:
-        return FaceBodyAssociation(False, 0.0, "cross_model_face_anchor_unavailable", scale_ratio)
+        nose_offset = math.dist(face.nose, body.nose) / diagonal
+        if nose_offset > MAX_NOSE_OFFSET_DIAGONAL:
+            return FaceBodyAssociation(False, 0.0, "face_pose_nose_mismatch")
+        anchor_scores.append(1.0 - nose_offset / MAX_NOSE_OFFSET_DIAGONAL)
 
-    horizontal_score = 1.0 - abs(dx_ratio) / MAX_FACE_SHOULDER_OFFSET_RATIO
-    vertical_midpoint = (
-        MIN_FACE_ABOVE_SHOULDERS_RATIO + MAX_FACE_ABOVE_SHOULDERS_RATIO
-    ) / 2.0
-    vertical_half_width = (
-        MAX_FACE_ABOVE_SHOULDERS_RATIO - MIN_FACE_ABOVE_SHOULDERS_RATIO
-    ) / 2.0
-    vertical_score = 1.0 - abs(dy_ratio - vertical_midpoint) / vertical_half_width
+    horizontal_score = 1.0 - abs(normalized_x) / MAX_FACE_CENTER_X_OFFSET
+    vertical_midpoint = (MIN_FACE_CENTER_Y + MAX_FACE_CENTER_Y) / 2.0
+    vertical_half_width = (MAX_FACE_CENTER_Y - MIN_FACE_CENTER_Y) / 2.0
+    vertical_score = 1.0 - abs(normalized_y - vertical_midpoint) / vertical_half_width
     detector_score = _clamp01(float(face.confidence))
     score = (
-        detector_score * 0.30
+        detector_score * 0.25
         + _clamp01(horizontal_score) * 0.20
-        + _clamp01(vertical_score) * 0.15
-        + _clamp01(ear_score) * 0.15
-        + _clamp01(nose_score) * 0.20
+        + _clamp01(vertical_score) * 0.20
     )
-    return FaceBodyAssociation(True, score, "face_body_geometry_matched", scale_ratio)
+    if anchor_scores:
+        score += sum(_clamp01(value) for value in anchor_scores) / len(anchor_scores) * 0.35
+    else:
+        score += 0.35
+    return FaceBodyAssociation(True, _clamp01(score), "face_body_geometry_matched")
+
+
+def _bbox_center(bbox: BBox) -> Optional[Point]:
+    left, top, right, bottom = bbox
+    if (
+        right <= left
+        or bottom <= top
+        or not all(math.isfinite(float(value)) for value in bbox)
+    ):
+        return None
+    return (left + right) / 2.0, (top + bottom) / 2.0
 
 
 def select_face_for_body(
     faces: Sequence[DetectedFace],
     body: BodyGeometry,
-    *,
-    reference_face_shoulder_ratio: Optional[float] = None,
 ) -> Tuple[Optional[DetectedFace], FaceBodyAssociation]:
     """Select one clear body-owned face, otherwise explicitly abstain."""
 
     evaluated = [
         (
             face,
-            evaluate_face_body_association(
-                face,
-                body,
-                reference_face_shoulder_ratio=reference_face_shoulder_ratio,
-            ),
+            evaluate_face_body_association(face, body),
         )
         for face in faces
     ]
@@ -176,9 +159,9 @@ def select_face_for_body(
     )
     if not matched:
         reason = evaluated[0][1].reason if len(evaluated) == 1 else "no_face_matches_body"
-        return None, FaceBodyAssociation(False, 0.0, reason, None)
+        return None, FaceBodyAssociation(False, 0.0, reason)
     if len(matched) > 1 and matched[0][1].score - matched[1][1].score < MIN_SELECTION_MARGIN:
-        return None, FaceBodyAssociation(False, matched[0][1].score, "multiple_face_matches", None)
+        return None, FaceBodyAssociation(False, matched[0][1].score, "multiple_face_matches")
     return matched[0]
 
 

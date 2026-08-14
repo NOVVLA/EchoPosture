@@ -58,14 +58,15 @@ from PyQt5.QtWidgets import (
 
 from gpu_blur_overlay import GpuBlurOverlayController
 from face_embedding import FaceEmbeddingPipeline
+from face_observation_enhancer import FaceEnhancedBackend
 from debug_ui import STATUS_TEXT
 from identity_model_adapters import (
-    CvlFaceAutoModelAdapter,
     IR101_WEBFACE4M,
     ModelCacheError,
     ModelDependencyError,
     VIT_KPRPE_WEBFACE4M,
 )
+from identity_model_process import IdentityModelProcessError, create_identity_model_adapter
 from identity_verifier import IdentityVerifier
 from i18n import _t, add_listener, remove_listener
 from onboarding_toast import (
@@ -403,14 +404,21 @@ class TrayMonitor:
         self.vision_mode = VISION_MODE_COMPATIBILITY
         requested_identity_model = os.environ.get("ECHOPOSTURE_P5_IDENTITY_MODEL", "vit").lower()
         identity_spec = IR101_WEBFACE4M if requested_identity_model == "ir101" else VIT_KPRPE_WEBFACE4M
-        self.identity_model = CvlFaceAutoModelAdapter(identity_spec)
+        try:
+            self.identity_model = create_identity_model_adapter(identity_spec)
+        except IdentityModelProcessError as exc:
+            self.identity_model = None
+            self.identity_model_error = str(exc)
+        else:
+            self.identity_model_error = None
         self.identity_verifier: Optional[IdentityVerifier] = None
         self.identity_embedding_pipeline: Optional[FaceEmbeddingPipeline] = None
-        self.identity_model_error: Optional[str] = None
         # 摄像头 + MediaPipe + 评分全部活在 VisionWorker 工作线程；
         # 主线程只低频取信箱快照，UI 不再被推理阻塞。
-        engine_factory = lambda: CompatibilityBackend(
-            lambda: VisionEngine(camera_id=camera_id, width=width, height=height)
+        engine_factory = lambda: FaceEnhancedBackend(
+            CompatibilityBackend(
+                lambda: VisionEngine(camera_id=camera_id, width=width, height=height)
+            )
         )
         self.worker = VisionWorker(
             engine_factory=engine_factory,
@@ -481,11 +489,21 @@ class TrayMonitor:
         a missing optional runtime dependency or damaged cache disables only
         the identity gate and records a diagnostic reason.
         """
-        if self.identity_verifier is not None or self.identity_model_error is not None:
+        if (
+            self.identity_verifier is not None
+            or self.identity_model_error is not None
+            or self.identity_model is None
+        ):
             return
         try:
             self.identity_model.load()
-        except (ModelCacheError, ModelDependencyError, OSError, RuntimeError) as exc:
+        except (
+            IdentityModelProcessError,
+            ModelCacheError,
+            ModelDependencyError,
+            OSError,
+            RuntimeError,
+        ) as exc:
             self.identity_model_error = str(exc)
             print(f"P5 identity verification unavailable: {exc}", file=sys.stderr)
             return
@@ -524,7 +542,8 @@ class TrayMonitor:
         if self.identity_verifier is not None:
             self.identity_verifier.close()
             self.identity_verifier = None
-        self.identity_model.close()
+        if self.identity_model is not None:
+            self.identity_model.close()
         self.tray.hide()
         self.app.quit()
 

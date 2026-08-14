@@ -77,7 +77,6 @@ class PersonObservation:
     association_ambiguous: bool = False
     posture_features: Optional[PostureFeatures] = None
     scene_person_count: Optional[int] = None
-    face_body_scale_ratio: Optional[float] = None
     # Optional in-memory identity vector supplied by a future face backend.
     # It is never serialized by the compatibility adapter.
     face_embedding: Optional[Tuple[float, ...]] = None
@@ -98,6 +97,8 @@ class VisionBackend(Protocol):
     def start(self) -> None: ...
 
     def read_sample(self) -> VisionSample: ...
+
+    def read_frame_sample(self) -> Tuple[object, VisionSample]: ...
 
     def observations_for_last_sample(self) -> Tuple[PersonObservation, ...]: ...
 
@@ -204,26 +205,27 @@ def observation_from_sample(sample: VisionSample) -> Tuple[PersonObservation, ..
         )
         if point is not None
     )
-    face_points = sample.face_landmarks or tuple(
-        point
-        for point in (
-            sample.left_eye_center,
-            sample.right_eye_center,
-            sample.face_nose_point,
-            sample.face_left_mouth_point,
-            sample.face_right_mouth_point,
+    face_points = ()
+    if sample.face_detected:
+        face_points = sample.face_landmarks or tuple(
+            point
+            for point in (
+                sample.left_eye_center,
+                sample.right_eye_center,
+                sample.face_nose_point,
+                sample.face_left_mouth_point,
+                sample.face_right_mouth_point,
+            )
+            if point is not None
         )
-        if point is not None
-    )
     if not body_points and not face_points:
         return ()
 
     body_bbox = _bbox_from_points(body_points or face_points)
-    face_bbox = sample.face_bbox_xyxy
+    face_bbox = sample.face_bbox_xyxy if sample.face_detected else None
     if face_bbox is None and face_points and sample.face_count <= 1:
         face_bbox = _bbox_from_points(face_points, pad_ratio=0.2)
     ambiguous = sample.face_association_ambiguous
-    face_body_scale_ratio = None
     if sample.face_count > 1 and sample.face_bbox_xyxy is None:
         ambiguous = True
     if sample.face_count > 0 and sample.pose_detected:
@@ -250,8 +252,7 @@ def observation_from_sample(sample: VisionSample) -> Tuple[PersonObservation, ..
             shoulder_width = math.dist(sample.left_shoulder_point, sample.right_shoulder_point)
         if (
             face_bbox is None
-            or shoulder_center is None
-            or shoulder_width is None
+            or not body_points
             or left_eye is None
             or right_eye is None
         ):
@@ -270,14 +271,13 @@ def observation_from_sample(sample: VisionSample) -> Tuple[PersonObservation, ..
                     nose=face_nose,
                 ),
                 BodyGeometry(
+                    bbox_xyxy=body_bbox,
                     shoulder_center=shoulder_center,
-                    shoulder_width=shoulder_width,
                     nose=sample.nose_point,
                     left_ear=sample.left_ear_point,
                     right_ear=sample.right_ear_point,
                 ),
             )
-            face_body_scale_ratio = association.face_shoulder_ratio
             ambiguous = ambiguous or not association.matched
 
     keypoints = tuple(
@@ -316,7 +316,6 @@ def observation_from_sample(sample: VisionSample) -> Tuple[PersonObservation, ..
             ),
             association_ambiguous=ambiguous,
             scene_person_count=max(sample.face_count, 1 if sample.pose_detected else 0),
-            face_body_scale_ratio=face_body_scale_ratio,
             posture_features=PostureFeatures(
                 interpupillary_px=sample.interpupillary_px,
                 shoulder_diff_px=sample.shoulder_diff_px,

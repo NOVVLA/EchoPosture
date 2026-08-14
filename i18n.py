@@ -180,8 +180,6 @@ _TEXTS: Dict[str, Dict[str, str]] = {
         "reason.user_away_s": "用户离开秒数",
         "reason.user_missing_observing_s": "用户缺失观察秒数",
         "reason.profile_check_waiting": "等待用户轮廓校验",
-        "reason.profile_face_shoulder_delta": "脸肩比例变化",
-        "reason.profile_torso_shoulder_delta": "躯干肩宽比例变化",
         "reason.distance_too_close": "距离过近",
         "reason.distance_near": "距离偏近",
         "reason.distance_too_far": "距离过远",
@@ -207,8 +205,7 @@ _TEXTS: Dict[str, Dict[str, str]] = {
         "reason.target_geometry_association_ambiguous": "目标几何关联不明确",
         "reason.association_budget_exceeded": "画面人数超出安全关联预算，已暂停目标选择",
         "reason.reacquired_candidate_needs_identity_confirmation": "重新出现的候选目标需确认",
-        "reason.standard_identity_confirmation_unavailable": "标准模式尚未接入人脸身份确认，无法确认重新出现的目标",
-        "reason.reacquired_candidate_profile_mismatch": "重新出现的候选目标轮廓不匹配",
+        "reason.reacquired_candidate_identity_mismatch": "重新出现的候选目标人脸身份不匹配",
         "reason.other_track_present": "检测到其他轨迹",
         "reason.multi_present_observing": "多人状态观察中",
         "reason.multi_exit_stabilizing_s": "多人退出稳定秒数",
@@ -339,7 +336,8 @@ _TEXTS: Dict[str, Dict[str, str]] = {
 
         # ---- debug_ui: 指标后缀 ----
         "debug_face_suffix": "{v}  越大越近",
-        "debug_face_not_used_standard": "标准模式不处理人脸或身份数据",
+        "debug_face_not_used_standard": "当前帧未获得可用人脸测量",
+        "vision_identity_model_unavailable": "人脸身份模型不可用：{detail}",
         "debug_shoulder_suffix": "{v}  越大越歪",
 
         # ---- debug_ui: 启动失败弹窗（main 里） ----
@@ -506,8 +504,6 @@ _TEXTS: Dict[str, Dict[str, str]] = {
         "reason.user_away_s": "User away seconds",
         "reason.user_missing_observing_s": "User missing observed seconds",
         "reason.profile_check_waiting": "Waiting for profile check",
-        "reason.profile_face_shoulder_delta": "Face-shoulder ratio change",
-        "reason.profile_torso_shoulder_delta": "Torso-shoulder ratio change",
         "reason.distance_too_close": "Too close",
         "reason.distance_near": "Near",
         "reason.distance_too_far": "Too far",
@@ -533,8 +529,7 @@ _TEXTS: Dict[str, Dict[str, str]] = {
         "reason.target_geometry_association_ambiguous": "Target geometry association is ambiguous",
         "reason.association_budget_exceeded": "The scene exceeds the safe association budget; target selection is paused",
         "reason.reacquired_candidate_needs_identity_confirmation": "Reacquired candidate needs identity confirmation",
-        "reason.standard_identity_confirmation_unavailable": "Standard mode has no face identity confirmation yet; the reacquired target cannot be confirmed",
-        "reason.reacquired_candidate_profile_mismatch": "Reacquired candidate profile mismatch",
+        "reason.reacquired_candidate_identity_mismatch": "Reacquired candidate face identity does not match",
         "reason.other_track_present": "Another track is present",
         "reason.multi_present_observing": "Observing multiple-person state",
         "reason.multi_exit_stabilizing_s": "Multiple-person exit stabilization seconds",
@@ -665,7 +660,8 @@ _TEXTS: Dict[str, Dict[str, str]] = {
 
         # ---- debug_ui: 指标后缀 ----
         "debug_face_suffix": "{v}  larger = closer",
-        "debug_face_not_used_standard": "Standard mode does not process face or identity data",
+        "debug_face_not_used_standard": "No usable face measurement is available for this frame",
+        "vision_identity_model_unavailable": "Face identity model unavailable: {detail}",
         "debug_shoulder_suffix": "{v}  larger = more tilted",
 
         # ---- debug_ui: 启动失败弹窗 ----

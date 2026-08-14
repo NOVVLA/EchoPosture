@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import os
+import sys
+import tempfile
 from pathlib import Path
 
 import numpy as np
@@ -14,6 +16,10 @@ from identity_model_adapters import (
     VIT_KPRPE_WEBFACE4M,
     missing_model_files,
     model_path,
+)
+from identity_model_process import (
+    CvlFaceProcessAdapter,
+    find_identity_model_python,
 )
 from identity_verifier import FaceObservation
 
@@ -131,6 +137,55 @@ def test_kprpe_preload_restores_model_root_after_upstream_chdir() -> None:
     finally:
         identity_model_adapters.importlib.import_module = original_import_module
         os.chdir(model_root)
+
+
+def test_identity_model_python_discovery_honors_explicit_runtime() -> None:
+    original = os.environ.get("ECHOPOSTURE_P5_PYTHON")
+    try:
+        os.environ["ECHOPOSTURE_P5_PYTHON"] = sys.executable
+        assert find_identity_model_python() == Path(sys.executable)
+    finally:
+        if original is None:
+            os.environ.pop("ECHOPOSTURE_P5_PYTHON", None)
+        else:
+            os.environ["ECHOPOSTURE_P5_PYTHON"] = original
+
+
+def test_isolated_process_protocol_returns_embedding_and_closes() -> None:
+    service_source = """
+import json
+import sys
+
+print(json.dumps({"event": "ready", "ok": True}), flush=True)
+for line in sys.stdin:
+    request = json.loads(line)
+    if request.get("op") == "close":
+        break
+    print(json.dumps({
+        "request_id": request["request_id"],
+        "ok": True,
+        "embedding": [3.0, 4.0],
+    }), flush=True)
+"""
+    with tempfile.TemporaryDirectory() as temporary_directory:
+        service_script = Path(temporary_directory) / "fake_identity_worker.py"
+        service_script.write_text(service_source, encoding="utf-8")
+        adapter = CvlFaceProcessAdapter(
+            VIT_KPRPE_WEBFACE4M,
+            python_executable=Path(sys.executable),
+            service_script=service_script,
+            startup_timeout=5.0,
+            request_timeout=5.0,
+        )
+        adapter.load()
+        assert adapter.loaded
+        embedding = adapter.embed_rgb_image(
+            np.zeros((112, 112, 3), dtype=np.uint8),
+            tuple((0.1 * index, 0.2 * index) for index in range(5)),
+        )
+        assert embedding == (3.0, 4.0)
+        adapter.close()
+        assert not adapter.loaded
 
 
 if __name__ == "__main__":

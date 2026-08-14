@@ -20,10 +20,10 @@ from identity_verifier import (
     IdentityVerifier,
     IdentityVerifierConfig,
     PrecomputedEmbedder,
+    TRIGGER_REACQUIRED,
 )
 from vision_backend import observation_from_sample
-from vision_tracking import TargetManager
-from vision_tracking import TARGET_LOCKED, TargetUpdate
+from vision_tracking import IDENTITY_UNCERTAIN, TARGET_LOCKED, TargetManager, TargetUpdate
 from vision_test import (
     CameraBlackFrameError,
     HighPrecisionPostureAnalyzer,
@@ -246,6 +246,65 @@ class ImmediateEmbeddingPipeline:
         return future
 
 
+def test_worker_reacquired_identity_uses_candidate_context_and_event_interval() -> None:
+    engine = FakeEngine()
+    analyzer = HighPrecisionPostureAnalyzer(auto_calibrate=False, require_dual_anchor=True)
+    verifier = IdentityVerifier(
+        PrecomputedEmbedder(),
+        IdentityVerifierConfig(
+            min_frames=1,
+            max_frames=2,
+            debounce_results=1,
+            min_event_interval_seconds=0.25,
+        ),
+    )
+    enrolled = FaceObservation(
+        timestamp=datetime(2026, 1, 1, 12, 0, 0),
+        bbox_xyxy=(270.0, 110.0, 370.0, 215.0),
+        landmarks=((290.0, 150.0), (350.0, 150.0), (320.0, 170.0)),
+        detector_quality=0.95,
+        embedding=(1.0, 0.0),
+    )
+    assert verifier.enroll([enrolled]).ok
+    pipeline = ImmediateEmbeddingPipeline()
+    worker = VisionWorker(
+        engine_factory=lambda: engine,
+        analyzer=analyzer,
+        identity_verifier=verifier,
+        identity_embedding_pipeline=pipeline,
+    )
+    candidate = observation_from_sample(
+        make_production_dual_sample(datetime(2026, 1, 1, 12, 0, 1))
+    )[0]
+    update = TargetUpdate(
+        state=IDENTITY_UNCERTAIN,
+        target_track_id=1,
+        target_observation=None,
+        tracks=(),
+        person_count=1,
+        reason="reacquired_candidate_needs_identity_confirmation",
+        identity_candidate_track_id=7,
+        identity_candidate_observation=candidate,
+    )
+    try:
+        worker._schedule_identity_embedding(object(), candidate, 7, update)
+        assert pipeline.request_count == 1
+        assert worker._identity_embedding_context == ("verify", TRIGGER_REACQUIRED, 7)
+        worker._apply_identity_embedding_result()
+
+        too_soon = replace(candidate, timestamp=candidate.timestamp + timedelta(seconds=0.1))
+        worker._schedule_identity_embedding(object(), too_soon, 7, update)
+        assert pipeline.request_count == 1
+
+        ready = replace(candidate, timestamp=candidate.timestamp + timedelta(seconds=0.3))
+        worker._schedule_identity_embedding(object(), ready, 7, update)
+        assert pipeline.request_count == 2
+        assert worker._identity_embedding_context == ("verify", TRIGGER_REACQUIRED, 7)
+    finally:
+        verifier.close()
+    print("test_worker_reacquired_identity_uses_candidate_context_and_event_interval OK")
+
+
 def test_worker_builds_session_identity_template_from_transient_embeddings() -> None:
     engine = FakeEngine()
     analyzer = HighPrecisionPostureAnalyzer(auto_calibrate=False, require_dual_anchor=True)
@@ -274,6 +333,7 @@ def test_worker_builds_session_identity_template_from_transient_embeddings() -> 
             worker._schedule_identity_embedding(
                 object(),
                 observation,
+                1,
                 update,
             )
             worker._apply_identity_embedding_result()
@@ -311,7 +371,7 @@ def test_worker_enrolls_embedding_already_supplied_by_backend() -> None:
     )
     worker._identity_enrollment_active = True
     try:
-        worker._schedule_identity_embedding(None, observation, update)
+        worker._schedule_identity_embedding(None, observation, 1, update)
         assert verifier.has_template
         assert not worker._identity_enrollment_active
     finally:
@@ -356,10 +416,11 @@ def test_worker_rejects_ambiguous_face_before_identity_embedding() -> None:
         )
     ]
     try:
-        worker._schedule_identity_embedding(None, observation, update)
+        worker._schedule_identity_embedding(None, observation, 1, update)
         worker._schedule_identity_embedding(
             object(),
             replace(observation, face_embedding=None),
+            1,
             update,
         )
         assert not verifier.has_template
@@ -394,7 +455,7 @@ def test_worker_ignores_late_embedding_after_enrollment_is_cancelled() -> None:
     )
     worker._identity_enrollment_active = True
     try:
-        worker._schedule_identity_embedding(object(), observation, update)
+        worker._schedule_identity_embedding(object(), observation, 1, update)
         worker._identity_enrollment_active = False
         worker._apply_identity_embedding_result()
         assert not verifier.has_template
@@ -957,6 +1018,7 @@ if __name__ == "__main__":
     test_dual_anchor_worker_skips_quality_dropout_without_resetting_stage()
     test_dual_anchor_worker_accepts_borderline_pose_quality_for_anchor_repeatability()
     test_production_worker_dual_anchor_requires_normal_range_before_exposure()
+    test_worker_reacquired_identity_uses_candidate_context_and_event_interval()
     test_worker_builds_session_identity_template_from_transient_embeddings()
     test_worker_enrolls_embedding_already_supplied_by_backend()
     test_worker_rejects_ambiguous_face_before_identity_embedding()

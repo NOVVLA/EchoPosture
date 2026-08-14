@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Dict, Iterable, List, Optional, Tuple
 
@@ -37,12 +37,9 @@ class TargetManagerConfig:
     # split into a missing target plus a permanent candidate. These are
     # product tracking parameters, not identity or anatomical thresholds.
     face_continuity_max_gap_seconds: float = 0.5
-    face_reacquire_max_gap_seconds: float = 4.0
     max_face_center_distance_ratio: float = 1.5
-    max_ambiguous_face_center_distance_ratio: float = 0.45
     min_face_area_ratio: float = 0.35
     min_face_continuity_quality: float = 0.50
-    max_face_body_scale_change: float = 0.35
     moving_speed_ratio_per_second: float = 0.20
     # Activity classification is intentionally slower than association
     # prediction so detector jitter does not become user movement.
@@ -76,6 +73,8 @@ class TargetUpdate:
     reason: str
     target_motion: Optional[float] = None
     activity_state: str = "UNKNOWN"
+    identity_candidate_track_id: Optional[int] = None
+    identity_candidate_observation: Optional[PersonObservation] = None
 
 
 @dataclass
@@ -144,8 +143,8 @@ class TargetManager:
         self._multi_last_present_at: Optional[Timestamp] = None
         self._multi_confirmed = False
         self._identity_pending = False
-        self._identity_mismatch = False
-        self._target_face_body_scale_ratio: Optional[float] = None
+        self._identity_candidate_track_id: Optional[int] = None
+        self._identity_mismatch_track_id: Optional[int] = None
 
     def reset(self) -> None:
         self._tracks.clear()
@@ -157,8 +156,8 @@ class TargetManager:
         self._multi_last_present_at = None
         self._multi_confirmed = False
         self._identity_pending = False
-        self._identity_mismatch = False
-        self._target_face_body_scale_ratio = None
+        self._identity_candidate_track_id = None
+        self._identity_mismatch_track_id = None
 
     def lock_target(self, track_id: Optional[int] = None) -> bool:
         """Lock only an existing, unambiguous track; never create one implicitly."""
@@ -185,19 +184,38 @@ class TargetManager:
         self._multi_last_present_at = None
         self._multi_confirmed = False
         self._identity_pending = False
-        self._identity_mismatch = False
-        self._target_face_body_scale_ratio = self._face_body_scale_ratio(track.observation)
+        self._identity_candidate_track_id = None
+        self._identity_mismatch_track_id = None
         return True
 
     def lock_calibration_target(self) -> bool:
         return self.lock_target()
 
-    def resolve_identity(self, matches_target: Optional[bool]) -> None:
+    def resolve_identity(
+        self,
+        matches_target: Optional[bool],
+        candidate_track_id: Optional[int] = None,
+    ) -> bool:
+        expected_track_id = self._identity_candidate_track_id
+        if candidate_track_id is not None and candidate_track_id != expected_track_id:
+            return False
         if matches_target is None:
             self._identity_pending = True
-            return
+            return True
+        if expected_track_id is None:
+            return False
         self._identity_pending = False
-        self._identity_mismatch = not matches_target
+        if not matches_target:
+            self._identity_mismatch_track_id = expected_track_id
+            return True
+        if expected_track_id != self.target_track_id and not self._bind_identity_candidate(
+            expected_track_id
+        ):
+            return False
+        self._identity_candidate_track_id = None
+        self._identity_mismatch_track_id = None
+        self.state = TARGET_LOCKED
+        return True
 
     def update(
         self,
@@ -223,26 +241,6 @@ class TargetManager:
             return self._association_budget_update(observations)
 
         for _, track, observation, match_score in assignments:
-            # Once a target is locked, temporal face continuity can resolve a
-            # geometric face/body envelope failure caused by a deep lean. The
-            # observation remains auditable, but is no longer allowed to turn
-            # one visible user into TARGET_OCCLUDED/TARGET_AMBIGUOUS.
-            if (
-                track.track_id == self.target_track_id
-                and not self._target_scale_matches(observation)
-            ):
-                observation = replace(observation, association_ambiguous=True)
-            if (
-                track.track_id == self.target_track_id
-                and observation.association_ambiguous
-                and self._face_continuity_score(
-                    track,
-                    observation,
-                    require_body_scale_consistency=True,
-                )
-                is not None
-            ):
-                observation = replace(observation, association_ambiguous=False)
             self._update_track(track, observation, match_score)
 
         for track in self._tracks.values():
@@ -266,28 +264,7 @@ class TargetManager:
                 default=0,
             ),
         )
-        if target is not None and target_observation is None:
-            candidate = self._face_reacquire_candidate(target, active_tracks)
-            if candidate is not None:
-                # Keep the original target id and transfer only the live
-                # numeric observation. Identity verification still runs after
-                # this rebind when the occlusion gap exceeded its grace.
-                target.observation = replace(candidate.observation, association_ambiguous=False)
-                target.last_seen_at = candidate.last_seen_at
-                target.previous_center = candidate.previous_center
-                target.velocity = candidate.velocity
-                target.motion_velocity = candidate.motion_velocity
-                target.scale_velocity = candidate.scale_velocity
-                target.missed_frames = 0
-                target.seen_frames += candidate.seen_frames
-                target.last_match_score = candidate.last_match_score
-                del self._tracks[candidate.track_id]
-                # Rebinding a separately created track is not identity proof.
-                # Keep posture intervention paused until the shared verifier
-                # confirms the candidate, even when face geometry is unique.
-                self._identity_pending = True
-                target_observation = target.observation
-                active_tracks = [track for track in self._tracks.values() if track.missed_frames == 0]
+        identity_candidate = self._identity_candidate(target, target_observation, active_tracks)
         other_tracks = [track for track in active_tracks if track.track_id != self.target_track_id]
         other_person_present = bool(other_tracks) or scene_person_count > 1
         target_ambiguous = self._track_is_ambiguous(self.target_track_id, candidate_scores)
@@ -315,13 +292,14 @@ class TargetManager:
                 else 0.0
             )
             self._target_missing_since = None
-            if self._identity_mismatch:
+            if self._identity_mismatch_track_id == self.target_track_id:
                 self.state = PROFILE_MISMATCH
-                reason = "reacquired_candidate_profile_mismatch"
+                reason = "reacquired_candidate_identity_mismatch"
             elif self._identity_pending or (
                 was_missing and missing_seconds >= self.config.occlusion_grace_seconds
             ):
                 self._identity_pending = True
+                self._identity_candidate_track_id = self.target_track_id
                 self.state = IDENTITY_UNCERTAIN
                 reason = "reacquired_candidate_needs_identity_confirmation"
             elif other_person_present:
@@ -351,20 +329,40 @@ class TargetManager:
             self._multi_started_at = None
             self._multi_last_present_at = None
             self._multi_confirmed = False
-            self._identity_mismatch = False
             if self._target_missing_since is None:
                 self._target_missing_since = timestamp
             missing_seconds = max(0.0, _elapsed_seconds(timestamp, self._target_missing_since))
-            if active_tracks:
-                self.state = TARGET_REACQUIRING
-                reason = "target_missing_candidate_present"
+            if identity_candidate is not None:
+                self._identity_candidate_track_id = identity_candidate.track_id
+                if self._identity_mismatch_track_id == identity_candidate.track_id:
+                    self._identity_pending = False
+                    self.state = PROFILE_MISMATCH
+                    reason = "reacquired_candidate_identity_mismatch"
+                else:
+                    self._identity_pending = True
+                    self.state = IDENTITY_UNCERTAIN
+                    reason = "reacquired_candidate_needs_identity_confirmation"
+            elif active_tracks:
+                self._identity_candidate_track_id = None
+                self._identity_pending = False
+                if len(active_tracks) > 1 or any(
+                    track.observation.association_ambiguous for track in active_tracks
+                ):
+                    self.state = TARGET_AMBIGUOUS
+                    reason = "identity_candidate_ambiguous"
+                else:
+                    self.state = TARGET_REACQUIRING
+                    reason = "identity_candidate_face_unavailable"
             elif missing_seconds < self.config.occlusion_grace_seconds:
+                self._identity_candidate_track_id = None
                 self.state = TARGET_OCCLUDED
                 reason = f"target_missing_observing_s={missing_seconds:.1f}"
             elif missing_seconds >= self.config.away_confirm_seconds:
+                self._identity_candidate_track_id = None
                 self.state = AWAY
                 reason = f"target_away_s={missing_seconds:.1f}"
             else:
+                self._identity_candidate_track_id = None
                 self.state = TARGET_REACQUIRING
                 reason = f"target_missing_s={missing_seconds:.1f}"
 
@@ -386,6 +384,20 @@ class TargetManager:
             reason=reason,
             target_motion=target_motion,
             activity_state=activity_state,
+            identity_candidate_track_id=(
+                identity_candidate.track_id
+                if identity_candidate is not None
+                else self.target_track_id
+                if self.state == IDENTITY_UNCERTAIN and target_observation is not None
+                else None
+            ),
+            identity_candidate_observation=(
+                identity_candidate.observation
+                if identity_candidate is not None
+                else target_observation
+                if self.state == IDENTITY_UNCERTAIN
+                else None
+            ),
         )
 
     def _association_budget_update(
@@ -490,20 +502,9 @@ class TargetManager:
         return best_matches, candidate_scores
 
     def _match_score(self, track: _Track, observation: PersonObservation) -> Optional[float]:
-        face_score = self._face_continuity_score(
-            track,
-            observation,
-            require_body_scale_consistency=observation.association_ambiguous,
-        )
+        face_score = self._face_continuity_score(track, observation)
         if observation.association_ambiguous:
-            if track.track_id == self.target_track_id:
-                # Compatibility mode can mark a clear, continuous face as
-                # face/body ambiguous when a deep lean moves the pose box.
-                # Only short-gap face continuity may resolve that condition
-                # for the already locked target.
-                if face_score is None:
-                    return None
-            elif not track.observation.association_ambiguous:
+            if not track.observation.association_ambiguous:
                 return None
         if (
             observation.detection_id is not None
@@ -534,7 +535,6 @@ class TargetManager:
         observation: PersonObservation,
         *,
         max_gap_seconds: Optional[float] = None,
-        require_body_scale_consistency: bool = False,
     ) -> Optional[float]:
         previous = track.observation.face_bbox_xyxy
         current = observation.face_bbox_xyxy
@@ -555,20 +555,6 @@ class TargetManager:
             else max_gap_seconds
         ):
             return None
-        if require_body_scale_consistency:
-            previous_scale = (
-                self._target_face_body_scale_ratio
-                if track.track_id == self.target_track_id
-                else self._face_body_scale_ratio(track.observation)
-            )
-            current_scale = self._face_body_scale_ratio(observation)
-            if previous_scale is None or current_scale is None or previous_scale <= 0:
-                return None
-            relative_scale = current_scale / previous_scale
-            scale_change = self.config.max_face_body_scale_change
-            if not 1.0 - scale_change <= relative_scale <= 1.0 + scale_change:
-                return None
-
         previous_diagonal = math.hypot(
             previous[2] - previous[0],
             previous[3] - previous[1],
@@ -589,11 +575,7 @@ class TargetManager:
             current_area,
             1.0,
         )
-        max_center_distance = (
-            self.config.max_ambiguous_face_center_distance_ratio
-            if require_body_scale_consistency
-            else self.config.max_face_center_distance_ratio
-        )
+        max_center_distance = self.config.max_face_center_distance_ratio
         if (
             center_distance > max_center_distance
             or area_ratio < self.config.min_face_area_ratio
@@ -605,55 +587,45 @@ class TargetManager:
         )
         return distance_score * 0.75 + _iou(previous, current) * 0.20 + area_ratio * 0.05
 
-    def _target_scale_matches(self, observation: PersonObservation) -> bool:
-        reference = self._target_face_body_scale_ratio
-        current = self._face_body_scale_ratio(observation)
-        if reference is None or current is None or reference <= 0:
-            return True
-        relative_scale = current / reference
-        scale_change = self.config.max_face_body_scale_change
-        return 1.0 - scale_change <= relative_scale <= 1.0 + scale_change
-
-    @staticmethod
-    def _face_body_scale_ratio(observation: PersonObservation) -> Optional[float]:
-        if observation.face_body_scale_ratio is not None:
-            return observation.face_body_scale_ratio
-        features = observation.posture_features
-        if (
-            features is None
-            or features.interpupillary_px is None
-            or features.shoulder_width_px is None
-            or features.shoulder_width_px <= 0
-        ):
-            return None
-        return features.interpupillary_px / features.shoulder_width_px
-
-    def _face_reacquire_candidate(
+    def _identity_candidate(
         self,
-        target: _Track,
+        target: Optional[_Track],
+        target_observation: Optional[PersonObservation],
         active_tracks: List[_Track],
     ) -> Optional[_Track]:
-        candidates: list[tuple[float, _Track]] = []
-        for track in active_tracks:
-            if track.track_id == target.track_id:
-                continue
-            if track.observation.association_ambiguous:
-                continue
-            score = self._face_continuity_score(
-                target,
-                track.observation,
-                max_gap_seconds=self.config.face_reacquire_max_gap_seconds,
-            )
-            if score is not None:
-                candidates.append((score, track))
-        candidates.sort(key=lambda item: item[0], reverse=True)
-        if not candidates:
+        if target is None or target_observation is not None:
             return None
-        if len(candidates) > 1 and (
-            candidates[0][0] - candidates[1][0] < self.config.association_ambiguity_margin
-        ):
-            return None
-        return candidates[0][1]
+        candidates = [
+            track
+            for track in active_tracks
+            if track.track_id != target.track_id
+            and not track.observation.association_ambiguous
+            and track.observation.face_bbox_xyxy is not None
+            and len(track.observation.face_landmarks or ()) >= 3
+            and (track.observation.face_quality or 0.0)
+            >= self.config.min_face_continuity_quality
+        ]
+        return candidates[0] if len(candidates) == 1 else None
+
+    def _bind_identity_candidate(self, candidate_track_id: int) -> bool:
+        if self.target_track_id is None or candidate_track_id == self.target_track_id:
+            return candidate_track_id == self.target_track_id
+        target = self._tracks.get(self.target_track_id)
+        candidate = self._tracks.get(candidate_track_id)
+        if target is None or candidate is None or candidate.missed_frames != 0:
+            return False
+        target.observation = candidate.observation
+        target.last_seen_at = candidate.last_seen_at
+        target.previous_center = candidate.previous_center
+        target.velocity = candidate.velocity
+        target.motion_velocity = candidate.motion_velocity
+        target.scale_velocity = candidate.scale_velocity
+        target.missed_frames = 0
+        target.seen_frames += candidate.seen_frames
+        target.last_match_score = candidate.last_match_score
+        del self._tracks[candidate_track_id]
+        self._target_missing_since = None
+        return True
 
     def _track_is_ambiguous(
         self,

@@ -247,25 +247,35 @@ def test_presence_toggle_resets_multi_debounce_anchor():
 def test_identity_toggle():
     analyzer = calibrated_analyzer()
 
-    # 先触发一次“需要复查体型”的事件（短暂离开）
+    # 短暂离开后，几何尺度变化仍不得成为身份结论。
     analyzer.evaluate(make_sample(T0 + timedelta(seconds=1), face=False, pose=False))
-
-    # 开：回座后瞳距/肩宽比大幅偏离基线 → PROFILE_MISMATCH
-    stranger = make_sample(T0 + timedelta(seconds=2), ipd=30.0)
-    decision = analyzer.evaluate(stranger)
-    assert decision.status == "PROFILE_MISMATCH", decision
-
-    # 关：同样的画面不再拦截，交给正常评分
-    analyzer.identity_check_enabled = False
-    decision = analyzer.evaluate(make_sample(T0 + timedelta(seconds=3), ipd=30.0))
+    scale_changed = make_sample(T0 + timedelta(seconds=2), ipd=30.0)
+    decision = analyzer.evaluate(scale_changed)
     assert decision.status != "PROFILE_MISMATCH", decision
 
-    # 关闭在场检测时，多人/离开事件仍会为换人保护记录复查标记
-    analyzer.identity_check_enabled = True
+    # 即使关闭在场检测并经历多人画面，比例变化也不得被升格为换人。
     analyzer.presence_check_enabled = False
-    analyzer.evaluate(make_sample(T0 + timedelta(seconds=4), face_count=2))
-    decision = analyzer.evaluate(make_sample(T0 + timedelta(seconds=5), ipd=30.0))
-    assert decision.status == "PROFILE_MISMATCH", decision
+    analyzer.evaluate(make_sample(T0 + timedelta(seconds=3), face_count=2))
+    decision = analyzer.evaluate(make_sample(T0 + timedelta(seconds=4), ipd=30.0))
+    assert decision.status != "PROFILE_MISMATCH", decision
+
+    # 开：仅对 TargetManager + CVLFace 产生的待复核状态进行拦截。
+    identity_pending = replace(
+        make_sample(T0 + timedelta(seconds=5)),
+        target_state="IDENTITY_UNCERTAIN",
+        target_observed=False,
+        target_reason="collecting_identity_frames",
+    )
+    analyzer.identity_check_enabled = True
+    decision = analyzer.evaluate(identity_pending)
+    assert decision.status == "IDENTITY_UNCERTAIN", decision
+
+    # 关：不再输出身份待复核拒绝，而是交给正常姿态评分。
+    analyzer.identity_check_enabled = False
+    decision = analyzer.evaluate(
+        replace(identity_pending, timestamp=T0 + timedelta(seconds=6))
+    )
+    assert decision.status not in {"IDENTITY_UNCERTAIN", "PROFILE_MISMATCH"}, decision
     print("test_identity_toggle OK")
 
 

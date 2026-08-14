@@ -4,12 +4,17 @@ from __future__ import annotations
 
 import sys
 from types import ModuleType
+from dataclasses import replace
 from datetime import timedelta
 from pathlib import Path
 
 import numpy as np
 import standard_pose_backend as standard_backend_module
 
+from face_observation_enhancer import (
+    FaceEnhancedBackend,
+    face_enhanced_backend_factories,
+)
 from posture_science import (
     CalibrationAccumulator,
     CalibrationPlan,
@@ -17,6 +22,8 @@ from posture_science import (
     calibration_rejection_reason,
 )
 from standard_pose_backend import COCO_KEYPOINT_COUNT, StandardPoseBackend
+from vision_backend import PersonObservation, observation_from_sample
+from vision_modes import VISION_MODE_SPECS
 from vision_test import calibration_sample_missing_fields
 
 
@@ -101,6 +108,43 @@ def make_backend(persons: int = 1):
     return backend, model, capture
 
 
+class FakeFaceEnhancer:
+    def enrich(self, _frame, observations):
+        enriched = []
+        for observation in observations:
+            features = replace(
+                observation.posture_features,
+                interpupillary_px=60.0,
+                face_detected=True,
+                left_eye_center=(290.0, 150.0),
+                right_eye_center=(350.0, 150.0),
+                face_nose_point=(320.0, 170.0),
+                face_left_mouth_point=(300.0, 190.0),
+                face_right_mouth_point=(340.0, 190.0),
+                face_quality=0.95,
+                face_required_for_calibration=True,
+            )
+            enriched.append(
+                replace(
+                    observation,
+                    face_bbox_xyxy=(270.0, 110.0, 370.0, 215.0),
+                    face_landmarks=(
+                        (290.0, 150.0),
+                        (350.0, 150.0),
+                        (320.0, 170.0),
+                        (300.0, 190.0),
+                        (340.0, 190.0),
+                    ),
+                    face_quality=0.95,
+                    posture_features=features,
+                )
+            )
+        return tuple(enriched)
+
+    def close(self) -> None:
+        pass
+
+
 def test_standard_backend_emits_pose_only_person_contract() -> None:
     backend, model, capture = make_backend()
     backend.start()
@@ -164,6 +208,77 @@ def test_standard_backend_preserves_all_people_without_global_posture_mix() -> N
     assert calibration_rejection_reason(sample) == "single_person"
     backend.close()
     print("test_standard_backend_preserves_all_people_without_global_posture_mix OK")
+
+
+def test_standard_backend_uses_shared_face_observation_contract() -> None:
+    backend, _model, capture = make_backend()
+    normalized = FaceEnhancedBackend(backend, enhancer_factory=FakeFaceEnhancer)
+    normalized.start()
+    _frame, sample = normalized.read_frame_sample()
+    observations = normalized.observations_for_last_sample()
+
+    assert len(observations) == 1
+    assert isinstance(observations[0], PersonObservation)
+    assert observations[0].face_bbox_xyxy == (270.0, 110.0, 370.0, 215.0)
+    assert len(observations[0].face_landmarks or ()) == 5
+    assert observations[0].face_quality == 0.95
+    assert sample.face_detected
+    assert sample.face_required_for_calibration
+    assert normalized.capabilities.supports_face_bbox
+    assert normalized.capabilities.backend_name.endswith("+shared-face")
+    normalized.close()
+    assert capture.released
+    print("test_standard_backend_uses_shared_face_observation_contract OK")
+
+
+def test_all_reserved_modes_share_one_normalized_observation_boundary() -> None:
+    raw_backends = {spec.mode: make_backend()[0] for spec in VISION_MODE_SPECS}
+    normalized_factories = face_enhanced_backend_factories(
+        {
+            mode: (lambda backend=backend: backend)
+            for mode, backend in raw_backends.items()
+        },
+        enhancer_factory=FakeFaceEnhancer,
+    )
+
+    assert set(normalized_factories) == {spec.mode for spec in VISION_MODE_SPECS}
+    for mode, factory in normalized_factories.items():
+        backend = factory()
+        backend.start()
+        frame, sample = backend.read_frame_sample()
+        observations = backend.observations_for_last_sample()
+        assert frame.shape == (480, 640, 3), mode
+        assert len(observations) == 1, mode
+        assert isinstance(observations[0], PersonObservation), mode
+        assert observations[0].face_bbox_xyxy is not None, mode
+        assert len(observations[0].face_landmarks or ()) == 5, mode
+        assert sample.face_detected, mode
+        backend.close()
+    print("test_all_reserved_modes_share_one_normalized_observation_boundary OK")
+
+
+def test_pose_only_sample_does_not_reuse_stale_face_geometry() -> None:
+    backend, _model, _capture = make_backend()
+    backend.start()
+    _frame, sample = backend.read_frame_sample()
+    backend.close()
+    stale = replace(
+        sample,
+        face_detected=False,
+        face_count=0,
+        face_bbox_xyxy=(270.0, 110.0, 370.0, 215.0),
+        face_landmarks=(
+            (290.0, 150.0),
+            (350.0, 150.0),
+            (320.0, 170.0),
+            (300.0, 190.0),
+            (340.0, 190.0),
+        ),
+    )
+    observation = observation_from_sample(stale)[0]
+    assert observation.face_bbox_xyxy is None
+    assert observation.face_landmarks is None
+    print("test_pose_only_sample_does_not_reuse_stale_face_geometry OK")
 
 
 def test_standard_backend_refuses_implicit_model_download() -> None:
@@ -250,6 +365,9 @@ def test_standard_backend_rejects_wrong_model_contract() -> None:
 def main() -> int:
     test_standard_backend_emits_pose_only_person_contract()
     test_standard_backend_preserves_all_people_without_global_posture_mix()
+    test_standard_backend_uses_shared_face_observation_contract()
+    test_all_reserved_modes_share_one_normalized_observation_boundary()
+    test_pose_only_sample_does_not_reuse_stale_face_geometry()
     test_standard_backend_refuses_implicit_model_download()
     test_standard_backend_prepares_torch_dlls_before_loading_model()
     test_standard_backend_rejects_wrong_model_contract()

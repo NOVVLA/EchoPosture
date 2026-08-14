@@ -1856,3 +1856,61 @@
   EXE integration, and remote CI remain follow-up gates.
 - Conclusion: the two requested Debug UI defects are fixed and locally regression-tested. The third report is
   confirmed as a missing Standard-mode identity integration; it is investigated and disclosed, not implemented here.
+
+## 2026-08-14 - CVLFace-only identity decisions and cross-mode observation boundary
+
+- Source: user request to remove shoulder-width/face-scale identity decisions, deploy the already configured face
+  model through the real Debug UI and tray paths, make leave/re-enter recovery usable, and re-verify that all three
+  planned modes share one normalized model-output contract.
+- Git: commit `pending`, branch `codex/pr2-phase1-calibration-safety`, PR `#23`, tag `none`.
+- Scope and root causes:
+  - Identity was still coupled to geometry-era assumptions and Standard mode had no shared face enrichment. A target
+    that returned as a new body track therefore could remain in identity uncertainty without a model-capable path.
+  - `FaceEnhancedBackend` now decorates every registered mode and synchronizes `read_frame_sample()`,
+    `PersonObservation`, face boxes, five-point landmarks, scene counts, and posture samples before TargetManager sees
+    them. Compatibility and Standard use this boundary now; the Professional reservation is covered by the same
+    factory contract and cannot introduce a different observation shape when its backend is registered.
+  - Shoulder width, pupil distance, face/body scale, and posture ratios no longer make identity conclusions. Geometry
+    remains limited to face/body ownership and track association. Only a CVLFace verifier result may confirm or reject
+    an identity candidate; candidate track IDs are preserved across asynchronous embedding and verification results.
+  - Long absence may submit one clear, face-capable candidate for verification, but ambiguous, low-quality, stale, or
+    wrong-track results cannot rebind the calibrated target. Embedding failures remain retryable instead of silently
+    promoting a track. UI reasons now say face identity mismatch and the dead face/shoulder profile-mismatch text was
+    removed.
+  - `identity_model_process.py` and `identity_model_worker.py` keep the pinned ViT KP-RPE environment isolated from the
+    main pose runtime. Discovery prefers `ECHOPOSTURE_P5_PYTHON`, packaged `runtime/p5/python.exe`, then local
+    `.venv-p5`; face crops and embeddings are sent only through a local in-memory protocol and are not persisted.
+  - Debug UI was changed before the production path. It now draws body and face boxes and uses the shared identity
+    pipeline in Compatibility and Standard. The tray Compatibility backend and `VisionWorker` use the same enhancer,
+    TargetManager, enrollment, and verification contracts.
+- Risk:
+  - The source path is operational with local `.venv-p5`, but a packaged build must include a compatible
+    `runtime/p5/python.exe` environment or configure `ECHOPOSTURE_P5_PYTHON`. No packaged EXE portability is claimed.
+  - `PROFILE_MISMATCH` remains the stable external status identifier for compatibility, but its only producer is now
+    TargetManager after a face-verifier rejection; its diagnostic reason explicitly identifies face identity.
+  - No model weights, runtime environment, face images, embeddings, recordings, or user-authored plan files are part
+    of this commit.
+- Verification from `C:\Users\aaabb\Documents\ICC驼背项目`:
+  - Passed: `test_face_body_association.py`, `test_face_embedding.py`, `test_identity_model_adapters.py`,
+    `test_identity_verifier.py`, `test_vision_tracking.py`, `test_vision_worker.py`,
+    `test_standard_pose_backend.py`, `test_compatibility_face_detection.py`, `test_debug_ui.py`,
+    `test_feature_toggles.py`, `test_posture_science.py`, `test_startup_guards.py`, `test_vision_replay.py`, and
+    `test_tray_flyout.py`.
+  - Regression coverage proves that large face-scale and pupil-distance changes do not decide identity, long absence
+    still produces a verifiable candidate, an identity mismatch cannot rebind it, stale candidate results are ignored,
+    and all three reserved mode factories emit the same enriched `PersonObservation` boundary.
+  - Real product-adapter smoke test: `CvlFaceProcessAdapter` loaded from the configured isolated runtime, returned a
+    finite 512-dimensional embedding (`norm=13.491850733858788`), and closed cleanly (`loaded=False`).
+  - `ruff check .`, targeted `py_compile`, and `git diff --check`: passed. Debug UI tests emitted the existing bundled
+    Qt missing-font-directory warning but exited 0.
+  - A broad loop over every root `test_*.py` was not executed because the safety reviewer rejected running unrelated
+    AI-maintainer/manual-flow scripts without prior side-effect inspection. Those scripts are outside this visual
+    identity change; all directly relevant tests were run explicitly.
+- Artifacts and privacy: no package or release was built. Face crops are transient local process inputs; no frame,
+  crop, embedding, identity template, or trajectory is written to disk by this change.
+- Gaps: no live seated-person camera exercise, deliberate leave/re-enter visual trial, consented multi-person trial,
+  cross-device threshold validation, packaged EXE rebuild/self-test, or remote CI result is claimed yet. The live UI
+  camera scenario remains a manual verification gate after source delivery.
+- Conclusion: source runtime identity is now CVLFace-only, recovery and stale-result guards are deterministic, and the
+  shared observation interface is verified for Compatibility, Standard, and the Professional reservation. The change
+  is ready for commit, push, PR review, and remote CI; packaged identity-runtime assembly remains follow-up work.
