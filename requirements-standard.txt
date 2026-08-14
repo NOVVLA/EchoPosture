@@ -1,0 +1,4 @@
+# Optional Debug UI standard-mode runtime. Inference is explicitly forced to
+# CPU by StandardPoseBackend; resolve and record the transitive PyTorch wheel
+# used by each packaged runtime before release.
+ultralytics==8.4.120

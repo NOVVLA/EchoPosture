@@ -72,6 +72,7 @@ from vision_tracking import TargetManager, TargetUpdate
 from vision_modes import (
     VISION_MODE_COMPATIBILITY,
     VISION_MODE_SPECS,
+    VISION_MODE_STANDARD,
     backend_name,
     mode_spec,
 )
@@ -162,6 +163,7 @@ REASON_TEXT: Dict[str, str] = {
     "ambiguous_face_body_association": "reason.ambiguous_face_body_association",
     "target_face_body_association_ambiguous": "reason.target_face_body_association_ambiguous",
     "target_geometry_association_ambiguous": "reason.target_geometry_association_ambiguous",
+    "association_budget_exceeded": "reason.association_budget_exceeded",
     "reacquired_candidate_needs_identity_confirmation": "reason.reacquired_candidate_needs_identity_confirmation",
     "reacquired_candidate_profile_mismatch": "reason.reacquired_candidate_profile_mismatch",
     "other_track_present": "reason.other_track_present",
@@ -193,6 +195,14 @@ REASON_TEXT: Dict[str, str] = {
     "static_hold_bonus": "reason.static_hold_bonus",
     "confidence": "reason.confidence",
 }
+
+
+def _create_standard_pose_backend(**kwargs):
+    """Keep the optional Standard backend out of Compatibility-only startup."""
+
+    from standard_pose_backend import StandardPoseBackend
+
+    return StandardPoseBackend(**kwargs)
 
 
 class PostureInterventionOverlay(QWidget):
@@ -416,6 +426,7 @@ class DebugWindow(QMainWindow):
         backend_factory: Optional[Callable[[], object]] = None,
         backend_factories: Optional[Dict[str, Callable[[], object]]] = None,
         initial_vision_mode: str = VISION_MODE_COMPATIBILITY,
+        standard_model_path: Optional[str] = None,
     ) -> None:
         super().__init__()
         self.setWindowTitle("EchoPosture Debug Monitor")
@@ -428,6 +439,20 @@ class DebugWindow(QMainWindow):
         )
         self._backend_factories = dict(backend_factories or {})
         self._backend_factories.setdefault(VISION_MODE_COMPATIBILITY, compatibility_factory)
+        # A caller that injects a compatibility backend (the offscreen tests
+        # and diagnostic embedders) must also opt in to any injected Standard
+        # backend. The normal Debug UI path registers the real local model.
+        if backend_factory is None:
+            self._backend_factories.setdefault(
+                VISION_MODE_STANDARD,
+                lambda: _create_standard_pose_backend(
+                    camera_id=camera_id,
+                    width=width,
+                    height=height,
+                    capture_fps=fps,
+                    model_path=standard_model_path,
+                ),
+            )
         if initial_vision_mode not in self._backend_factories:
             initial_vision_mode = VISION_MODE_COMPATIBILITY
         self.vision_mode = initial_vision_mode
@@ -560,6 +585,7 @@ class DebugWindow(QMainWindow):
             self.vision_mode_combo.addItem(_t(spec.label_key), spec.mode)
         self.vision_mode_combo.setCurrentIndex(self._vision_mode_index(self.vision_mode))
         self.vision_mode_combo.currentIndexChanged.connect(self._switch_vision_mode)
+        self.vision_mode_combo.activated.connect(self._activate_vision_mode)
         self.vision_backend_label = QLabel()
         self.vision_backend_label.setWordWrap(True)
         self._vision_backend_notice_key: Optional[str] = None
@@ -842,6 +868,13 @@ class DebugWindow(QMainWindow):
         self._set_calibration_stage_visual("idle")
         self._set_vision_backend_status()
         self.timer.start(self._interval_ms(self.normal_fps))
+
+    def _activate_vision_mode(self, index: int) -> None:
+        """Clear a stale failed-mode notice when the user reaffirms the live mode."""
+
+        requested_mode = self.vision_mode_combo.itemData(index)
+        if requested_mode == self.vision_mode:
+            self._set_vision_backend_status()
 
     def update_frame(self) -> None:
         try:
@@ -1601,7 +1634,11 @@ class DebugWindow(QMainWindow):
         self.reason_label.setText(self._human_reason(decision.reason))
         self.status_label.setStyleSheet(self._status_style(decision.status))
 
-        face_text = _t("debug_face_suffix", v=format_value(sample.interpupillary_px))
+        face_text = (
+            _t("debug_face_suffix", v=format_value(sample.interpupillary_px))
+            if sample.face_required_for_calibration
+            else _t("debug_face_not_used_standard")
+        )
         shoulder_text = _t("debug_shoulder_suffix", v=format_value(sample.shoulder_diff_px))
         estimated_distance = None
         if isinstance(self.analyzer, HighPrecisionPostureAnalyzer):
@@ -1825,6 +1862,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--width", type=int, default=640, help="Capture width. Default: 640")
     parser.add_argument("--height", type=int, default=480, help="Capture height. Default: 480")
     parser.add_argument(
+        "--standard-model",
+        default=None,
+        help=(
+            "Local yolo26n-pose.pt path for Debug UI standard mode. "
+            "Automatic downloads are disabled."
+        ),
+    )
+    parser.add_argument(
         "--self-test",
         action="store_true",
         help="Create the debug window offscreen, process one frame, calibrate, and exit.",
@@ -1864,6 +1909,7 @@ def main() -> int:
             args.height,
             intervention_enabled=not args.self_test and not args.disable_intervention,
             target_panel=args.target_panel,
+            standard_model_path=args.standard_model,
         )
     except CameraPermissionError as exc:
         QMessageBox.warning(

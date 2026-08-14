@@ -45,6 +45,12 @@ class TargetManagerConfig:
     # Activity classification is intentionally slower than association
     # prediction so detector jitter does not become user movement.
     motion_smoothing_seconds: float = 0.20
+    # Exact frame-wide association uses a bit-mask dynamic program. These
+    # limits keep its worst case bounded and force an explicit abstention when
+    # a crowded frame exceeds the product's supported tracking envelope.
+    max_association_observations: int = 12
+    max_association_tracks: int = 10
+    max_association_states: int = 2048
 
 
 @dataclass(frozen=True)
@@ -195,6 +201,11 @@ class TargetManager:
     ) -> TargetUpdate:
         observations = tuple(observations)
         timestamp = timestamp or self._timestamp(observations)
+        if (
+            len(observations) > self.config.max_association_observations
+            or len(self._tracks) > self.config.max_association_tracks
+        ):
+            return self._association_budget_update(observations)
         ambiguous = any(observation.association_ambiguous for observation in observations)
         assignments, candidate_scores = self._associate(observations)
         matched_track_ids = {track.track_id for _, track, _, _ in assignments}
@@ -203,6 +214,8 @@ class TargetManager:
             for index, observation in enumerate(observations)
             if not any(assigned_index == index for assigned_index, _, _, _ in assignments)
         ]
+        if len(self._tracks) + len(unmatched_observations) > self.config.max_association_tracks:
+            return self._association_budget_update(observations)
 
         for _, track, observation, match_score in assignments:
             # Once a target is locked, temporal face continuity can resolve a
@@ -349,6 +362,24 @@ class TargetManager:
             activity_state=activity_state,
         )
 
+    def _association_budget_update(
+        self,
+        observations: Tuple[PersonObservation, ...],
+    ) -> TargetUpdate:
+        """Abstain without mutating tracks when a crowded frame exceeds limits."""
+
+        self.state = TARGET_AMBIGUOUS
+        return TargetUpdate(
+            state=TARGET_AMBIGUOUS,
+            target_track_id=self.target_track_id,
+            target_observation=None,
+            tracks=tuple(self._freeze_track(track) for track in self._tracks.values()),
+            person_count=len(observations),
+            reason="association_budget_exceeded",
+            target_motion=None,
+            activity_state="UNKNOWN",
+        )
+
     @staticmethod
     def _normalized_motion(track: _Track) -> float:
         diagonal = math.hypot(
@@ -374,13 +405,8 @@ class TargetManager:
         self,
         observations: Tuple[PersonObservation, ...],
     ) -> Tuple[List[Tuple[int, _Track, PersonObservation, float]], Dict[int, List[float]]]:
-        """Find a global one-to-one assignment for the current frame.
-
-        Greedy observation-order matching can give a target to a bystander when
-        people cross. Exhaustive search is cheap for the small person counts
-        supported by this layer and lets motion prediction dominate the choice.
-        """
-        tracks = tuple(self._tracks.values())
+        """Find a bounded global one-to-one assignment for the current frame."""
+        tracks = tuple(sorted(self._tracks.values(), key=lambda track: track.track_id))
         candidate_scores: Dict[int, List[float]] = {track.track_id: [] for track in tracks}
         score_matrix: List[List[Tuple[_Track, float]]] = []
         for observation in observations:
@@ -391,36 +417,50 @@ class TargetManager:
                     continue
                 candidates.append((track, score))
                 candidate_scores[track.track_id].append(score)
-            score_matrix.append(candidates)
+            score_matrix.append(sorted(candidates, key=lambda item: item[0].track_id))
 
-        best_score = float("-inf")
-        best_matches: List[Tuple[int, _Track, PersonObservation, float]] = []
+        track_bits = {track.track_id: 1 << index for index, track in enumerate(tracks)}
+        states: Dict[
+            int,
+            Tuple[float, List[Tuple[int, _Track, PersonObservation, float]]],
+        ] = {0: (0.0, [])}
+        for observation_index, candidates in enumerate(score_matrix):
+            next_states = dict(states)
+            for mask, (score, matches) in states.items():
+                for track, match_score in candidates:
+                    bit = track_bits[track.track_id]
+                    if mask & bit:
+                        continue
+                    next_mask = mask | bit
+                    next_score = score + match_score + 1e-6
+                    previous = next_states.get(next_mask)
+                    if previous is None or next_score > previous[0]:
+                        next_states[next_mask] = (
+                            next_score,
+                            matches
+                            + [
+                                (
+                                    observation_index,
+                                    track,
+                                    observations[observation_index],
+                                    match_score,
+                                )
+                            ],
+                        )
+            if len(next_states) > self.config.max_association_states:
+                # The configured track limit normally makes this unreachable;
+                # retain only the best deterministic masks as a second guard.
+                ranked = sorted(
+                    next_states.items(),
+                    key=lambda item: (-item[1][0], item[0]),
+                )
+                next_states = dict(ranked[: self.config.max_association_states])
+            states = next_states
 
-        def search(
-            index: int,
-            used_track_ids: set[int],
-            score: float,
-            matches: List[Tuple[int, _Track, PersonObservation, float]],
-        ) -> None:
-            nonlocal best_score, best_matches
-            if index >= len(observations):
-                matched_bonus = len(matches) * 1e-6
-                total = score + matched_bonus
-                if total > best_score:
-                    best_score = total
-                    best_matches = list(matches)
-                return
-            search(index + 1, used_track_ids, score, matches)
-            for track, match_score in score_matrix[index]:
-                if track.track_id in used_track_ids:
-                    continue
-                used_track_ids.add(track.track_id)
-                matches.append((index, track, observations[index], match_score))
-                search(index + 1, used_track_ids, score + match_score, matches)
-                matches.pop()
-                used_track_ids.remove(track.track_id)
-
-        search(0, set(), 0.0, [])
+        _, best_matches = max(
+            states.values(),
+            key=lambda item: (item[0], len(item[1])),
+        )
         return best_matches, candidate_scores
 
     def _match_score(self, track: _Track, observation: PersonObservation) -> Optional[float]:

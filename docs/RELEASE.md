@@ -32,6 +32,8 @@ and package documentation.
 - Visual Studio C++ Build Tools with the x64 toolchain. `build_blur_overlay_host.cmd` discovers it through `vswhere.exe`.
 - .NET Framework C# compiler at the standard 32-bit or 64-bit Framework path.
 - Permission to create the versioned bridge under `%LOCALAPPDATA%` for the packaged self-test.
+- A reviewed `AGPL-3.0-only` source-delivery plan for the exact release commit, including any network-interaction
+  source offer required by section 13.
 
 If any required environment component is missing, stop before tagging or publishing. A successful C# build alone does
 not prove that the native host or portable runtime is complete.
@@ -157,7 +159,8 @@ needed by the application. A system Python installation must not be required by 
 
 `GA_BUILD.txt` must identify at least the release label, build date, exact source commit, platform, embedded Python
 version, primary and diagnostic entries, and versioned bridge. `README_GA.md` must state how to start the app, run the
-self-test, find its log, interpret SmartScreen, and verify the ZIP checksum.
+self-test, find its log, interpret SmartScreen, verify the ZIP checksum, and obtain the complete corresponding source
+for that exact build under GNU AGPLv3.
 
 The package must not contain:
 
@@ -165,9 +168,13 @@ The package must not contain:
 .git/  .github/  .codex/  .agents/  .claude/  logs/  _backups/  dist/
 review folders  build scripts  test_*.py  *.obj  *.pdb  credentials  API keys
 personal screenshots  local absolute paths  internal process documents
+unapproved model weights  training data  models/pose/  requirements-standard.txt
 ```
 
-Third-party notices and files inside the embedded runtime are allowed when required by those dependencies.
+Third-party notices and files inside the embedded runtime are allowed when required by those dependencies. Before a
+future package enables Standard mode, separately approve and add `standard_pose_backend.py`, its tested runtime
+dependencies, model provenance/hash, redistribution decision, and notices to the allowlist. The project-wide AGPLv3
+decision does not by itself authorize shipping `yolo26n-pose.pt`.
 
 ## 5. Test the Staged Package
 

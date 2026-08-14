@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from dataclasses import replace
 from datetime import datetime, timedelta
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -53,6 +54,17 @@ def make_sample(timestamp: datetime = T0, relaxed: float = 0.0) -> VisionSample:
         pose_quality=1.0,
         target_motion=0.0,
         activity_state="STATIC",
+    )
+
+
+def make_pose_only_sample(timestamp: datetime = T0) -> VisionSample:
+    return replace(
+        make_sample(timestamp),
+        interpupillary_px=None,
+        face_detected=False,
+        face_count=0,
+        face_quality=None,
+        face_required_for_calibration=False,
     )
 
 
@@ -114,6 +126,7 @@ def test_debug_panel_exposes_three_vision_modes_and_explicit_availability() -> N
     compatibility = FakeDebugBackend()
     standard = FakeDebugBackend()
     standard.capabilities.backend_name = "fake-standard"
+    standard.sample = make_pose_only_sample()
     window = DebugWindow(
         camera_id=0,
         fps=4.0,
@@ -145,6 +158,10 @@ def test_debug_panel_exposes_three_vision_modes_and_explicit_availability() -> N
         assert window.vision_mode == VISION_MODE_STANDARD
         assert "标准模式" in window.vision_backend_label.text()
         assert "fake-standard" in window.vision_backend_label.text()
+        window.update_frame()
+        assert window.current_sample is not None
+        assert window.current_sample.face_required_for_calibration is False
+        assert "不处理人脸" in window.face_label.text()
 
         window.vision_mode_combo.setCurrentIndex(
             window._vision_mode_index(VISION_MODE_PROFESSIONAL_BETA)

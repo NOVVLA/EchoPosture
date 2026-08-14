@@ -57,6 +57,7 @@ class PostureFeatures:
     target_motion: Optional[float] = None
     activity_state: Optional[str] = None
     camera_drift: bool = False
+    face_required_for_calibration: bool = True
 
 
 @dataclass(frozen=True)
@@ -120,6 +121,7 @@ class PostureFeatureExtractor:
                 face_detected=False,
                 pose_detected=False,
                 face_count=0,
+                face_required_for_calibration=True,
             )
         return VisionSample(
             timestamp=observation.timestamp,
@@ -161,6 +163,7 @@ class PostureFeatureExtractor:
             target_motion=features.target_motion,
             activity_state=features.activity_state,
             camera_drift=features.camera_drift,
+            face_required_for_calibration=features.face_required_for_calibration,
         )
 
 
@@ -310,6 +313,7 @@ def observation_from_sample(sample: VisionSample) -> Tuple[PersonObservation, ..
                 target_motion=sample.target_motion,
                 activity_state=sample.activity_state,
                 camera_drift=sample.camera_drift,
+                face_required_for_calibration=sample.face_required_for_calibration,
             ),
         ),
     )

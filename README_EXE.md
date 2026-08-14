@@ -44,4 +44,14 @@ Use `EchoPosture.exe --disable-gpu-blur` to skip the native host and use the PyQ
 
 Use `EchoPosture.exe --debug-ui` to open the older visual debug window.
 
+The packaged tray/EXE currently runs Compatibility mode. The Debug UI source can also run the pose-only Standard mode
+with an explicitly local `yolo26n-pose.pt` and `requirements-standard.txt`; that optional model, its dependencies, and
+the Standard backend are not yet part of the GA package allowlist. Standard mode does not run face or identity
+processing. See `docs/STANDARD_MODE.md` for the exact development boundary.
+
+EchoPosture is licensed under GNU AGPLv3 only (`AGPL-3.0-only`). The project accepts the corresponding source-code and
+network-interaction obligations. Distributing an EXE or portable package therefore requires the matching complete
+source and license information; accepting AGPLv3 does not by itself authorize redistribution of third-party model
+weights or training data. See `docs/decisions/ADR-0003-agpl-license-acceptance.md`.
+
 The offline UI prototype is included at `ui/index.html`. It is a frozen visual reference file for the OCULI / VERTEBRA HTML sample; do not change that file for general fixes or enhancements unless the UI reference itself is explicitly requested. It is non-invasive and does not connect to the camera, tray runtime, or overlay system.

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from datetime import datetime, timedelta
+from time import perf_counter
 from typing import Optional
 
 from vision_backend import (
@@ -277,6 +278,55 @@ def test_geometry_tie_enters_ambiguous_state_without_silent_switch():
     assert update.target_track_id == 1
     assert update.target_observation is not None
     print("test_geometry_tie_enters_ambiguous_state_without_silent_switch OK")
+
+
+def test_bounded_global_association_high_candidate_matrix() -> None:
+    manager = TargetManager()
+    initial = [observation(None, T0, 100.0 + index * 18.0) for index in range(10)]
+    first = manager.update(initial)
+    assert len(first.tracks) == 10
+
+    durations = []
+    for frame_index in range(30):
+        timestamp = T0 + timedelta(seconds=(frame_index + 1) * 0.05)
+        crowded = [
+            observation(None, timestamp, 102.0 + index * 18.0)
+            for index in range(10)
+        ]
+        started = perf_counter()
+        update = manager.update(crowded)
+        durations.append(perf_counter() - started)
+        assert len(update.tracks) == 10
+    ordered = sorted(durations)
+    p50 = ordered[len(ordered) // 2]
+    p95 = ordered[min(len(ordered) - 1, int(len(ordered) * 0.95))]
+    assert p95 < 0.25, (p50, p95)
+    print(
+        "test_bounded_global_association_high_candidate_matrix OK "
+        f"p50_ms={p50 * 1000.0:.2f} p95_ms={p95 * 1000.0:.2f}"
+    )
+
+
+def test_association_budget_excess_abstains_and_recovers() -> None:
+    config = TargetManagerConfig(
+        max_association_observations=4,
+        max_association_tracks=4,
+        max_association_states=32,
+    )
+    manager = TargetManager(config)
+    crowded = manager.update(
+        [observation(None, T0, 100.0 + index * 80.0) for index in range(5)]
+    )
+    assert crowded.state == TARGET_AMBIGUOUS
+    assert crowded.reason == "association_budget_exceeded"
+    assert crowded.person_count == 5
+    assert crowded.target_observation is None
+    assert crowded.tracks == ()
+
+    recovered = manager.update([observation(None, T0 + timedelta(seconds=0.1), 100.0)])
+    assert recovered.state == ACQUIRING
+    assert len(recovered.tracks) == 1
+    print("test_association_budget_excess_abstains_and_recovers OK")
 
 
 def test_occlusion_reacquisition_and_no_silent_promotion():
@@ -815,6 +865,8 @@ if __name__ == "__main__":
     test_velocity_prediction_and_non_target_lifecycle()
     test_geometry_prediction_keeps_target_without_detection_ids()
     test_geometry_tie_enters_ambiguous_state_without_silent_switch()
+    test_bounded_global_association_high_candidate_matrix()
+    test_association_budget_excess_abstains_and_recovers()
     test_occlusion_reacquisition_and_no_silent_promotion()
     test_face_continuity_survives_side_recline_body_box_jump()
     test_face_continuity_resolves_compatibility_face_body_ambiguity()

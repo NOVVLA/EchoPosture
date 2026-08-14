@@ -28,7 +28,7 @@ VISION_MODE_SPECS: Tuple[VisionModeSpec, ...] = (
     VisionModeSpec(
         VISION_MODE_STANDARD,
         "vision_mode_standard",
-        "yolo26n-pose-onnx",
+        "ultralytics-yolo26n-pose-cpu",
         "vision_mode_standard_unavailable",
     ),
     VisionModeSpec(

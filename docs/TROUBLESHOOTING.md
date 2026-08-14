@@ -227,14 +227,16 @@ track, and `People present = 1`. `MULTI_PRESENT`, `TARGET_OCCLUDED`,
 states, not posture scores; read the adjacent state reason before treating the
 posture result as valid.
 
-The panel's `视觉模式` selector always lists `兼容模式`, `标准模式`, and `专业模式 Beta`. In the current checkout
-the production backend is `mediapipe-compatibility`; standard and professional choices remain disabled unless an
-actual YOLO/ONNX or TensorRT backend factory is injected. The panel reports the reason rather than silently relabeling
-the compatibility backend. A face model being installed alone does not make the standard posture mode available.
+The panel's `视觉模式` selector always lists `兼容模式`, `标准模式`, and `专业模式 Beta`. The normal Debug UI now
+provides a real `ultralytics-yolo26n-pose-cpu` standard backend. It requires the explicitly local
+`models/pose/yolo26n-pose.pt` file (or `ECHOPOSTURE_STANDARD_MODEL`) and the optional dependencies in
+`requirements-standard.txt`; it never downloads a model. If initialization fails, the panel restores the previous
+backend and shows the actual failure reason rather than silently relabeling Compatibility mode. Professional mode
+remains unavailable. The production tray/EXE still uses `mediapipe-compatibility` only.
 
-When identity verification is available, it runs locally and asynchronously. The camera frame is cropped and aligned
-in memory, the model returns a numeric embedding, and the crop is cleared; no image, video, face crop, or vector is
-written by this path. A fresh target rebind remains `IDENTITY_UNCERTAIN` until the local verifier confirms it.
+This Standard-mode stage is pose-only. It does not crop faces, run FaceMesh or an identity model, create templates,
+or process embeddings. The COCO nose/eye/ear points are treated only as body-pose landmarks. Identity-related work is
+deferred to a separate plan and must not be inferred from Standard mode being available.
 
 To prove the panel wiring without a camera or desktop display, run:
 

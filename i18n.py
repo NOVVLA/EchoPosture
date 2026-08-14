@@ -205,6 +205,7 @@ _TEXTS: Dict[str, Dict[str, str]] = {
         "reason.ambiguous_face_body_association": "脸部与身体归属不明确",
         "reason.target_face_body_association_ambiguous": "目标脸身归属不明确",
         "reason.target_geometry_association_ambiguous": "目标几何关联不明确",
+        "reason.association_budget_exceeded": "画面人数超出安全关联预算，已暂停目标选择",
         "reason.reacquired_candidate_needs_identity_confirmation": "重新出现的候选目标需确认",
         "reason.reacquired_candidate_profile_mismatch": "重新出现的候选目标轮廓不匹配",
         "reason.other_track_present": "检测到其他轨迹",
@@ -280,7 +281,7 @@ _TEXTS: Dict[str, Dict[str, str]] = {
         "vision_mode_compatibility": "兼容模式",
         "vision_mode_standard": "标准模式",
         "vision_mode_professional_beta": "专业模式 Beta",
-        "vision_mode_standard_unavailable": "标准模式不可用：尚未提供 YOLO26n-pose ONNX 姿态后端。",
+        "vision_mode_standard_unavailable": "标准模式不可用：缺少本地 YOLO26n-pose 权重或标准模式依赖。",
         "vision_mode_professional_unavailable": "专业模式 Beta 不可用：尚未提供 TensorRT 姿态后端。",
         "vision_mode_switch_failed": "模式切换失败，已恢复原后端：{detail}",
 
@@ -333,6 +334,7 @@ _TEXTS: Dict[str, Dict[str, str]] = {
 
         # ---- debug_ui: 指标后缀 ----
         "debug_face_suffix": "{v}  越大越近",
+        "debug_face_not_used_standard": "标准模式不处理人脸或身份数据",
         "debug_shoulder_suffix": "{v}  越大越歪",
 
         # ---- debug_ui: 启动失败弹窗（main 里） ----
@@ -524,6 +526,7 @@ _TEXTS: Dict[str, Dict[str, str]] = {
         "reason.ambiguous_face_body_association": "Face/body association is ambiguous",
         "reason.target_face_body_association_ambiguous": "Target face/body association is ambiguous",
         "reason.target_geometry_association_ambiguous": "Target geometry association is ambiguous",
+        "reason.association_budget_exceeded": "The scene exceeds the safe association budget; target selection is paused",
         "reason.reacquired_candidate_needs_identity_confirmation": "Reacquired candidate needs identity confirmation",
         "reason.reacquired_candidate_profile_mismatch": "Reacquired candidate profile mismatch",
         "reason.other_track_present": "Another track is present",
@@ -599,7 +602,7 @@ _TEXTS: Dict[str, Dict[str, str]] = {
         "vision_mode_compatibility": "Compatibility mode",
         "vision_mode_standard": "Standard mode",
         "vision_mode_professional_beta": "Professional mode Beta",
-        "vision_mode_standard_unavailable": "Standard mode unavailable: no YOLO26n-pose ONNX posture backend is installed.",
+        "vision_mode_standard_unavailable": "Standard mode unavailable: the local YOLO26n-pose weight or optional dependencies are missing.",
         "vision_mode_professional_unavailable": "Professional mode Beta unavailable: no TensorRT posture backend is installed.",
         "vision_mode_switch_failed": "Mode switch failed; restored the previous backend: {detail}",
 
@@ -652,6 +655,7 @@ _TEXTS: Dict[str, Dict[str, str]] = {
 
         # ---- debug_ui: 指标后缀 ----
         "debug_face_suffix": "{v}  larger = closer",
+        "debug_face_not_used_standard": "Standard mode does not process face or identity data",
         "debug_shoulder_suffix": "{v}  larger = more tilted",
 
         # ---- debug_ui: 启动失败弹窗 ----

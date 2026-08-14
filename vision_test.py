@@ -107,30 +107,34 @@ class VisionSample:
     target_observed: Optional[bool] = None
     person_count: Optional[int] = None
     target_reason: Optional[str] = None
+    face_required_for_calibration: bool = True
 
 
 def calibration_sample_missing_fields(sample: VisionSample) -> tuple[str, ...]:
     """Return completeness conditions missing from one calibration sample."""
     missing: list[str] = []
+    face_required = sample.face_required_for_calibration
     if (
-        sample.face_count != 1
+        (face_required and sample.face_count != 1)
         or (sample.person_count is not None and sample.person_count != 1)
         or sample.target_state in {"MULTI_PRESENT", "TARGET_AMBIGUOUS"}
     ):
         missing.append("single_person")
-    if not sample.face_detected:
+    if face_required and not sample.face_detected:
         missing.append("face_detected")
     if not sample.pose_detected:
         missing.append("pose_detected")
-    for field in (
-        "interpupillary_px",
+    required_fields = [
         "signed_shoulder_diff_px",
         "shoulder_width_px",
         "trunk_lean_deg",
-    ):
+    ]
+    if face_required:
+        required_fields.insert(0, "interpupillary_px")
+    for field in required_fields:
         if getattr(sample, field) is None:
             missing.append(field)
-    if sample.face_quality is not None and sample.face_quality < 0.65:
+    if face_required and sample.face_quality is not None and sample.face_quality < 0.65:
         missing.append("face_quality_low")
     if sample.pose_quality is not None and sample.pose_quality < 0.65:
         missing.append("pose_quality_low")

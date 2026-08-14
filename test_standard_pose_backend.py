@@ -1,0 +1,214 @@
+"""Camera-free contract tests for the YOLO26 standard pose backend."""
+
+from __future__ import annotations
+
+from datetime import timedelta
+from pathlib import Path
+
+import numpy as np
+
+from posture_science import (
+    CalibrationAccumulator,
+    CalibrationPlan,
+    calibration_measurement_values,
+    calibration_rejection_reason,
+)
+from standard_pose_backend import COCO_KEYPOINT_COUNT, StandardPoseBackend
+from vision_test import calibration_sample_missing_fields
+
+
+class FakeBoxes:
+    def __init__(self, boxes: np.ndarray, confidences: np.ndarray) -> None:
+        self.xyxy = boxes
+        self.conf = confidences
+
+
+class FakeKeypoints:
+    def __init__(self, data: np.ndarray) -> None:
+        self.data = data
+
+
+class FakeResult:
+    def __init__(self, boxes: np.ndarray, confidences: np.ndarray, data: np.ndarray) -> None:
+        self.boxes = FakeBoxes(boxes, confidences)
+        self.keypoints = FakeKeypoints(data)
+
+
+class FakeModel:
+    def __init__(self, result: FakeResult) -> None:
+        self.result = result
+        self.calls = []
+        self.task = "pose"
+        self.model = type("FakePoseModel", (), {"kpt_shape": [17, 3]})()
+
+    def predict(self, **kwargs):
+        self.calls.append(kwargs)
+        return [self.result]
+
+
+class FakeCapture:
+    def __init__(self) -> None:
+        self.released = False
+        self.settings = []
+
+    def isOpened(self) -> bool:
+        return True
+
+    def set(self, prop, value) -> None:
+        self.settings.append((prop, value))
+
+    def read(self):
+        return True, np.full((480, 640, 3), 80, dtype=np.uint8)
+
+    def release(self) -> None:
+        self.released = True
+
+
+def pose_row(offset_x: float = 0.0) -> np.ndarray:
+    row = np.zeros((COCO_KEYPOINT_COUNT, 3), dtype=float)
+    row[:, 2] = 0.1
+    points = {
+        0: (320.0 + offset_x, 150.0, 0.92),
+        1: (300.0 + offset_x, 145.0, 0.88),
+        2: (340.0 + offset_x, 145.0, 0.87),
+        3: (285.0 + offset_x, 160.0, 0.86),
+        4: (355.0 + offset_x, 160.0, 0.85),
+        5: (230.0 + offset_x, 245.0, 0.94),
+        6: (410.0 + offset_x, 250.0, 0.93),
+        11: (265.0 + offset_x, 390.0, 0.90),
+        12: (385.0 + offset_x, 392.0, 0.89),
+    }
+    for index, values in points.items():
+        row[index] = values
+    return row
+
+
+def make_backend(persons: int = 1):
+    rows = np.stack([pose_row(index * 180.0) for index in range(persons)])
+    boxes = np.array(
+        [[180.0 + index * 180.0, 100.0, 460.0 + index * 180.0, 450.0] for index in range(persons)],
+        dtype=float,
+    )
+    model = FakeModel(FakeResult(boxes, np.full(persons, 0.91), rows))
+    capture = FakeCapture()
+    backend = StandardPoseBackend(
+        model=model,
+        capture_factory=lambda _camera_id: capture,
+    )
+    return backend, model, capture
+
+
+def test_standard_backend_emits_pose_only_person_contract() -> None:
+    backend, model, capture = make_backend()
+    backend.start()
+    _frame, sample = backend.read_frame_sample()
+    observations = backend.observations_for_last_sample()
+
+    assert len(observations) == 1
+    observation = observations[0]
+    assert len(observation.body_keypoints) == COCO_KEYPOINT_COUNT
+    assert observation.detection_id is None
+    assert observation.face_bbox_xyxy is None
+    assert observation.face_landmarks is None
+    assert observation.face_quality is None
+    assert observation.face_embedding is None
+    assert sample.face_detected is False
+    assert sample.face_count == 0
+    assert sample.face_required_for_calibration is False
+    assert sample.pose_detected is True
+    assert sample.person_count == 1
+    assert sample.shoulder_width_px is not None
+    assert sample.trunk_lean_deg is not None
+    assert calibration_sample_missing_fields(sample) == ()
+    assert calibration_rejection_reason(sample) is None
+    plan = CalibrationPlan(
+        preferred_seconds=0.1,
+        transition_seconds=0.0,
+        relaxed_seconds=0.1,
+        relaxed_max_extension_seconds=0.0,
+        min_samples_per_stage=1,
+    )
+    accumulator = CalibrationAccumulator(plan)
+    accumulator.add(sample.timestamp, calibration_measurement_values(sample, plan))
+    accumulator.begin_transition(sample.timestamp)
+    relaxed_timestamp = sample.timestamp + timedelta(seconds=0.1)
+    accumulator.add(
+        relaxed_timestamp,
+        calibration_measurement_values(sample, plan),
+    )
+    profile = accumulator.finalize(relaxed_timestamp)
+    assert profile.scientific_ready
+    assert "torso_shoulder_ratio" in profile.enabled_features
+    assert "face_shoulder_ratio" not in profile.enabled_features
+    assert model.calls[0]["device"] == "cpu"
+    assert model.calls[0]["verbose"] is False
+
+    backend.close()
+    assert capture.released
+    print("test_standard_backend_emits_pose_only_person_contract OK")
+
+
+def test_standard_backend_preserves_all_people_without_global_posture_mix() -> None:
+    backend, _model, _capture = make_backend(persons=2)
+    backend.start()
+    _frame, sample = backend.read_frame_sample()
+
+    assert len(backend.observations_for_last_sample()) == 2
+    assert sample.person_count == 2
+    assert sample.pose_detected is False
+    assert sample.shoulder_width_px is None
+    assert sample.face_required_for_calibration is False
+    assert calibration_rejection_reason(sample) == "single_person"
+    backend.close()
+    print("test_standard_backend_preserves_all_people_without_global_posture_mix OK")
+
+
+def test_standard_backend_refuses_implicit_model_download() -> None:
+    missing = Path("models/pose/definitely-missing-yolo26n-pose.pt")
+    backend = StandardPoseBackend(
+        model_path=missing,
+        capture_factory=lambda _camera_id: FakeCapture(),
+    )
+    try:
+        backend.start()
+    except RuntimeError as exc:
+        assert "Automatic model downloads are disabled" in str(exc)
+    else:
+        raise AssertionError("missing local model must fail before any download")
+    print("test_standard_backend_refuses_implicit_model_download OK")
+
+
+def test_standard_backend_rejects_wrong_model_contract() -> None:
+    backend, model, capture = make_backend()
+    model.task = "detect"
+    try:
+        backend.start()
+    except RuntimeError as exc:
+        assert "requires a YOLO pose model" in str(exc)
+    else:
+        raise AssertionError("a non-pose model must fail before opening the camera")
+    assert not capture.settings
+
+    backend, model, capture = make_backend()
+    model.model.kpt_shape = [15, 3]
+    try:
+        backend.start()
+    except RuntimeError as exc:
+        assert "COCO 17-keypoint pose layout" in str(exc)
+    else:
+        raise AssertionError("a non-COCO pose layout must fail before opening the camera")
+    assert not capture.settings
+    print("test_standard_backend_rejects_wrong_model_contract OK")
+
+
+def main() -> int:
+    test_standard_backend_emits_pose_only_person_contract()
+    test_standard_backend_preserves_all_people_without_global_posture_mix()
+    test_standard_backend_refuses_implicit_model_download()
+    test_standard_backend_rejects_wrong_model_contract()
+    print("test_standard_pose_backend.py ALL OK")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

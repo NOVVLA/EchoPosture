@@ -1395,8 +1395,9 @@ def calibration_rejection_reason(
     plan: Optional[CalibrationPlan] = None,
 ) -> Optional[str]:
     plan = plan or CalibrationPlan()
+    face_required = bool(getattr(sample, "face_required_for_calibration", True))
     face_count = getattr(sample, "face_count", 0)
-    if face_count > 1:
+    if face_required and face_count > 1:
         return "single_person"
     person_count = getattr(sample, "person_count", None)
     if person_count is not None and person_count > 1:
@@ -1412,9 +1413,9 @@ def calibration_rejection_reason(
     }:
         return "target_uncertain"
     if (
-        face_count < 1
+        (face_required and face_count < 1)
         or (person_count is not None and person_count < 1)
-        or not getattr(sample, "face_detected", False)
+        or (face_required and not getattr(sample, "face_detected", False))
         or not getattr(sample, "pose_detected", False)
     ):
         return "keypoints_missing"
@@ -1431,7 +1432,7 @@ def calibration_rejection_reason(
     elif pose_quality is not None and pose_quality < plan.min_pose_quality:
         # Backends without landmark-level confidence retain the aggregate gate.
         return "pose_quality_low"
-    if face_quality is not None and face_quality < plan.min_face_quality:
+    if face_required and face_quality is not None and face_quality < plan.min_face_quality:
         if "face_shoulder_ratio" not in values:
             # A low-quality face does not invalidate independent shoulder and
             # trunk evidence. Reject only when no posture evidence remains.

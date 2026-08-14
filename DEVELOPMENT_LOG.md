@@ -1649,3 +1649,46 @@
   interaction parameters, not biological or medical standards.
 - Conclusion: deterministic Debug UI and Compatibility production paths implement the requested semantics and retain
   explicit scientific limits; real-world and packaged-runtime evidence remains follow-up work.
+
+## 2026-08-14 - AGPLv3 acceptance and pose-only Standard mode Debug UI
+
+- Source: user request to replace the project license with a strict license, record explicit acceptance, implement
+  Standard mode in the Debug UI before the formal EXE path, and defer all face-related work to a separate user plan.
+- Git: commit `pending`, branch `codex/pr2-phase1-calibration-safety`, PR `#23`, tag `none`.
+- Scope:
+  - `LICENSE`, `README.md`, `README_EXE.md`, and `docs/`: switch project-owned code to GNU AGPLv3 only
+    (`AGPL-3.0-only`), record acceptance of source/network obligations, and keep third-party model weights and training
+    data behind a separate redistribution audit.
+  - `standard_pose_backend.py`, `requirements-standard.txt`, `debug_ui.py`, and vision contracts: add an explicitly
+    local, CPU-only Ultralytics YOLO26n-pose Debug UI backend with COCO 17-point per-person observations, pose-only
+    calibration, lazy optional-backend import, no automatic model download, and Compatibility fallback on failure.
+  - `vision_tracking.py`: replace unbounded recursive association with bounded bit-mask dynamic programming; crowded
+    frames over budget abstain as `TARGET_AMBIGUOUS/association_budget_exceeded` without mutating existing tracks.
+  - Face crops, FaceMesh, identity models, templates, and embeddings are not loaded or processed by Standard mode.
+    The production tray/EXE path remains Compatibility-only in the requested diagnostic-first sequence.
+- Risk:
+  - The local pose weight is not ignored by Git and is not approved for redistribution. It remained untracked and was
+    not staged. Standard dependencies were installed only into ignored `runtime/python311` for local verification.
+  - Real camera/person accuracy, multiple-person replay, 416/480 input comparisons, cross-device behavior, packaged
+    EXE integration, and weight/training-data redistribution remain open evidence gates.
+  - A first Ultralytics import created a 607-byte default settings file outside the project because of its Unicode-path
+    fallback. The exact generated file and empty directory were immediately removed; no image or user data was saved.
+- Verification from `C:\Users\aaabb\Documents\ICC驼背项目`:
+  - `uv pip check --python runtime\python311\python.exe`: passed; Python 3.11.9 environment is consistent with
+    `ultralytics==8.4.120`, `torch==2.13.0+cpu`, and `torchvision==0.28.0+cpu`; CUDA is unavailable/unused.
+  - Real local weight: 7,878,574 bytes; SHA256
+    `EB3BB8268828AEAF515CEC23A4BFAFD793944A86FE9AF94BA7823609C14522A9`; model reports task `pose` and keypoint shape
+    `[17, 3]`. Twelve synthetic 640x480 blank frames, excluding two warmups, measured P50 `22.94 ms` and P95
+    `31.25 ms`. This verifies API/runtime execution only, not human-scene accuracy.
+  - Passed `test_standard_pose_backend.py`, `test_debug_ui.py`, `test_vision_tracking.py`, `test_posture_science.py`,
+    `test_vision_worker.py`, `test_feature_toggles.py`, `test_vision_replay.py`, `test_startup_guards.py`, and
+    `test_tray_flyout.py`. The 10x10 association test measured P50 `5.87 ms`, P95 `6.59 ms` in the final run.
+  - Target-module `py_compile`, changed-file `ruff check`, and `git diff --check`: passed. Debug UI tests emitted the
+    existing bundled Qt missing-font-directory warning; exit code remained 0.
+- Artifacts: no package, release, model, image, recording, or runtime dependency was staged. Local model and installed
+  optional dependencies remain development-only inputs.
+- Gaps: live camera/UI operation, real seated-person and deliberate-extreme-posture trials, consented multi-person
+  recordings, packaged self-test, remote CI, formal tray/EXE mode selection, ONNX comparison, and model redistribution
+  approval were not performed and are not claimed complete.
+- Conclusion: AGPLv3 acceptance and the pose-only Standard mode Debug UI implementation are locally verified and ready
+  for source review; production adoption and real-world evidence require follow-up.
