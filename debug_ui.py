@@ -19,6 +19,16 @@ from typing import Callable, Dict, Optional
 
 import cv2
 
+from windows_runtime_paths import RuntimePathBridgeError, preload_package_dll
+
+
+try:
+    preload_package_dll("torch", "c10.dll")
+except RuntimePathBridgeError:
+    # Compatibility mode remains usable; Standard mode reports the dependency
+    # failure if the user selects it.
+    pass
+
 QT_PLUGIN_ROOT = os.path.join(
     os.path.dirname(os.path.abspath(__file__)),
     "runtime",
@@ -462,6 +472,7 @@ class DebugWindow(QMainWindow):
         self.current_sample: Optional[VisionSample] = None
         self.current_raw_sample: Optional[VisionSample] = None
         self.current_target_update: Optional[TargetUpdate] = None
+        self._last_frame_error_detail: Optional[str] = None
         self.normal_fps = fps
         self.high_performance_fps = 72.0
         self.high_precision_enabled = False
@@ -824,6 +835,7 @@ class DebugWindow(QMainWindow):
             return
         if requested_mode == self.vision_mode:
             self._refresh_runtime_backend_status()
+            self._resume_frame_updates()
             return
         factory = self._backend_factories.get(requested_mode)
         if factory is None:
@@ -832,6 +844,7 @@ class DebugWindow(QMainWindow):
             self.vision_mode_combo.blockSignals(True)
             self.vision_mode_combo.setCurrentIndex(self._vision_mode_index(self.vision_mode))
             self.vision_mode_combo.blockSignals(False)
+            self._resume_frame_updates()
             return
 
         self.timer.stop()
@@ -868,6 +881,7 @@ class DebugWindow(QMainWindow):
         self.current_sample = None
         self.current_raw_sample = None
         self.current_target_update = None
+        self._last_frame_error_detail = None
         self._scientific_profile = None
         self.analyzer = HighPrecisionPostureAnalyzer(
             auto_calibrate=False,
@@ -884,6 +898,11 @@ class DebugWindow(QMainWindow):
         requested_mode = self.vision_mode_combo.itemData(index)
         if requested_mode == self.vision_mode:
             self._refresh_runtime_backend_status()
+            self._resume_frame_updates()
+
+    def _resume_frame_updates(self) -> None:
+        if not self.timer.isActive():
+            self.timer.start(self._interval_ms(self.normal_fps))
 
     def update_frame(self) -> None:
         try:
@@ -898,9 +917,14 @@ class DebugWindow(QMainWindow):
             return
         except Exception as exc:
             self.timer.stop()
-            QMessageBox.critical(self, "Camera error", str(exc))
+            detail = str(exc)
+            if detail != self._last_frame_error_detail:
+                self._last_frame_error_detail = detail
+                QMessageBox.critical(self, "Camera error", detail)
+            self._resume_frame_updates()
             return
 
+        self._last_frame_error_detail = None
         self.current_raw_sample = raw_sample
         target_update = None
         if self.target_manager is not None:

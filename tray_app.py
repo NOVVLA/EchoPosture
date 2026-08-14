@@ -15,6 +15,16 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
 
+from windows_runtime_paths import RuntimePathBridgeError, preload_package_dll
+
+
+try:
+    preload_package_dll("torch", "c10.dll")
+except RuntimePathBridgeError:
+    # Compatibility monitoring does not require Torch. Optional P5 adapters
+    # surface their dependency error only when configured.
+    pass
+
 from PyQt5.QtCore import (
     QEasingCurve,
     QPointF,

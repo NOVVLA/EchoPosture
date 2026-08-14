@@ -9,7 +9,7 @@ from datetime import datetime, timedelta
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import numpy as np
-from PyQt5.QtWidgets import QApplication
+from PyQt5.QtWidgets import QApplication, QMessageBox
 
 from debug_ui import STATUS_TEXT, DebugWindow
 from vision_backend import observation_from_sample
@@ -104,6 +104,18 @@ class FakeDegradedCompatibilityBackend(FakeDebugBackend):
         "vision_compat_face_detector_fallback",
         {"detail": "synthetic detector failure"},
     )
+
+
+class FailOnceDebugBackend(FakeDebugBackend):
+    def __init__(self) -> None:
+        super().__init__()
+        self.read_count = 0
+
+    def read_frame_sample(self):
+        self.read_count += 1
+        if self.read_count == 1:
+            raise ValueError("synthetic frame failure")
+        return super().read_frame_sample()
 
 
 def make_window(app: QApplication, backend: FakeDebugBackend) -> DebugWindow:
@@ -230,6 +242,36 @@ def test_compatibility_face_detector_fallback_is_visible_after_start() -> None:
         window.close()
         app.processEvents()
     print("test_compatibility_face_detector_fallback_is_visible_after_start OK")
+
+
+def test_debug_panel_recovers_after_transient_frame_error() -> None:
+    app = QApplication.instance() or QApplication([])
+    backend = FailOnceDebugBackend()
+    window = make_window(app, backend)
+    original_critical = QMessageBox.critical
+    shown_errors = []
+    QMessageBox.critical = lambda *args: shown_errors.append(args)
+    try:
+        window.timer.stop()
+        window.update_frame()
+        assert window.timer.isActive()
+        assert len(shown_errors) == 1
+        assert "synthetic frame failure" in str(shown_errors[0][-1])
+
+        window.timer.stop()
+        window.update_frame()
+        assert window.current_sample is not None
+        assert window._last_frame_error_detail is None
+
+        window._switch_vision_mode(
+            window._vision_mode_index(VISION_MODE_COMPATIBILITY)
+        )
+        assert window.timer.isActive()
+    finally:
+        QMessageBox.critical = original_critical
+        window.close()
+        app.processEvents()
+    print("test_debug_panel_recovers_after_transient_frame_error OK")
 
 
 def test_debug_panel_exposes_projected_axes_and_target_activity() -> None:
@@ -528,6 +570,7 @@ if __name__ == "__main__":
     test_debug_panel_exposes_three_vision_modes_and_explicit_availability()
     test_unavailable_mode_keeps_actual_compatibility_backend_visible()
     test_compatibility_face_detector_fallback_is_visible_after_start()
+    test_debug_panel_recovers_after_transient_frame_error()
     test_debug_panel_exposes_projected_axes_and_target_activity()
     test_debug_panel_runs_full_dual_anchor_calibration()
     test_debug_panel_places_stage_card_above_camera()

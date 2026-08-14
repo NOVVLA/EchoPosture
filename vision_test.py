@@ -22,6 +22,7 @@ from typing import Iterable, List, Optional, Tuple
 
 import cv2
 import mediapipe as mp
+import numpy as np
 
 from face_body_association import BodyGeometry, DetectedFace, select_face_for_body
 from mediapipe_resources import ensure_ascii_mediapipe_resource_path
@@ -1998,7 +1999,10 @@ class VisionEngine:
         crop_bottom = min(frame_height, int(math.ceil(bottom + padding)))
         if crop_right - crop_left < 2 or crop_bottom - crop_top < 2:
             return None, None, None, None, None, 0
-        crop = frame_rgb[crop_top:crop_bottom, crop_left:crop_right]
+        crop = np.ascontiguousarray(
+            frame_rgb[crop_top:crop_bottom, crop_left:crop_right]
+        )
+        crop.flags.writeable = False
         result = self._face_mesh.process(crop)
         values = self._measure_face_points(result, crop.shape[1], crop.shape[0])
         return tuple(

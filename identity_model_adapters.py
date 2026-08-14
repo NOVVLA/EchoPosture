@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any, Optional, Sequence, Tuple
 
 from identity_verifier import FaceObservation
+from windows_runtime_paths import RuntimePathBridgeError, prepare_package_dll_directory
 
 
 class ModelDependencyError(RuntimeError):
@@ -119,11 +120,13 @@ class CvlFaceAutoModelAdapter:
                 f"Pinned model cache is incomplete for {self.spec.name}: {', '.join(missing)}"
             )
         try:
+            prepare_package_dll_directory("torch")
             import torch
             from transformers import AutoModel
-        except ImportError as exc:
+        except (ImportError, OSError, RuntimePathBridgeError) as exc:
             raise ModelDependencyError(
-                "P5 model adapter needs optional torch and transformers dependencies."
+                "P5 model adapter needs optional torch and transformers dependencies with "
+                f"loadable native DLLs ({exc})."
             ) from exc
         local_path = model_path(self.spec, self.root)
         self._torch = torch

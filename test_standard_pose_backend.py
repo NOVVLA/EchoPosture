@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import sys
+from types import ModuleType
 from datetime import timedelta
 from pathlib import Path
 
 import numpy as np
+import standard_pose_backend as standard_backend_module
 
 from posture_science import (
     CalibrationAccumulator,
@@ -178,6 +181,49 @@ def test_standard_backend_refuses_implicit_model_download() -> None:
     print("test_standard_backend_refuses_implicit_model_download OK")
 
 
+def test_standard_backend_prepares_torch_dlls_before_loading_model() -> None:
+    events = []
+    capture = FakeCapture()
+    model = FakeModel(
+        FakeResult(
+            np.empty((0, 4), dtype=float),
+            np.empty((0,), dtype=float),
+            np.empty((0, COCO_KEYPOINT_COUNT, 3), dtype=float),
+        )
+    )
+    fake_ultralytics = ModuleType("ultralytics")
+
+    def prepare(package_name: str) -> None:
+        events.append(("prepare", package_name))
+
+    def load_model(_path: str):
+        events.append(("load", "model"))
+        return model
+
+    fake_ultralytics.YOLO = load_model
+    original_prepare = standard_backend_module.prepare_package_dll_directory
+    original_ultralytics = sys.modules.get("ultralytics")
+    standard_backend_module.prepare_package_dll_directory = prepare
+    sys.modules["ultralytics"] = fake_ultralytics
+    try:
+        backend = StandardPoseBackend(
+            model_path=Path(__file__),
+            capture_factory=lambda _camera_id: capture,
+        )
+        backend.start()
+        backend.close()
+    finally:
+        standard_backend_module.prepare_package_dll_directory = original_prepare
+        if original_ultralytics is None:
+            sys.modules.pop("ultralytics", None)
+        else:
+            sys.modules["ultralytics"] = original_ultralytics
+
+    assert events == [("prepare", "torch"), ("load", "model")]
+    assert capture.released
+    print("test_standard_backend_prepares_torch_dlls_before_loading_model OK")
+
+
 def test_standard_backend_rejects_wrong_model_contract() -> None:
     backend, model, capture = make_backend()
     model.task = "detect"
@@ -205,6 +251,7 @@ def main() -> int:
     test_standard_backend_emits_pose_only_person_contract()
     test_standard_backend_preserves_all_people_without_global_posture_mix()
     test_standard_backend_refuses_implicit_model_download()
+    test_standard_backend_prepares_torch_dlls_before_loading_model()
     test_standard_backend_rejects_wrong_model_contract()
     print("test_standard_pose_backend.py ALL OK")
     return 0

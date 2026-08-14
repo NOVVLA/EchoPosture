@@ -25,6 +25,7 @@ from vision_backend import (
     VisionCapabilities,
 )
 from vision_test import CameraBlackFrameError, CameraPermissionError, Point, VisionSample
+from windows_runtime_paths import RuntimePathBridgeError, prepare_package_dll_directory
 
 
 COCO_NOSE = 0
@@ -121,11 +122,13 @@ class StandardPoseBackend:
                     "Automatic model downloads are disabled."
                 )
             try:
+                prepare_package_dll_directory("torch")
                 from ultralytics import YOLO
-            except ImportError as exc:
+            except (ImportError, OSError, RuntimePathBridgeError) as exc:
                 raise RuntimeError(
                     "YOLO26n-pose standard mode requires ultralytics==8.4.120. Install "
-                    "requirements-standard.txt into the Python 3.11 runtime."
+                    "requirements-standard.txt into the Python 3.11 runtime and ensure its "
+                    f"native DLLs are loadable ({exc})."
                 ) from exc
             self._model = YOLO(str(self.model_path))
 

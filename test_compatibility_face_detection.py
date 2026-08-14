@@ -117,19 +117,26 @@ def test_face_mesh_receives_only_selected_face_crop() -> None:
     class FakeFaceMesh:
         def __init__(self) -> None:
             self.shape = None
+            self.c_contiguous = None
+            self.writeable = None
 
         def process(self, crop):
             self.shape = crop.shape
+            self.c_contiguous = crop.flags.c_contiguous
+            self.writeable = crop.flags.writeable
             return SimpleNamespace(multi_face_landmarks=None)
 
     engine = object.__new__(VisionEngine)
     engine._face_mesh = FakeFaceMesh()
     frame = np.zeros((480, 640, 3), dtype=np.uint8)
+    frame.flags.writeable = False
     selected = DetectedFace((250.0, 100.0, 350.0, 220.0), 0.95)
     engine._measure_selected_face(frame, selected)
     assert engine._face_mesh.shape is not None
     assert engine._face_mesh.shape[0] < frame.shape[0]
     assert engine._face_mesh.shape[1] < frame.shape[1]
+    assert engine._face_mesh.c_contiguous is True
+    assert engine._face_mesh.writeable is False
 
 
 def test_face_quality_is_continuous_and_low_inputs_fail_quality_gates() -> None:

@@ -1,5 +1,46 @@
 # DEVELOPMENT_LOG（Development Log，开发日志）
 
+## 2026-08-14 - Recover camera frames and Standard mode after native-frame failures
+
+- Source: user feedback screenshot and live Debug UI report: startup raised `Reference mode is unavailable if
+  'data' is not c_contiguous`; after dismissing the dialog the camera preview stayed blank, and changing vision
+  modes appeared to do nothing.
+- Git: commit `pending`, branch `codex/pr2-phase1-calibration-safety`, tag `none`; delivery remains PR `#23`.
+- Root causes: the selected RGB face crop inherited a non-C-contiguous NumPy view that MediaPipe FaceMesh rejects;
+  the Debug UI permanently stopped its frame timer after any unexpected one-frame exception; and, on this Chinese
+  workspace path, importing PyQt before Torch could make Windows fail to initialize Torch `c10.dll` with
+  `WinError 1114`, causing Standard mode startup to fall back to Compatibility mode.
+- Fix: face crops are copied to C-contiguous read-only arrays before FaceMesh; unexpected frame errors are shown
+  once per consecutive error and frame polling resumes after the dialog closes; selecting the current or an
+  unavailable mode also restores a stopped timer. A Windows-only helper now exposes native package DLL directories
+  through a stable ASCII junction under `%LOCALAPPDATA%\EchoPosture\runtime-paths`, registers the directory, and
+  preloads Torch `c10.dll` before PyQt in both Debug UI and tray entry points. Standard-pose and identity adapters
+  prepare the same DLL path before optional Torch-backed model imports and retain explicit dependency errors.
+- Risk: the recovery timer may retry a persistent unexpected backend failure, but duplicate modal dialogs remain
+  suppressed until a successful frame. Permission and black-frame errors retain their existing dedicated stop and
+  recovery flows. Compatibility mode remains available when Torch is absent. The helper stores only a filesystem
+  junction derived from the local package path and no camera, face, identity, or posture data.
+- Verification from the repository root:
+  - Real MediaPipe received a read-only selected-face crop and returned `READ_ONLY_FACE_CROP_OK`.
+  - A bundled-Python offscreen live-camera harness read Compatibility, Standard, and Compatibility-again frames:
+    `COMPAT_FRAME True True []`, `STANDARD_FRAME standard True True []`, and
+    `COMPAT_RETURN_FRAME compatibility True True []`.
+  - `runtime\python311\python.exe -c "import tray_app; import torch; ..."` returned
+    `TRAY_THEN_TORCH_OK 2.13.0+cpu`, proving the production Qt-then-Torch import order loads successfully.
+  - `test_debug_ui.py`, `test_compatibility_face_detection.py`, `test_standard_pose_backend.py`,
+    `test_identity_model_adapters.py`, `test_vision_worker.py`, `test_startup_guards.py`, and
+    `test_tray_flyout.py` passed with the bundled Python runtime.
+  - Bundled-Python `py_compile` for all changed Python modules, `ruff check .`, and `git diff --check` passed.
+- Artifacts and privacy: no frames, face crops, identity templates, logs, models, screenshots, PDFs, runtime files,
+  or generated packages are included. Existing untracked local materials remain unstaged.
+- Backup: `git stash create` captured the complete staged pre-commit state, including the new runtime helper, at
+  object `db174b4477acfb3560fccdffb359f68bcd578624` without changing the working tree.
+- Gaps: the bundled Qt build still reports its existing missing font-directory warning under the Chinese workspace
+  path; it did not prevent imports, frame reads, mode changes, or tests. Final interactive display behavior on the
+  user's exact screen remains a post-delivery retest; no release package was built or changed.
+- Conclusion: the reported exception, frozen-preview path, and Standard-mode native DLL failure are reproduced at
+  their component boundaries, fixed at their causes, covered by regressions, and ready for the existing PR.
+
 ## 2026-08-13 - Surface pronounced posture configurations without bypassing intervention timing
 
 - Source: user live-camera report that an approximately 90-degree sustained head turn and a pronounced frontal
