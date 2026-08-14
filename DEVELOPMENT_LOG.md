@@ -6,7 +6,7 @@
   candidate-session, ownership, abstention, and intervention fixes. The canonical docs still described Standard as a
   pose-only path with no face or identity processing and the tracked upgrade plan still marked resumed identity work
   as paused.
-- Git: commit `pending`, branch `codex/pr2-phase1-calibration-safety`, PR `#23`, tag `none`.
+- Git: commit `60f8ef0`, branch `codex/pr2-phase1-calibration-safety`, PR `#23`, tag `none`.
 - Scope:
   - `README.md`, `README_EXE.md`, `docs/README.md`, and `docs/STANDARD_MODE.md` now distinguish the packaged
     Compatibility-only posture path from the source Debug UI Standard prototype and describe Standard's per-person
