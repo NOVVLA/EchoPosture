@@ -23,7 +23,9 @@ TARGET_AMBIGUOUS = "TARGET_AMBIGUOUS"
 
 @dataclass(frozen=True)
 class TargetManagerConfig:
-    max_missed_frames: int = 4
+    # Track pruning is wall-clock based so identical timing holds across
+    # backend frame rates (compatibility ~15 Hz vs standard ~4 Hz).
+    max_missed_seconds: float = 1.0
     occlusion_grace_seconds: float = 2.0
     away_confirm_seconds: float = 3.0
     multi_present_confirm_seconds: float = 0.3
@@ -233,7 +235,7 @@ class TargetManager:
             len(observations) > self.config.max_association_observations
             or len(self._tracks) > self.config.max_association_tracks
         ):
-            return self._association_budget_update(observations)
+            return self._association_budget_update(observations, timestamp)
         ambiguous = any(observation.association_ambiguous for observation in observations)
         assignments, candidate_scores = self._associate(observations)
         matched_track_ids = {track.track_id for _, track, _, _ in assignments}
@@ -243,7 +245,7 @@ class TargetManager:
             if not any(assigned_index == index for assigned_index, _, _, _ in assignments)
         ]
         if len(self._tracks) + len(unmatched_observations) > self.config.max_association_tracks:
-            return self._association_budget_update(observations)
+            return self._association_budget_update(observations, timestamp)
 
         for _, track, observation, match_score in assignments:
             self._update_track(track, observation, match_score)
@@ -255,7 +257,7 @@ class TargetManager:
         for observation in unmatched_observations:
             self._create_track(observation)
 
-        self._prune_tracks()
+        self._prune_tracks(timestamp)
         target = self._tracks.get(self.target_track_id) if self.target_track_id else None
         target_observation = target.observation if target and target.missed_frames == 0 else None
         active_tracks = [track for track in self._tracks.values() if track.missed_frames == 0]
@@ -440,9 +442,20 @@ class TargetManager:
     def _association_budget_update(
         self,
         observations: Tuple[PersonObservation, ...],
+        timestamp: Timestamp,
     ) -> TargetUpdate:
-        """Abstain without mutating tracks when a crowded frame exceeds limits."""
+        """Abstain from association while still advancing track lifecycles."""
 
+        # The crowded frame cannot be associated, so no track was matched: age
+        # every track, start the target-missing clock, and prune stale tracks.
+        # Abstaining from association must not freeze lifecycle state, or a
+        # crowd could hide a real departure and keep stale tracks alive.
+        for track in self._tracks.values():
+            track.missed_frames += 1
+        target = self._tracks.get(self.target_track_id) if self.target_track_id else None
+        if target is not None and self._target_missing_since is None:
+            self._target_missing_since = timestamp
+        self._prune_tracks(timestamp)
         self.state = TARGET_AMBIGUOUS
         return TargetUpdate(
             state=TARGET_AMBIGUOUS,
@@ -786,11 +799,12 @@ class TargetManager:
             last_match_score=None,
         )
 
-    def _prune_tracks(self) -> None:
+    def _prune_tracks(self, timestamp: Timestamp) -> None:
         for track_id, track in tuple(self._tracks.items()):
             if track_id == self.target_track_id:
                 continue
-            if track.missed_frames > self.config.max_missed_frames:
+            missed_seconds = max(0.0, _elapsed_seconds(timestamp, track.last_seen_at))
+            if missed_seconds > self.config.max_missed_seconds:
                 del self._tracks[track_id]
 
     def _freeze_track(self, track: _Track) -> TrackedPerson:

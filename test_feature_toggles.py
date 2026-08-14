@@ -152,6 +152,29 @@ def test_posture_change_candidate_clears_after_normal_gap_recovery() -> None:
     print("test_posture_change_candidate_clears_after_normal_gap_recovery OK")
 
 
+def test_post_calibration_validation_tolerates_sub_watch_excursion() -> None:
+    analyzer = scientific_analyzer()
+    start = T0 + timedelta(seconds=40.0)
+    # relaxed=1.5 keeps raw evidence above zero (an excursion the previous
+    # "raw_deviation <= 1e-9" gate could never validate) while the corroborated
+    # deviation stays below watch_enter. Validation must still complete after
+    # the stable window instead of demanding a mathematically perfect zero.
+    decisions = []
+    for index in range(6):
+        decision = analyzer.evaluate(
+            scientific_sample(start + timedelta(seconds=index * 0.5), 1.5)
+        )
+        decisions.append(decision)
+    assert decisions[0].status == "OBSERVING", decisions[0]
+    validated = [
+        decision
+        for decision in decisions
+        if decision.reason == "post_calibration_normal_range_validated"
+    ]
+    assert validated, [decision.reason for decision in decisions]
+    print("test_post_calibration_validation_tolerates_sub_watch_excursion OK")
+
+
 def test_defaults_all_enabled():
     analyzer = HighPrecisionPostureAnalyzer()
     assert analyzer.precision_enabled
@@ -1301,4 +1324,5 @@ if __name__ == "__main__":
     test_low_track_activity_add_on_is_visible_but_bounded()
     test_low_measurement_quality_resets_low_track_activity()
     test_posture_change_candidate_clears_after_normal_gap_recovery()
+    test_post_calibration_validation_tolerates_sub_watch_excursion()
     print("ALL TESTS PASSED")

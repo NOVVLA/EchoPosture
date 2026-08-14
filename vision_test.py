@@ -880,7 +880,7 @@ class HighPrecisionPostureAnalyzer(PostureAnalyzer):
         if self._post_calibration_validation_required:
             self.static_hold_accumulator.reset()
             exposure = self.exposure_accumulator.pause(sample.timestamp)
-            within_normal_band = score.raw_deviation <= 1e-9
+            within_normal_band = score.deviation < self.posture_policy.watch_enter
             if within_normal_band:
                 if self._post_calibration_validation_started_at is None:
                     self._post_calibration_validation_started_at = sample.timestamp

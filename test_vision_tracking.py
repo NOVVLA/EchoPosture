@@ -335,6 +335,64 @@ def test_association_budget_excess_abstains_and_recovers() -> None:
     print("test_association_budget_excess_abstains_and_recovers OK")
 
 
+def test_association_budget_frame_advances_track_lifecycle() -> None:
+    config = TargetManagerConfig(
+        max_association_observations=4,
+        max_association_tracks=4,
+        max_association_states=32,
+    )
+    manager = TargetManager(config)
+    manager.update([observation(1, T0, 100.0)])
+    assert manager.lock_calibration_target()
+    target_id = manager.target_track_id
+    # A second person is tracked before the crowd arrives.
+    second = manager.update(
+        [
+            observation(1, T0 + timedelta(seconds=0.1), 100.0),
+            observation(2, T0 + timedelta(seconds=0.1), 320.0),
+        ]
+    )
+    assert len(second.tracks) == 2
+
+    # Crowded frames abstain from association, but they must still age
+    # tracks, run the target-missing clock, and prune stale tracks.
+    crowded_at = T0 + timedelta(seconds=0.2)
+    for step in range(5):
+        crowded = manager.update(
+            [
+                observation(None, crowded_at + timedelta(seconds=0.5 * step), 80.0 + 80.0 * index)
+                for index in range(5)
+            ],
+        )
+        assert crowded.state == TARGET_AMBIGUOUS
+        assert crowded.reason == "association_budget_exceeded"
+    # The untouched second-person track was pruned; only the target remains.
+    assert [track.track_id for track in crowded.tracks] == [target_id]
+
+    # The target's absence during the crowd must count toward the missing
+    # clock: returning after the occlusion grace window has to route through
+    # identity re-confirmation instead of a silent relock.
+    returned = manager.update(
+        [observation(1, crowded_at + timedelta(seconds=2.3), 100.0)]
+    )
+    assert returned.state == IDENTITY_UNCERTAIN
+    assert returned.reason == "reacquired_candidate_needs_identity_confirmation"
+    print("test_association_budget_frame_advances_track_lifecycle OK")
+
+
+def test_track_pruning_is_time_based_not_frame_based() -> None:
+    manager = TargetManager()
+    manager.update([observation(1, T0, 100.0)])
+    # A single sparse update long after the last sighting must prune the
+    # stale track on wall-clock age even though only one frame was "missed";
+    # a frame-count rule would keep it alive for four updates.
+    after = manager.update(
+        [observation(9, T0 + timedelta(seconds=2.0), 300.0)]
+    )
+    assert [track.track_id for track in after.tracks] == [2]
+    print("test_track_pruning_is_time_based_not_frame_based OK")
+
+
 def test_occlusion_reacquisition_and_no_silent_promotion():
     manager = TargetManager()
     manager.update([observation(1, T0, 100.0)])
@@ -981,6 +1039,8 @@ if __name__ == "__main__":
     test_geometry_tie_enters_ambiguous_state_without_silent_switch()
     test_bounded_global_association_high_candidate_matrix()
     test_association_budget_excess_abstains_and_recovers()
+    test_association_budget_frame_advances_track_lifecycle()
+    test_track_pruning_is_time_based_not_frame_based()
     test_occlusion_reacquisition_and_no_silent_promotion()
     test_face_continuity_survives_side_recline_body_box_jump()
     test_ambiguous_independent_candidate_requires_identity_confirmation()
