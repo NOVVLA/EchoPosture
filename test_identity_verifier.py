@@ -98,8 +98,99 @@ def test_async_submit_event_gate_and_close_clear_in_memory_state() -> None:
         heartbeat = verifier.request(_face(7.0, (1.0, 0.0)), trigger=TRIGGER_HEARTBEAT, track_id=1)
         assert heartbeat is not None
         assert heartbeat.result(timeout=2).state == IDENTITY_CONFIRMED
+        reacquisition_session = verifier.start_session(1)
+        fresh = verifier.request(
+            _face(7.1, (1.0, 0.0)),
+            trigger=TRIGGER_REACQUIRED,
+            track_id=1,
+            session_id=reacquisition_session,
+        )
+        assert fresh is not None
+        assert fresh.result(timeout=2).state == IDENTITY_CONFIRMED
         verifier.close()
         assert not verifier.has_template
+
+
+def test_new_candidate_session_cannot_reuse_confirmed_history() -> None:
+    verifier = _verifier()
+    try:
+        assert verifier.enroll([_face(float(index), (1.0, 0.0)) for index in range(3)]).ok
+        owner_session = verifier.start_session(1)
+        owner_results = [
+            verifier.verify(
+                _face(10.0 + index, (1.0, 0.0)),
+                trigger=TRIGGER_HEARTBEAT,
+                track_id=1,
+                session_id=owner_session,
+            )
+            for index in range(6)
+        ]
+        assert owner_results[-1].state == IDENTITY_CONFIRMED
+
+        intruder_session = verifier.start_session(2)
+        first_intruder = verifier.verify(
+            _face(20.0, (0.0, 1.0)),
+            trigger=TRIGGER_REACQUIRED,
+            track_id=2,
+            session_id=intruder_session,
+        )
+        assert first_intruder.state == IDENTITY_UNCERTAIN
+        assert first_intruder.valid_frames == 1
+
+        intruder_results = [first_intruder]
+        for index in range(1, 3):
+            intruder_results.append(
+                verifier.verify(
+                    _face(20.0 + index, (0.0, 1.0)),
+                    trigger=TRIGGER_REACQUIRED,
+                    track_id=2,
+                    session_id=intruder_session,
+                )
+            )
+        assert intruder_results[-1].state == IDENTITY_MISMATCH
+        assert intruder_results[-1].valid_frames == 3
+    finally:
+        verifier.close()
+
+
+def test_reacquisition_of_same_track_starts_an_independent_window() -> None:
+    verifier = _verifier()
+    try:
+        assert verifier.enroll([_face(float(index), (1.0, 0.0)) for index in range(3)]).ok
+        first_session = verifier.start_session(4)
+        for index in range(3):
+            confirmed = verifier.verify(
+                _face(30.0 + index, (1.0, 0.0)),
+                track_id=4,
+                session_id=first_session,
+            )
+        assert confirmed.state == IDENTITY_CONFIRMED
+
+        reacquisition_session = verifier.start_session(4)
+        assert reacquisition_session != first_session
+        first_reacquired = verifier.verify(
+            _face(40.0, (0.0, 1.0)),
+            track_id=4,
+            session_id=reacquisition_session,
+        )
+        assert first_reacquired.state == IDENTITY_UNCERTAIN
+        assert first_reacquired.valid_frames == 1
+
+        late_old_result = verifier.verify(
+            _face(41.0, (1.0, 0.0)),
+            track_id=4,
+            session_id=first_session,
+        )
+        assert late_old_result.valid_frames == 1
+        second_reacquired = verifier.verify(
+            _face(42.0, (0.0, 1.0)),
+            track_id=4,
+            session_id=reacquisition_session,
+        )
+        assert second_reacquired.valid_frames == 2
+        assert second_reacquired.score == 0.0
+    finally:
+        verifier.close()
 
 
 def test_no_image_payload_is_retained() -> None:

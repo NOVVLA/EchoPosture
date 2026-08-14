@@ -512,13 +512,21 @@ class DebugWindow(QMainWindow):
         self._identity_verifier_owned = False
         self._identity_pipeline_owned = False
         self._identity_embedding_future = None
-        self._identity_embedding_context: Optional[tuple[int, str, str, Optional[int]]] = None
+        self._identity_embedding_context: Optional[
+            tuple[int, str, str, Optional[int], Optional[int]]
+        ] = None
         self._identity_future = None
-        self._identity_future_context: Optional[tuple[int, Optional[int]]] = None
+        self._identity_future_context: Optional[
+            tuple[int, Optional[int], int]
+        ] = None
         self._identity_enrollment_samples: list[FaceObservation] = []
         self._identity_enrollment_active = False
         self._identity_generation = 0
         self._last_identity_embedding_at: dict[tuple[str, Optional[int]], float] = {}
+        self._last_identity_state: Optional[str] = None
+        self._last_identity_track_id: Optional[int] = None
+        self._identity_session_id: Optional[int] = None
+        self._identity_session_track_id: Optional[int] = None
         self._identity_model_owned = False
         if (
             backend_factory is None
@@ -914,6 +922,10 @@ class DebugWindow(QMainWindow):
         self._identity_embedding_context = None
         self._identity_future = None
         self._identity_future_context = None
+        self._identity_session_id = None
+        self._identity_session_track_id = None
+        self._last_identity_state = None
+        self._last_identity_track_id = None
         if self.identity_verifier is not None:
             self.identity_verifier.clear_template()
 
@@ -940,6 +952,9 @@ class DebugWindow(QMainWindow):
             if target_update.identity_candidate_observation is not None
             else target_update.target_track_id
         )
+        self._ensure_identity_session(track_id, target_update.state)
+        self._last_identity_state = target_update.state
+        self._last_identity_track_id = track_id
         if observation is None and self._identity_enrollment_active:
             eligible = tuple(
                 candidate
@@ -987,7 +1002,38 @@ class DebugWindow(QMainWindow):
             kind,
             trigger,
             track_id,
+            self._identity_session_id,
         )
+
+    def _ensure_identity_session(
+        self,
+        track_id: Optional[int],
+        target_state: str,
+    ) -> None:
+        verifier = self.identity_verifier
+        if verifier is None or self._identity_enrollment_active:
+            return
+        needs_new_session = (
+            self._identity_session_id is None
+            or track_id != self._identity_session_track_id
+            or (
+                target_state == "IDENTITY_UNCERTAIN"
+                and self._last_identity_state != "IDENTITY_UNCERTAIN"
+            )
+        )
+        if not needs_new_session:
+            return
+        self._identity_generation += 1
+        for future in (self._identity_embedding_future, self._identity_future):
+            if future is not None:
+                future.cancel()
+        self._identity_embedding_future = None
+        self._identity_embedding_context = None
+        self._identity_future = None
+        self._identity_future_context = None
+        self._identity_session_id = verifier.start_session(track_id)
+        self._identity_session_track_id = track_id
+        self._last_identity_embedding_at.clear()
 
     def _apply_identity_results(self) -> None:
         embedding_future = self._identity_embedding_future
@@ -1000,7 +1046,7 @@ class DebugWindow(QMainWindow):
             except Exception:
                 observation = None
             if observation is not None and context is not None and context[0] == self._identity_generation:
-                _generation, kind, trigger, track_id = context
+                _generation, kind, trigger, track_id, session_id = context
                 verifier = self.identity_verifier
                 if verifier is not None and kind == "enroll":
                     self._identity_enrollment_samples.append(observation)
@@ -1017,11 +1063,17 @@ class DebugWindow(QMainWindow):
                         observation,
                         trigger=trigger,
                         track_id=track_id,
+                        session_id=session_id,
                         force=True,
                     )
                     if future is not None:
                         self._identity_future = future
-                        self._identity_future_context = (self._identity_generation, track_id)
+                        if session_id is not None:
+                            self._identity_future_context = (
+                                self._identity_generation,
+                                track_id,
+                                session_id,
+                            )
 
         identity_future = self._identity_future
         if identity_future is None or not identity_future.done():
@@ -1029,7 +1081,13 @@ class DebugWindow(QMainWindow):
         context = self._identity_future_context
         self._identity_future = None
         self._identity_future_context = None
-        if context is None or context[0] != self._identity_generation or self.target_manager is None:
+        if (
+            context is None
+            or context[0] != self._identity_generation
+            or context[2] != self._identity_session_id
+            or context[1] != self._identity_session_track_id
+            or self.target_manager is None
+        ):
             return
         try:
             result = identity_future.result()

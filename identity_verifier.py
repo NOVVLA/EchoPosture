@@ -175,6 +175,15 @@ class IdentityVerificationResult:
     trigger: str = TRIGGER_EXPLICIT
 
 
+@dataclass
+class _VerificationSession:
+    scores: deque[float]
+    total_frames: int = 0
+    candidate_state: str = IDENTITY_UNCERTAIN
+    candidate_count: int = 0
+    stable_state: str = IDENTITY_UNCERTAIN
+
+
 def _timestamp_seconds(value: Timestamp) -> float:
     return value.timestamp() if isinstance(value, datetime) else float(value)
 
@@ -215,12 +224,11 @@ class IdentityVerifier:
         self._owns_executor = executor is None
         self._lock = threading.Lock()
         self._template: Optional[Tuple[float, ...]] = None
-        self._scores: deque[float] = deque(maxlen=self.config.max_frames)
-        self._total_frames = 0
-        self._candidate_state = IDENTITY_UNCERTAIN
-        self._candidate_count = 0
-        self._stable_state = IDENTITY_UNCERTAIN
-        self._last_trigger_at: dict[tuple[str, Optional[int]], float] = {}
+        self._sessions: dict[tuple[Optional[int], int], _VerificationSession] = {}
+        self._session_serial = 0
+        self._last_trigger_at: dict[
+            tuple[str, Optional[int], Optional[int]], float
+        ] = {}
         self._closed = False
 
     @property
@@ -247,33 +255,46 @@ class IdentityVerifier:
         template = _normalise(mean)
         with self._lock:
             self._template = template
-            self._scores.clear()
-            self._total_frames = 0
-            self._candidate_state = IDENTITY_UNCERTAIN
-            self._candidate_count = 0
-            self._stable_state = IDENTITY_UNCERTAIN
+            self._sessions.clear()
+            self._last_trigger_at.clear()
         return EnrollmentResult(True, len(embeddings), "template_ready")
 
     def clear_template(self) -> None:
         with self._lock:
             self._template = None
-            self._scores.clear()
-            self._total_frames = 0
-            self._candidate_state = IDENTITY_UNCERTAIN
-            self._candidate_count = 0
-            self._stable_state = IDENTITY_UNCERTAIN
+            self._sessions.clear()
+            self._last_trigger_at.clear()
+
+    def start_session(self, track_id: Optional[int]) -> int:
+        """Create an isolated verification window for one target candidate."""
+
+        with self._lock:
+            if self._closed:
+                raise RuntimeError("IdentityVerifier is closed")
+            self._session_serial += 1
+            session_id = self._session_serial
+            # The application has one selected posture target at a time. Keep
+            # only its active window so abandoned track IDs cannot accumulate.
+            self._sessions.clear()
+            self._sessions[(track_id, session_id)] = self._new_session()
+            self._last_trigger_at.clear()
+            return session_id
 
     def verify(
         self,
         observation: FaceObservation,
         *,
         trigger: str = TRIGGER_EXPLICIT,
+        track_id: Optional[int] = None,
+        session_id: Optional[int] = None,
     ) -> IdentityVerificationResult:
         quality = score_face_quality(observation, self.config.quality)
+        session_key = (track_id, 0 if session_id is None else session_id)
         with self._lock:
-            self._total_frames += 1
+            session = self._sessions.setdefault(session_key, self._new_session())
+            session.total_frames += 1
             template = self._template
-            total_frames = self._total_frames
+            total_frames = session.total_frames
         if template is None:
             return IdentityVerificationResult(
                 IDENTITY_UNCERTAIN,
@@ -285,8 +306,8 @@ class IdentityVerifier:
             )
         if not quality.accepted:
             with self._lock:
-                stable_state = self._stable_state
-                valid_frames = len(self._scores)
+                stable_state = session.stable_state
+                valid_frames = len(session.scores)
             return IdentityVerificationResult(
                 stable_state,
                 None,
@@ -298,8 +319,8 @@ class IdentityVerifier:
             score = cosine_similarity(template, self._embed(observation))
         except (TypeError, ValueError):
             with self._lock:
-                stable_state = self._stable_state
-                valid_frames = len(self._scores)
+                stable_state = session.stable_state
+                valid_frames = len(session.scores)
             return IdentityVerificationResult(
                 stable_state,
                 None,
@@ -308,27 +329,27 @@ class IdentityVerifier:
                 "embedding_unavailable", trigger,
             )
         with self._lock:
-            self._scores.append(score)
-            valid_frames = len(self._scores)
-            aggregate = statistics.median(self._scores)
+            session.scores.append(score)
+            valid_frames = len(session.scores)
+            aggregate = statistics.median(session.scores)
             candidate = (
                 IDENTITY_CONFIRMED if aggregate >= self.config.confirm_threshold
                 else IDENTITY_MISMATCH if aggregate <= self.config.mismatch_threshold
                 else IDENTITY_UNCERTAIN
             )
-            if candidate == self._candidate_state:
-                self._candidate_count += 1
+            if candidate == session.candidate_state:
+                session.candidate_count += 1
             else:
-                self._candidate_state = candidate
-                self._candidate_count = 1
+                session.candidate_state = candidate
+                session.candidate_count = 1
             if candidate == IDENTITY_UNCERTAIN:
-                self._stable_state = IDENTITY_UNCERTAIN
+                session.stable_state = IDENTITY_UNCERTAIN
             elif (
                 valid_frames >= self.config.min_frames
-                and self._candidate_count >= self.config.debounce_results
+                and session.candidate_count >= self.config.debounce_results
             ):
-                self._stable_state = candidate
-            state = self._stable_state
+                session.stable_state = candidate
+            state = session.stable_state
         if valid_frames < self.config.min_frames:
             state = IDENTITY_UNCERTAIN
             reason = "collecting_identity_frames"
@@ -344,12 +365,13 @@ class IdentityVerifier:
         *,
         trigger: str,
         track_id: Optional[int] = None,
+        session_id: Optional[int] = None,
         force: bool = False,
     ) -> Optional[Future[IdentityVerificationResult]]:
         """Submit only event/heartbeat requests allowed by the trigger gate."""
 
         now = _timestamp_seconds(observation.timestamp)
-        key = (trigger, track_id)
+        key = (trigger, track_id, session_id)
         with self._lock:
             if self._closed:
                 raise RuntimeError("IdentityVerifier is closed")
@@ -362,18 +384,32 @@ class IdentityVerifier:
             if not force and previous is not None and now - previous < interval:
                 return None
             self._last_trigger_at[key] = now
-        return self._executor.submit(self.verify, observation, trigger=trigger)
+        return self._executor.submit(
+            self.verify,
+            observation,
+            trigger=trigger,
+            track_id=track_id,
+            session_id=session_id,
+        )
 
     def submit(
         self,
         observation: FaceObservation,
         *,
         trigger: str = TRIGGER_EXPLICIT,
+        track_id: Optional[int] = None,
+        session_id: Optional[int] = None,
     ) -> Future[IdentityVerificationResult]:
         with self._lock:
             if self._closed:
                 raise RuntimeError("IdentityVerifier is closed")
-        return self._executor.submit(self.verify, observation, trigger=trigger)
+        return self._executor.submit(
+            self.verify,
+            observation,
+            trigger=trigger,
+            track_id=track_id,
+            session_id=session_id,
+        )
 
     def close(self) -> None:
         with self._lock:
@@ -381,7 +417,7 @@ class IdentityVerifier:
                 return
             self._closed = True
             self._template = None
-            self._scores.clear()
+            self._sessions.clear()
             self._last_trigger_at.clear()
         if self._owns_executor:
             self._executor.shutdown(wait=True, cancel_futures=True)
@@ -389,6 +425,9 @@ class IdentityVerifier:
     def _embed(self, observation: FaceObservation) -> Sequence[float]:
         embed = getattr(self._embedder, "embed", None)
         return embed(observation) if embed is not None else self._embedder(observation)
+
+    def _new_session(self) -> _VerificationSession:
+        return _VerificationSession(deque(maxlen=self.config.max_frames))
 
     def __enter__(self) -> "IdentityVerifier":
         return self

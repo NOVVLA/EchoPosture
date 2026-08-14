@@ -1914,3 +1914,59 @@
 - Conclusion: source runtime identity is now CVLFace-only, recovery and stale-result guards are deterministic, and the
   shared observation interface is verified for Compatibility, Standard, and the Professional reservation. The change
   is ready for commit, push, PR review, and remote CI; packaged identity-runtime assembly remains follow-up work.
+
+## 2026-08-14 - Candidate-scoped face identity verification sessions
+
+- Source: user requirement to fix discovered identity defects before further feature work and make CVLFace a reliable
+  primary selector for which person's posture observations may enter processing.
+- Git: commit `pending`, branch `codex/pr2-phase1-calibration-safety`, PR `#23`, tag `none`.
+- Root cause and preserved evidence:
+  - `IdentityVerifier.request()` throttled by `(trigger, track_id)`, but `verify()` accumulated every candidate into
+    one global score deque, valid-frame count, debounce candidate, and stable state.
+  - After the enrolled user had produced a confirmed heartbeat history, the first frame of a new intruder candidate
+    returned `IDENTITY_CONFIRMED`, `score=1.0`, `valid_frames=9`, reason `identity_score_aggregated`. The score was the
+    old user's median rather than evidence from the new candidate.
+  - Worker and Debug UI carried candidate track IDs with futures, but no verification-session token. A late embedding
+    or verifier future could therefore finish after reacquisition or candidate replacement without proving that it
+    still belonged to the active evidence window.
+- Changes:
+  - `IdentityVerifier` now owns independent score, frame-count, debounce, and stable-state data keyed by candidate
+    track and a monotonically increasing session ID. Starting a session clears the abandoned active window and its
+    trigger gate while retaining the enrolled user template.
+  - `verify()`, `request()`, and `submit()` accept the normalized `track_id` and `session_id` context. Trigger
+    throttling also includes the session ID, so reacquiring the same track starts immediately instead of inheriting a
+    prior event interval.
+  - VisionWorker and Debug UI start a fresh session when the candidate track changes or the same track newly enters
+    `IDENTITY_UNCERTAIN`. The same candidate continues accumulating across frames, while normal heartbeats stay in the
+    current session.
+  - Embedding and verification future contexts now include the active session ID. Candidate/session changes cancel
+    what can be cancelled, discard all old contexts, and refuse to apply a completed result unless both track and
+    session still match. Calibration reset also clears both asynchronous stages and session state.
+  - Regression tests cover owner heartbeats followed by an intruder, same-track reacquisition, late old-session
+    evidence, same-candidate accumulation, event-gate reset, and Worker session rotation across candidate and state
+    transitions. The Debug UI verifier test double implements the same session interface.
+- Risk and privacy:
+  - The change is fail-closed: every new or reacquired candidate must independently collect the configured minimum
+    number of valid CVLFace samples before confirmation. It may add the intended reacquisition delay but removes the
+    unsafe first-frame confirmation path.
+  - Only numeric transient scores and embeddings remain in memory. No frame, face crop, embedding, template, score,
+    or trajectory is written to disk or added to logs.
+- Verification from `C:\Users\aaabb\Documents\ICC驼背项目`:
+  - `runtime\python311\python.exe test_identity_verifier.py`: passed; the new intruder's first result is uncertain
+    with one valid frame, and old-session evidence does not change the new session's frame count.
+  - `runtime\python311\python.exe test_vision_worker.py`: passed, including candidate change, same-track
+    reacquisition, continuous same-candidate accumulation, ambiguous ownership, and cancelled enrollment guards.
+  - `runtime\python311\python.exe test_debug_ui.py`: passed. The bundled Qt missing-font-directory warning remains,
+    but the process exited 0 and all Debug UI assertions passed.
+  - `test_identity_model_adapters.py`, `test_face_embedding.py`, `test_face_body_association.py`,
+    `test_vision_tracking.py`, and `test_compatibility_face_detection.py`: passed.
+  - `ruff check identity_verifier.py vision_worker.py debug_ui.py test_identity_verifier.py test_vision_worker.py
+    test_debug_ui.py`: passed.
+  - `runtime\python311\python.exe -m py_compile identity_verifier.py vision_worker.py debug_ui.py
+    test_identity_verifier.py test_vision_worker.py test_debug_ui.py`: passed.
+- Artifacts: no package, release, model, runtime, screenshot, recording, or user-authored plan file is included.
+- Gaps: no live seated-person leave/re-enter trial, consented multi-person swap trial, cross-device threshold study,
+  packaged `runtime/p5` build, packaged EXE self-test, or remote CI result is claimed in this entry. Those remain
+  production evidence gates even though the deterministic state-contamination defect is fixed.
+- Conclusion: the known cross-candidate confirmation defect is fixed at the verifier and both asynchronous runtime
+  entry points. The source change is ready for final static checks, commit, push, and PR CI.

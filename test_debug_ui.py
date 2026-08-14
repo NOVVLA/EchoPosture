@@ -172,6 +172,7 @@ class FakeFaceEnhancer:
 class FakeIdentityVerifier:
     def __init__(self) -> None:
         self.clear_count = 0
+        self.session_count = 0
         self.config = SimpleNamespace(
             heartbeat_seconds=5.0,
             min_event_interval_seconds=0.25,
@@ -179,6 +180,10 @@ class FakeIdentityVerifier:
 
     def clear_template(self) -> None:
         self.clear_count += 1
+
+    def start_session(self, _track_id: int | None) -> int:
+        self.session_count += 1
+        return self.session_count
 
 
 class FakeIdentityPipeline:
