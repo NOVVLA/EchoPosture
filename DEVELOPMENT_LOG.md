@@ -5,7 +5,8 @@
 - Source: urgent user request and `docs/plans/EchoPosture_intervention_trigger_defects.md`; the report's synthetic
   dual-anchor scenario A reproduced as exactly `0.0` deviation before the fix, with ratio/angle acceptance margins
   of `0.075` and `5.5 degrees` masking meaningful changes.
-- Git: commit `pending`, branch `codex/pr2-phase1-calibration-safety`, tag `none`; delivery remains the existing PR
+- Git: code commit `9d29078`, branch `codex/pr2-phase1-calibration-safety`, tag `none`; local integration commit
+  `eb569d0` preserves the remote identity-parity history, while delivery remains the existing PR
   branch and includes the branch's one previously local commit.
 - Root causes: runtime acceptance added a fixed movement deadband to measurement noise, unsupported single channels
   were discarded, the shared shoulder denominator guard could suppress changes backed by real raw geometry, severe
