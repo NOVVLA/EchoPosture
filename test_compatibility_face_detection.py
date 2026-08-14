@@ -178,6 +178,34 @@ def test_intruder_only_face_is_not_attached_to_seated_body() -> None:
     )
     observation = observation_from_sample(intruder)[0]
     assert observation.association_ambiguous
+    assert observation.association_reason == "face_vertical_position_mismatch"
+    assert observation.face_bbox_xyxy is None
+    assert observation.face_landmarks is None
+    assert observation.posture_features is not None
+    assert not observation.posture_features.face_detected
+    assert observation.posture_features.interpupillary_px is None
+
+
+def test_single_face_anchor_mismatch_is_unconfirmed_without_face_attachment() -> None:
+    anchor_mismatch = replace(
+        sample(),
+        face_detector_landmarks=(
+            (290.0, 150.0),
+            (350.0, 150.0),
+            (320.0, 250.0),
+            (320.0, 190.0),
+            (278.0, 168.0),
+            (362.0, 168.0),
+        ),
+    )
+    observation = observation_from_sample(anchor_mismatch)[0]
+    assert not observation.association_ambiguous
+    assert observation.association_reason == "face_anchor_unconfirmed"
+    assert observation.face_bbox_xyxy is None
+    assert observation.face_landmarks is None
+    assert observation.posture_features is not None
+    assert not observation.posture_features.face_detected
+    assert observation.posture_features.interpupillary_px is None
 
 
 def test_high_intruder_is_not_rescued_by_short_face_continuity() -> None:
@@ -208,8 +236,16 @@ def test_high_intruder_is_not_rescued_by_short_face_continuity() -> None:
     observation = observation_from_sample(intruder)[0]
     update = manager.update((observation,), timestamp=observation.timestamp)
 
-    assert update.state == TARGET_AMBIGUOUS, update
-    assert update.target_observation is None
+    assert update.state == "TARGET_LOCKED", update
+    assert update.target_observation is not None
+    assert update.target_observation.face_bbox_xyxy is None
+
+    confirmed = manager.update(
+        (replace(observation, timestamp=T0 + timedelta(seconds=0.5)),),
+        timestamp=T0 + timedelta(seconds=0.5),
+    )
+    assert confirmed.state == TARGET_AMBIGUOUS, confirmed
+    assert confirmed.target_observation is not None
 
 
 def test_unmatched_faces_contribute_scene_count_without_replacing_target() -> None:
@@ -237,6 +273,7 @@ if __name__ == "__main__":
     test_face_mesh_receives_only_selected_face_crop()
     test_face_quality_is_continuous_and_low_inputs_fail_quality_gates()
     test_intruder_only_face_is_not_attached_to_seated_body()
+    test_single_face_anchor_mismatch_is_unconfirmed_without_face_attachment()
     test_high_intruder_is_not_rescued_by_short_face_continuity()
     test_unmatched_faces_contribute_scene_count_without_replacing_target()
     print("ALL TESTS PASSED")

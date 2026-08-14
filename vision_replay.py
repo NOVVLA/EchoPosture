@@ -50,6 +50,7 @@ def _observation(payload: dict[str, Any], timestamp: datetime) -> PersonObservat
         face_landmarks=None,
         face_quality=None,
         association_ambiguous=bool(payload.get("association_ambiguous", False)),
+        association_reason=payload.get("association_reason"),
     )
 
 

@@ -70,7 +70,7 @@ class FaceObservationEnhancer:
         faces = self._detect_faces(frame_rgb, width, height)
         self.last_face_count = len(faces)
         landmarks = tuple(self._measure_face_landmarks(frame_rgb, face) for face in faces)
-        assignments, ambiguous_bodies = self._associate(faces, observations)
+        assignments, ambiguous_bodies, unconfirmed_bodies = self._associate(faces, observations)
         scene_count = max(
             len(observations),
             len(faces),
@@ -93,6 +93,11 @@ class FaceObservationEnhancer:
                         association_ambiguous=(
                             observation.association_ambiguous
                             or body_index in ambiguous_bodies
+                        ),
+                        association_reason=(
+                            "face_anchor_unconfirmed"
+                            if body_index in unconfirmed_bodies
+                            else observation.association_reason
                         ),
                         scene_person_count=scene_count,
                     )
@@ -126,6 +131,7 @@ class FaceObservationEnhancer:
                     face_landmarks=face_landmarks,
                     face_quality=quality,
                     association_ambiguous=False,
+                    association_reason=None,
                     posture_features=features,
                     scene_person_count=scene_count,
                 )
@@ -136,17 +142,20 @@ class FaceObservationEnhancer:
         self,
         faces: Sequence[DetectedFace],
         observations: Sequence[PersonObservation],
-    ) -> tuple[dict[int, int], set[int]]:
+    ) -> tuple[dict[int, int], set[int], set[int]]:
         scores: dict[tuple[int, int], float] = {}
+        results = {}
         for body_index, observation in enumerate(observations):
             body = self._body_geometry(observation)
             for face_index, face in enumerate(faces):
                 result = evaluate_face_body_association(face, body)
+                results[(body_index, face_index)] = result
                 if result.matched:
                     scores[(body_index, face_index)] = result.score
 
         accepted = {}
         ambiguous_bodies: set[int] = set()
+        unconfirmed_bodies: set[int] = set()
         for body_index in range(len(observations)):
             candidates = sorted(
                 (
@@ -157,7 +166,11 @@ class FaceObservationEnhancer:
                 reverse=True,
             )
             if not candidates:
-                if faces:
+                if len(observations) == 1 and len(faces) == 1 and (
+                    results[(body_index, 0)].severity == "unconfirmed"
+                ):
+                    unconfirmed_bodies.add(body_index)
+                elif faces:
                     ambiguous_bodies.add(body_index)
                 continue
             if len(candidates) > 1 and candidates[0][0] - candidates[1][0] < MIN_SELECTION_MARGIN:
@@ -176,7 +189,7 @@ class FaceObservationEnhancer:
                 ambiguous_bodies.add(body_index)
                 continue
             accepted[body_index] = face_index
-        return accepted, ambiguous_bodies
+        return accepted, ambiguous_bodies, unconfirmed_bodies
 
     @staticmethod
     def _body_geometry(observation: PersonObservation) -> BodyGeometry:

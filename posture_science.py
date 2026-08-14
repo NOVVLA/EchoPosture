@@ -559,7 +559,7 @@ class PosturePolicy:
     # ratios are not independent posture evidence. Abstain instead of turning
     # one landmark-width drift into several corroborating features. This is a
     # measurement-reliability parameter, not an anatomical threshold.
-    shared_shoulder_scale_guard_ratio: float = 0.05
+    shared_anchor_repeatability_floor_px: float = 2.0
 
     def __post_init__(self) -> None:
         if not (0.0 <= self.watch_exit < self.watch_enter <= 1.0):
@@ -594,8 +594,8 @@ class PosturePolicy:
             raise ValueError("runtime_ratio_response_scale must be positive")
         if self.runtime_angle_response_scale_deg <= 0.0:
             raise ValueError("runtime_angle_response_scale_deg must be positive")
-        if not (0.0 <= self.shared_shoulder_scale_guard_ratio < 1.0):
-            raise ValueError("shared_shoulder_scale_guard_ratio must be in [0, 1)")
+        if self.shared_anchor_repeatability_floor_px < 0.0:
+            raise ValueError("shared_anchor_repeatability_floor_px cannot be negative")
         if self.camera_roll_guard_deg < 0.0:
             raise ValueError("camera_roll_guard_deg cannot be negative")
         if self.camera_roll_agreement_deg < 0.0:
@@ -942,17 +942,12 @@ def shared_scale_measurement_unstable(
         relaxed_stats = profile.relaxed.get(name)
         if observed is None or preferred_stats is None or relaxed_stats is None:
             return None
-        reference = max(
-            abs(preferred_stats.mean),
-            abs(relaxed_stats.mean),
-            1.0,
-        )
         repeatability = max(
             preferred_stats.mdc,
             relaxed_stats.mdc,
             policy.runtime_noise_std_multiplier * preferred_stats.std,
             policy.runtime_noise_std_multiplier * relaxed_stats.std,
-            policy.shared_shoulder_scale_guard_ratio * reference,
+            policy.shared_anchor_repeatability_floor_px,
         )
         lower = min(preferred_stats.mean, relaxed_stats.mean) - repeatability
         upper = max(preferred_stats.mean, relaxed_stats.mean) + repeatability

@@ -47,6 +47,7 @@ def test_high_intruder_face_is_rejected_by_cross_model_geometry() -> None:
     result = evaluate_face_body_association(face(eye_y=40.0), BODY)
     assert not result.matched
     assert result.reason in {"face_pose_ear_mismatch", "face_pose_nose_mismatch"}
+    assert result.severity == "unconfirmed"
 
 
 def test_same_height_bystander_face_is_rejected() -> None:
@@ -72,10 +73,25 @@ def test_clear_body_face_is_selected_while_intruder_remains_countable() -> None:
     assert selected == face()
 
 
+def test_matching_face_and_pose_ear_anchors_tolerate_eye_ear_offset() -> None:
+    turned = DetectedFace(
+        bbox_xyxy=(270.0, 105.0, 370.0, 215.0),
+        confidence=0.95,
+        left_eye=(290.0, 110.0),
+        right_eye=(350.0, 110.0),
+        nose=(320.0, 170.0),
+        left_ear=BODY.left_ear,
+        right_ear=BODY.right_ear,
+    )
+    result = evaluate_face_body_association(turned, BODY)
+    assert result.matched, result
+
+
 if __name__ == "__main__":
     test_normal_single_face_matches_body()
     test_high_intruder_face_is_rejected_by_cross_model_geometry()
     test_same_height_bystander_face_is_rejected()
     test_eye_distance_change_neither_confirms_nor_rejects_identity()
     test_clear_body_face_is_selected_while_intruder_remains_countable()
+    test_matching_face_and_pose_ear_anchors_tolerate_eye_ear_offset()
     print("ALL TESTS PASSED")

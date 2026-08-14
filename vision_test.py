@@ -16,7 +16,7 @@ import math
 import signal
 import sys
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import Iterable, List, Optional, Tuple
 
@@ -449,6 +449,8 @@ class HighPrecisionPostureAnalyzer(PostureAnalyzer):
         self._post_calibration_validation_required = False
         self._post_calibration_validation_started_at: Optional[datetime] = None
         self._head_direction_active = False
+        self._last_reliable_posture_deviation = 0.0
+        self._last_evaluation_timestamp: Optional[datetime] = None
         self._posture_change_candidate_started_at: Optional[datetime] = None
         self._posture_change_candidate_last_at: Optional[datetime] = None
         self._posture_change_confirmed = False
@@ -524,6 +526,8 @@ class HighPrecisionPostureAnalyzer(PostureAnalyzer):
         self._post_calibration_validation_required = True
         self._post_calibration_validation_started_at = None
         self._head_direction_active = False
+        self._last_reliable_posture_deviation = 0.0
+        self._last_evaluation_timestamp = None
         self._reset_posture_change_candidate()
         return True
 
@@ -537,6 +541,8 @@ class HighPrecisionPostureAnalyzer(PostureAnalyzer):
         self._post_calibration_validation_required = False
         self._post_calibration_validation_started_at = None
         self._head_direction_active = False
+        self._last_reliable_posture_deviation = 0.0
+        self._last_evaluation_timestamp = None
         self._reset_posture_change_candidate()
 
     def evaluate(self, sample: VisionSample) -> PostureDecision:
@@ -545,7 +551,32 @@ class HighPrecisionPostureAnalyzer(PostureAnalyzer):
             return self._basic_mode_evaluate(sample)
 
         if self.calibration_profile is not None:
-            return self._scientific_mode_evaluate(sample)
+            if self._last_evaluation_timestamp is not None and (
+                max(
+                    0.0,
+                    (sample.timestamp - self._last_evaluation_timestamp).total_seconds(),
+                )
+                > self.posture_policy.maximum_observation_gap_seconds
+            ):
+                self._last_reliable_posture_deviation = 0.0
+            decision = self._scientific_mode_evaluate(sample)
+            if decision.status in {"GOOD", "WATCH", "BAD", "CRITICAL"}:
+                self._last_reliable_posture_deviation = decision.posture_deviation
+            elif decision.status == "OBSERVING":
+                decision = replace(
+                    decision,
+                    posture_deviation=self._last_reliable_posture_deviation,
+                )
+            elif decision.status in {
+                "ACQUIRING",
+                "AWAY",
+                "IDENTITY_UNCERTAIN",
+                "PROFILE_MISMATCH",
+                "TARGET_AMBIGUOUS",
+            }:
+                self._last_reliable_posture_deviation = 0.0
+            self._last_evaluation_timestamp = sample.timestamp
+            return decision
         if self.require_dual_anchor:
             return PostureDecision(
                 "NEEDS_CALIB",

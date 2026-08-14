@@ -27,6 +27,7 @@ class TargetManagerConfig:
     occlusion_grace_seconds: float = 2.0
     away_confirm_seconds: float = 3.0
     multi_present_confirm_seconds: float = 0.3
+    association_ambiguous_confirm_seconds: float = 0.4
     multi_exit_stable_seconds: float = 1.0
     min_bbox_iou: float = 0.05
     max_center_distance_ratio: float = 1.35
@@ -142,6 +143,8 @@ class TargetManager:
         self._multi_started_at: Optional[Timestamp] = None
         self._multi_last_present_at: Optional[Timestamp] = None
         self._multi_confirmed = False
+        self._association_ambiguous_since: Optional[Timestamp] = None
+        self._association_ambiguous_key: Optional[Tuple[object, ...]] = None
         self._identity_pending = False
         self._identity_candidate_track_id: Optional[int] = None
         self._identity_mismatch_track_id: Optional[int] = None
@@ -155,6 +158,8 @@ class TargetManager:
         self._multi_started_at = None
         self._multi_last_present_at = None
         self._multi_confirmed = False
+        self._association_ambiguous_since = None
+        self._association_ambiguous_key = None
         self._identity_pending = False
         self._identity_candidate_track_id = None
         self._identity_mismatch_track_id = None
@@ -268,15 +273,41 @@ class TargetManager:
         other_tracks = [track for track in active_tracks if track.track_id != self.target_track_id]
         other_person_present = bool(other_tracks) or scene_person_count > 1
         target_ambiguous = self._track_is_ambiguous(self.target_track_id, candidate_scores)
+        ambiguous_track_ids = tuple(
+            sorted(
+                track.track_id
+                for track in active_tracks
+                if track.observation.association_ambiguous
+            )
+        )
+        if target_observation is not None and target_observation.association_ambiguous:
+            ambiguity_key: Optional[Tuple[object, ...]] = ("target", self.target_track_id)
+        elif self.target_track_id is None and ambiguous:
+            ambiguity_key = ("acquiring",) + ambiguous_track_ids
+        elif target_observation is None and ambiguous_track_ids:
+            ambiguity_key = ("reacquiring",) + ambiguous_track_ids
+        else:
+            ambiguity_key = None
+        face_ambiguity_confirmed = self._association_ambiguity_confirmed(
+            ambiguity_key,
+            timestamp,
+        )
 
         if self.target_track_id is None:
-            self.state = TARGET_AMBIGUOUS if ambiguous else ACQUIRING
-            reason = "ambiguous_face_body_association" if ambiguous else "target_not_locked"
-        elif target_observation is None and ambiguous:
+            self.state = TARGET_AMBIGUOUS if face_ambiguity_confirmed else ACQUIRING
+            reason = (
+                "ambiguous_face_body_association"
+                if face_ambiguity_confirmed
+                else "face_body_association_observing"
+                if ambiguous
+                else "target_not_locked"
+            )
+        elif target_observation is None and ambiguous and face_ambiguity_confirmed:
             self.state = TARGET_AMBIGUOUS
             reason = "ambiguous_face_body_association"
         elif target_observation is not None and (
-            target_observation.association_ambiguous or target_ambiguous
+            (target_observation.association_ambiguous and face_ambiguity_confirmed)
+            or target_ambiguous
         ):
             self.state = TARGET_AMBIGUOUS
             reason = (
@@ -302,6 +333,9 @@ class TargetManager:
                 self._identity_candidate_track_id = self.target_track_id
                 self.state = IDENTITY_UNCERTAIN
                 reason = "reacquired_candidate_needs_identity_confirmation"
+            elif target_observation.association_ambiguous:
+                self.state = TARGET_LOCKED
+                reason = "target_face_body_association_observing"
             elif other_person_present:
                 self._multi_last_present_at = timestamp
                 if self._multi_started_at is None:
@@ -345,11 +379,14 @@ class TargetManager:
             elif active_tracks:
                 self._identity_candidate_track_id = None
                 self._identity_pending = False
-                if len(active_tracks) > 1 or any(
-                    track.observation.association_ambiguous for track in active_tracks
+                if len(active_tracks) > 1 or (
+                    ambiguous_track_ids and face_ambiguity_confirmed
                 ):
                     self.state = TARGET_AMBIGUOUS
                     reason = "identity_candidate_ambiguous"
+                elif ambiguous_track_ids:
+                    self.state = TARGET_REACQUIRING
+                    reason = "identity_candidate_face_observing"
                 else:
                     self.state = TARGET_REACQUIRING
                     reason = "identity_candidate_face_unavailable"
@@ -503,9 +540,6 @@ class TargetManager:
 
     def _match_score(self, track: _Track, observation: PersonObservation) -> Optional[float]:
         face_score = self._face_continuity_score(track, observation)
-        if observation.association_ambiguous:
-            if not track.observation.association_ambiguous:
-                return None
         if (
             observation.detection_id is not None
             and track.observation.detection_id is not None
@@ -528,6 +562,26 @@ class TargetManager:
         area_ratio = min(old_area, new_area) / max(old_area, new_area, 1.0)
         body_score = motion_score * 0.75 + iou * 0.20 + area_ratio * 0.05
         return max(body_score, face_score or 0.0)
+
+    def _association_ambiguity_confirmed(
+        self,
+        key: Optional[Tuple[object, ...]],
+        timestamp: Timestamp,
+    ) -> bool:
+        if key is None:
+            self._association_ambiguous_since = None
+            self._association_ambiguous_key = None
+            return False
+        if key != self._association_ambiguous_key:
+            self._association_ambiguous_key = key
+            self._association_ambiguous_since = timestamp
+            return self.config.association_ambiguous_confirm_seconds <= 0.0
+        assert self._association_ambiguous_since is not None
+        elapsed = max(
+            0.0,
+            _elapsed_seconds(timestamp, self._association_ambiguous_since),
+        )
+        return elapsed >= self.config.association_ambiguous_confirm_seconds
 
     def _face_continuity_score(
         self,

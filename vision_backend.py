@@ -75,6 +75,7 @@ class PersonObservation:
     face_landmarks: Optional[Tuple[Point, ...]]
     face_quality: Optional[float]
     association_ambiguous: bool = False
+    association_reason: Optional[str] = None
     posture_features: Optional[PostureFeatures] = None
     scene_person_count: Optional[int] = None
     # Optional in-memory identity vector supplied by a future face backend.
@@ -226,6 +227,7 @@ def observation_from_sample(sample: VisionSample) -> Tuple[PersonObservation, ..
     if face_bbox is None and face_points and sample.face_count <= 1:
         face_bbox = _bbox_from_points(face_points, pad_ratio=0.2)
     ambiguous = sample.face_association_ambiguous
+    association_reason = None
     if sample.face_count > 1 and sample.face_bbox_xyxy is None:
         ambiguous = True
     if sample.face_count > 0 and sample.pose_detected:
@@ -257,6 +259,7 @@ def observation_from_sample(sample: VisionSample) -> Tuple[PersonObservation, ..
             or right_eye is None
         ):
             ambiguous = True
+            association_reason = "face_body_geometry_unavailable"
         else:
             association = evaluate_face_body_association(
                 DetectedFace(
@@ -269,6 +272,8 @@ def observation_from_sample(sample: VisionSample) -> Tuple[PersonObservation, ..
                     left_eye=left_eye,
                     right_eye=right_eye,
                     nose=face_nose,
+                    left_ear=(detector_points[4] if len(detector_points) > 4 else None),
+                    right_ear=(detector_points[5] if len(detector_points) > 5 else None),
                 ),
                 BodyGeometry(
                     bbox_xyxy=body_bbox,
@@ -278,7 +283,17 @@ def observation_from_sample(sample: VisionSample) -> Tuple[PersonObservation, ..
                     right_ear=sample.right_ear_point,
                 ),
             )
-            ambiguous = ambiguous or not association.matched
+            if not association.matched:
+                association_reason = (
+                    "face_anchor_unconfirmed"
+                    if association.severity == "unconfirmed" and sample.face_count == 1
+                    else association.reason
+                )
+                ambiguous = ambiguous or association.severity != "unconfirmed" or sample.face_count != 1
+                face_bbox = None
+                face_points = ()
+
+    face_owned = sample.face_detected and face_bbox is not None and not ambiguous
 
     keypoints = tuple(
         Keypoint(point[0], point[1], confidence)
@@ -311,23 +326,24 @@ def observation_from_sample(sample: VisionSample) -> Tuple[PersonObservation, ..
             face_landmarks=face_points or None,
             face_quality=(
                 sample.face_quality
-                if sample.face_detected and face_bbox is not None
+                if face_owned
                 else None
             ),
             association_ambiguous=ambiguous,
+            association_reason=association_reason,
             scene_person_count=max(sample.face_count, 1 if sample.pose_detected else 0),
             posture_features=PostureFeatures(
-                interpupillary_px=sample.interpupillary_px,
+                interpupillary_px=sample.interpupillary_px if face_owned else None,
                 shoulder_diff_px=sample.shoulder_diff_px,
                 signed_shoulder_diff_px=sample.signed_shoulder_diff_px,
                 shoulder_width_px=sample.shoulder_width_px,
                 trunk_lean_deg=sample.trunk_lean_deg,
-                face_detected=sample.face_detected and face_bbox is not None,
+                face_detected=face_owned,
                 pose_detected=sample.pose_detected,
                 frame_width=sample.frame_width,
                 frame_height=sample.frame_height,
-                left_eye_center=sample.left_eye_center,
-                right_eye_center=sample.right_eye_center,
+                left_eye_center=sample.left_eye_center if face_owned else None,
+                right_eye_center=sample.right_eye_center if face_owned else None,
                 nose_point=sample.nose_point,
                 left_shoulder_point=sample.left_shoulder_point,
                 right_shoulder_point=sample.right_shoulder_point,
@@ -335,14 +351,14 @@ def observation_from_sample(sample: VisionSample) -> Tuple[PersonObservation, ..
                 left_hip_point=sample.left_hip_point,
                 right_hip_point=sample.right_hip_point,
                 hip_center=sample.hip_center,
-                face_nose_point=sample.face_nose_point,
-                face_left_mouth_point=sample.face_left_mouth_point,
-                face_right_mouth_point=sample.face_right_mouth_point,
-                head_turn_ratio=sample.head_turn_ratio,
+                face_nose_point=sample.face_nose_point if face_owned else None,
+                face_left_mouth_point=sample.face_left_mouth_point if face_owned else None,
+                face_right_mouth_point=sample.face_right_mouth_point if face_owned else None,
+                head_turn_ratio=sample.head_turn_ratio if face_owned else None,
                 torso_height_px=sample.torso_height_px,
                 left_ear_point=sample.left_ear_point,
                 right_ear_point=sample.right_ear_point,
-                face_quality=sample.face_quality,
+                face_quality=sample.face_quality if face_owned else None,
                 pose_quality=sample.pose_quality,
                 nose_confidence=sample.nose_confidence,
                 left_ear_confidence=sample.left_ear_confidence,

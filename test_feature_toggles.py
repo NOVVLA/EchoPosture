@@ -331,10 +331,29 @@ def test_scientific_continuous_scoring_exposure_and_abstention():
 
     before = alert.exposure_seconds
     low_quality = analyzer.evaluate(
-        scientific_sample(T0 + timedelta(seconds=320), 2.0, quality=0.40)
+        scientific_sample(T0 + timedelta(seconds=317), 2.0, quality=0.40)
     )
     assert low_quality.status == "OBSERVING", low_quality
     assert low_quality.exposure_seconds == before
+    assert low_quality.posture_deviation == alert.posture_deviation
+
+    head_turned = analyzer.evaluate(
+        replace(
+            scientific_sample(T0 + timedelta(seconds=317.5), 2.0),
+            head_turn_ratio=0.40,
+        )
+    )
+    assert head_turned.status == "OBSERVING", head_turned
+    assert head_turned.reason == "head_turn_measurement_abstained"
+    assert head_turned.exposure_seconds == before
+    assert head_turned.posture_deviation == alert.posture_deviation
+
+    stale_low_quality = analyzer.evaluate(
+        scientific_sample(T0 + timedelta(seconds=321), 2.0, quality=0.40)
+    )
+    assert stale_low_quality.status == "OBSERVING", stale_low_quality
+    assert stale_low_quality.exposure_seconds == before
+    assert stale_low_quality.posture_deviation == 0.0
 
     moving = replace(
         scientific_sample(T0 + timedelta(seconds=325), 2.0),

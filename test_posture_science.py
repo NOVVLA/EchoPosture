@@ -850,6 +850,43 @@ def test_uniform_distance_scale_change_remains_measurable() -> None:
     print("test_uniform_distance_scale_change_remains_measurable OK")
 
 
+def test_raw_support_uses_measured_repeatability_not_percent_floor() -> None:
+    accumulator = CalibrationAccumulator(CalibrationPlan(min_samples_per_stage=5))
+    anchor = {
+        "face_shoulder_ratio": 0.30,
+        "torso_shoulder_ratio": 0.90,
+        "ear_shoulder_ratio": 0.40,
+        "shoulder_width_px": 200.0,
+        "interpupillary_px": 60.0,
+        "torso_height_px": 180.0,
+        "ear_shoulder_offset_px": 80.0,
+    }
+    for index in range(5):
+        accumulator.add(index, anchor)
+    accumulator.begin_transition(5.0)
+    for index in range(5):
+        accumulator.add(6.0 + index, anchor)
+    profile = accumulator.finalize()
+
+    torso_supported = {
+        "face_shoulder_ratio": 60.0 / 180.0,
+        "torso_shoulder_ratio": 186.0 / 180.0,
+        "ear_shoulder_ratio": 80.0 / 180.0,
+        "shoulder_width_px": 180.0,
+        "interpupillary_px": 60.0,
+        "torso_height_px": 186.0,
+        "ear_shoulder_offset_px": 80.0,
+    }
+    score = score_posture_deviation(torso_supported, profile)
+    assert score.forward_deviation > 0.0, score
+    assert not shared_scale_measurement_unstable(
+        torso_supported,
+        profile,
+        score=score,
+    )
+    print("test_raw_support_uses_measured_repeatability_not_percent_floor OK")
+
+
 def test_in_range_shoulder_drift_requires_raw_forward_support() -> None:
     """A shared denominator cannot manufacture corroborated posture evidence."""
 
@@ -1308,6 +1345,7 @@ if __name__ == "__main__":
     test_shared_head_shoulder_ratios_are_one_evidence_channel()
     test_shared_shoulder_scale_drift_abstains_from_ratio_scoring()
     test_uniform_distance_scale_change_remains_measurable()
+    test_raw_support_uses_measured_repeatability_not_percent_floor()
     test_in_range_shoulder_drift_requires_raw_forward_support()
     test_runtime_noise_band_uses_single_observation_repeatability()
     test_marginal_anchor_range_is_valid_and_noise_bounded()

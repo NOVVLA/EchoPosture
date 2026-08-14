@@ -2017,3 +2017,44 @@
   production evidence gates even though the deterministic state-contamination defect is fixed.
 - Conclusion: the known cross-candidate confirmation defect is fixed at the verifier and both asynchronous runtime
   entry points. The source change is ready for final static checks, commit, push, and PR CI.
+
+## 2026-08-14 - Face ownership debounce and measured abstention guards
+
+- Source: `docs/plans/EchoPosture_abstention_oversensitivity_plan.md`, based on field reports of occasional false
+  `TARGET_AMBIGUOUS` frames and frequent shoulder-scale `OBSERVING` abstentions.
+- Git: commit `pending`, branch `codex/pr2-phase1-calibration-safety`, PR `#23`, tag `none`.
+- Face/body ownership changes:
+  - Association results now distinguish `clear`, `unconfirmed`, and `ambiguous`. A single face/body pair whose
+    cross-model ear or nose anchors disagree is treated as an unconfirmed measurement, not immediate multi-person
+    ambiguity. Its face box, landmarks, quality, and face-derived posture values are removed before tracking or
+    identity processing; body posture evidence remains available.
+  - BlazeFace ear anchors are compared with BlazePose ear anchors when both are available, avoiding the prior
+    eye-centre-versus-ear-centre mismatch. Position mismatches, competing faces/bodies, and score ties remain
+    fail-closed.
+  - TargetManager requires 0.4 seconds of continuous face/body ambiguity before surfacing `TARGET_AMBIGUOUS`.
+    Transient ambiguity keeps the existing body track but cannot submit the stripped face for identity work.
+- Shoulder-scale and abstention changes:
+  - The fixed 5% shoulder-width floor was replaced by the calibrated preferred/relaxed MDC and standard-deviation
+    repeatability band, with a 2 px absolute measurement floor. Uniform whole-person distance scaling remains
+    measurable, while isolated unstable width changes still abstain.
+  - Temporary `OBSERVING` decisions retain the last reliable posture-deviation display without adding exposure.
+    A gap longer than `maximum_observation_gap_seconds` clears that retained display, preventing stale values.
+- Deliberate exclusions: no unmeasured torso-yaw compensation, adaptive association threshold, or camera-roll
+  increase was introduced. `MIN_SELECTION_MARGIN=0.12` and the 3 degree roll guards remain unchanged pending real
+  camera data; the plan's suggested 6-8 degree roll range is not treated as validated.
+- Verification from `C:\Temp\ep_repo`, using the real bundled interpreter at
+  `C:\Users\aaabb\Documents\ICC驼背项目\runtime\python311\python.exe`:
+  - Passed all 12 required suites: `test_face_body_association.py`, `test_compatibility_face_detection.py`,
+    `test_vision_tracking.py`, `test_vision_worker.py`, `test_identity_verifier.py`,
+    `test_identity_model_adapters.py`, `test_standard_pose_backend.py`, `test_posture_science.py`,
+    `test_feature_toggles.py`, `test_debug_ui.py`, `test_vision_replay.py`, and `test_startup_guards.py`.
+  - `ruff check .`, targeted `py_compile`, and `git diff --check`: passed. `test_startup_guards.py` emitted the
+    existing Qt missing-font-directory warning but exited 0; `git diff --check` emitted only LF-to-CRLF warnings.
+  - The `C:\Temp\ep_rt\python.exe` junction does not resolve the bundled `_pth` imports, so tests used the real
+    interpreter path while keeping the repository working directory ASCII-only.
+- Artifacts and privacy: no plan document, frame, face crop, embedding, model, package, runtime, or generated asset
+  is included. Existing unrelated tracked and untracked work remains outside the delivery set.
+- Gaps: no live seated-person camera session, multi-person visual trial, packaged EXE rebuild/self-test, or
+  cross-device threshold calibration was performed. Remote CI will be checked after push and reported separately.
+- Conclusion: both documented defects are fixed in source with deterministic regression coverage, while unvalidated
+  P2 threshold changes remain deferred instead of being guessed.

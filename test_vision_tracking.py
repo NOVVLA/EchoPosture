@@ -609,8 +609,46 @@ def test_away_and_ambiguous_states():
     ambiguous = manager.update(
         [observation(3, T0 + timedelta(seconds=5), 150.0, ambiguous=True)]
     )
+    assert ambiguous.state == TARGET_REACQUIRING
+    ambiguous = manager.update(
+        [observation(3, T0 + timedelta(seconds=5.5), 150.0, ambiguous=True)]
+    )
     assert ambiguous.state == TARGET_AMBIGUOUS
     print("test_away_and_ambiguous_states OK")
+
+
+def test_face_body_ambiguity_requires_continuous_confirmation() -> None:
+    manager = TargetManager(
+        TargetManagerConfig(association_ambiguous_confirm_seconds=0.4)
+    )
+    manager.update([observation(1, T0, 100.0)])
+    assert manager.lock_calibration_target()
+
+    transient = manager.update(
+        [observation(1, T0 + timedelta(seconds=0.1), 100.0, ambiguous=True)]
+    )
+    assert transient.state == TARGET_LOCKED, transient
+    assert transient.reason == "target_face_body_association_observing"
+    assert transient.target_observation is not None
+    assert transient.target_observation.association_ambiguous
+
+    still_observing = manager.update(
+        [observation(1, T0 + timedelta(seconds=0.39), 100.0, ambiguous=True)]
+    )
+    assert still_observing.state == TARGET_LOCKED, still_observing
+
+    confirmed = manager.update(
+        [observation(1, T0 + timedelta(seconds=0.5), 100.0, ambiguous=True)]
+    )
+    assert confirmed.state == TARGET_AMBIGUOUS, confirmed
+    assert confirmed.reason == "target_face_body_association_ambiguous"
+
+    recovered = manager.update(
+        [observation(1, T0 + timedelta(seconds=0.6), 100.0)]
+    )
+    assert recovered.state == TARGET_LOCKED, recovered
+    assert recovered.reason == "target_observed"
+    print("test_face_body_ambiguity_requires_continuous_confirmation OK")
 
 
 def test_analyzer_continues_target_during_multi_present():
@@ -955,6 +993,7 @@ if __name__ == "__main__":
     test_separate_face_rebind_always_requires_identity_confirmation()
     test_numeric_timestamp_contract()
     test_away_and_ambiguous_states()
+    test_face_body_ambiguity_requires_continuous_confirmation()
     test_analyzer_continues_target_during_multi_present()
     test_tracking_states_respect_presence_and_identity_toggles()
     test_worker_compatibility_backend_publishes_target_update()

@@ -58,6 +58,7 @@ class FaceBodyAssociation:
     matched: bool
     score: float
     reason: str
+    severity: str = "ambiguous"
 
 
 def _midpoint(left: Point, right: Point) -> Point:
@@ -99,16 +100,30 @@ def evaluate_face_body_association(
     anchor_scores = []
     if body.left_ear is not None and body.right_ear is not None:
         body_ear_center = _midpoint(body.left_ear, body.right_ear)
-        face_ear_center = face.eye_center or face_center
+        face_ear_center = (
+            _midpoint(face.left_ear, face.right_ear)
+            if face.left_ear is not None and face.right_ear is not None
+            else face.eye_center or face_center
+        )
         ear_offset = math.dist(face_ear_center, body_ear_center) / diagonal
         if ear_offset > MAX_EYE_EAR_OFFSET_DIAGONAL:
-            return FaceBodyAssociation(False, 0.0, "face_pose_ear_mismatch")
+            return FaceBodyAssociation(
+                False,
+                0.0,
+                "face_pose_ear_mismatch",
+                "unconfirmed",
+            )
         anchor_scores.append(1.0 - ear_offset / MAX_EYE_EAR_OFFSET_DIAGONAL)
 
     if body.nose is not None and face.nose is not None:
         nose_offset = math.dist(face.nose, body.nose) / diagonal
         if nose_offset > MAX_NOSE_OFFSET_DIAGONAL:
-            return FaceBodyAssociation(False, 0.0, "face_pose_nose_mismatch")
+            return FaceBodyAssociation(
+                False,
+                0.0,
+                "face_pose_nose_mismatch",
+                "unconfirmed",
+            )
         anchor_scores.append(1.0 - nose_offset / MAX_NOSE_OFFSET_DIAGONAL)
 
     horizontal_score = 1.0 - abs(normalized_x) / MAX_FACE_CENTER_X_OFFSET
@@ -125,7 +140,12 @@ def evaluate_face_body_association(
         score += sum(_clamp01(value) for value in anchor_scores) / len(anchor_scores) * 0.35
     else:
         score += 0.35
-    return FaceBodyAssociation(True, _clamp01(score), "face_body_geometry_matched")
+    return FaceBodyAssociation(
+        True,
+        _clamp01(score),
+        "face_body_geometry_matched",
+        "clear",
+    )
 
 
 def _bbox_center(bbox: BBox) -> Optional[Point]:
@@ -159,7 +179,8 @@ def select_face_for_body(
     )
     if not matched:
         reason = evaluated[0][1].reason if len(evaluated) == 1 else "no_face_matches_body"
-        return None, FaceBodyAssociation(False, 0.0, reason)
+        severity = evaluated[0][1].severity if len(evaluated) == 1 else "ambiguous"
+        return None, FaceBodyAssociation(False, 0.0, reason, severity)
     if len(matched) > 1 and matched[0][1].score - matched[1][1].score < MIN_SELECTION_MARGIN:
         return None, FaceBodyAssociation(False, matched[0][1].score, "multiple_face_matches")
     return matched[0]
