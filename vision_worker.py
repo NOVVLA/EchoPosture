@@ -185,14 +185,18 @@ class VisionWorker:
         self._preferred_cutoff_at = None
         self._calib_request_seq = 0
         self._identity_future = None
-        self._identity_future_context: Optional[int] = None
+        self._identity_future_context: Optional[tuple[Optional[int], int]] = None
         self._identity_embedding_future = None
-        self._identity_embedding_context: Optional[tuple[str, str, Optional[int]]] = None
+        self._identity_embedding_context: Optional[
+            tuple[str, str, Optional[int], Optional[int]]
+        ] = None
         self._identity_enrollment_samples: list[FaceObservation] = []
         self._identity_enrollment_active = False
         self._last_identity_embedding_at: dict[tuple[str, Optional[int]], float] = {}
         self._last_identity_state: Optional[str] = None
         self._last_identity_track_id: Optional[int] = None
+        self._identity_session_id: Optional[int] = None
+        self._identity_session_track_id: Optional[int] = None
 
     # ============================================================
     # 主线程接口
@@ -383,10 +387,17 @@ class VisionWorker:
                 self._identity_enrollment_samples = []
                 self._identity_enrollment_active = self.identity_verifier is not None
                 self._last_identity_embedding_at.clear()
-                # A result from the previous session may still finish in the
-                # embedding executor. Clear its context so it cannot enter the
-                # new calibration template.
+                for future in (self._identity_embedding_future, self._identity_future):
+                    if future is not None:
+                        future.cancel()
+                self._identity_embedding_future = None
                 self._identity_embedding_context = None
+                self._identity_future = None
+                self._identity_future_context = None
+                self._identity_session_id = None
+                self._identity_session_track_id = None
+                self._last_identity_state = None
+                self._last_identity_track_id = None
                 if self.identity_verifier is not None:
                     self.identity_verifier.clear_template()
                 if self.target_manager is not None:
@@ -666,9 +677,12 @@ class VisionWorker:
     ) -> None:
         pipeline = self.identity_embedding_pipeline
         verifier = self.identity_verifier
-        if verifier is None or observation is None or observation.face_bbox_xyxy is None:
-            self._last_identity_state = target_update.state
-            self._last_identity_track_id = identity_track_id
+        if verifier is None:
+            return
+        self._ensure_identity_session(identity_track_id, target_update.state)
+        self._last_identity_state = target_update.state
+        self._last_identity_track_id = identity_track_id
+        if observation is None or observation.face_bbox_xyxy is None:
             return
         if observation.association_ambiguous:
             # A face that cannot be attributed to the target body must never
@@ -676,8 +690,6 @@ class VisionWorker:
             # supplied directly by a backend.
             if self._identity_enrollment_active:
                 self._reset_identity_enrollment()
-            self._last_identity_state = target_update.state
-            self._last_identity_track_id = identity_track_id
             return
         if observation.face_embedding is not None:
             self._submit_identity_observation(
@@ -716,13 +728,14 @@ class VisionWorker:
         try:
             self._identity_embedding_future = pipeline.request(frame, observation)
         except (FaceEmbeddingUnavailable, RuntimeError, ValueError):
-            self._last_identity_state = target_update.state
-            self._last_identity_track_id = identity_track_id
             return
         self._last_identity_embedding_at[context] = now
-        self._identity_embedding_context = (kind, context[0], context[1])
-        self._last_identity_state = target_update.state
-        self._last_identity_track_id = identity_track_id
+        self._identity_embedding_context = (
+            kind,
+            context[0],
+            context[1],
+            self._identity_session_id,
+        )
 
     def _submit_identity_observation(
         self,
@@ -757,12 +770,15 @@ class VisionWorker:
             face_observation,
             trigger=trigger,
             track_id=identity_track_id,
+            session_id=self._identity_session_id,
         )
         if future is not None:
             self._identity_future = future
-            self._identity_future_context = identity_track_id
-        self._last_identity_state = target_update.state
-        self._last_identity_track_id = identity_track_id
+            if self._identity_session_id is not None:
+                self._identity_future_context = (
+                    identity_track_id,
+                    self._identity_session_id,
+                )
 
     def _apply_identity_embedding_result(self) -> None:
         future = self._identity_embedding_future
@@ -777,7 +793,7 @@ class VisionWorker:
             return
         if context is None:
             return
-        kind, trigger, track_id = context
+        kind, trigger, track_id, session_id = context
         verifier = self.identity_verifier
         if verifier is None:
             return
@@ -794,15 +810,21 @@ class VisionWorker:
                     self._identity_enrollment_active = False
                     self._identity_enrollment_samples = []
             return
+        if (
+            session_id != self._identity_session_id
+            or track_id != self._identity_session_track_id
+        ):
+            return
         future = verifier.request(
             observation,
             trigger=trigger,
             track_id=track_id,
+            session_id=session_id,
             force=True,
         )
         if future is not None:
             self._identity_future = future
-            self._identity_future_context = track_id
+            self._identity_future_context = (track_id, session_id)
 
     @staticmethod
     def _timestamp_seconds(value) -> float:
@@ -812,8 +834,39 @@ class VisionWorker:
         self._identity_enrollment_samples = []
         self._identity_embedding_context = None
         self._last_identity_embedding_at.clear()
+        self._identity_session_id = None
+        self._identity_session_track_id = None
         if self.identity_verifier is not None:
             self.identity_verifier.clear_template()
+
+    def _ensure_identity_session(
+        self,
+        track_id: Optional[int],
+        target_state: str,
+    ) -> None:
+        verifier = self.identity_verifier
+        if verifier is None or self._identity_enrollment_active:
+            return
+        needs_new_session = (
+            self._identity_session_id is None
+            or track_id != self._identity_session_track_id
+            or (
+                target_state == "IDENTITY_UNCERTAIN"
+                and self._last_identity_state != "IDENTITY_UNCERTAIN"
+            )
+        )
+        if not needs_new_session:
+            return
+        for future in (self._identity_embedding_future, self._identity_future):
+            if future is not None:
+                future.cancel()
+        self._identity_embedding_future = None
+        self._identity_embedding_context = None
+        self._identity_future = None
+        self._identity_future_context = None
+        self._identity_session_id = verifier.start_session(track_id)
+        self._identity_session_track_id = track_id
+        self._last_identity_embedding_at.clear()
 
     def _apply_identity_result(self) -> None:
         if self.identity_verifier is None or self.target_manager is None:
@@ -822,8 +875,16 @@ class VisionWorker:
         if future is None or not future.done():
             return
         self._identity_future = None
-        candidate_track_id = self._identity_future_context
+        context = self._identity_future_context
         self._identity_future_context = None
+        if context is None:
+            return
+        candidate_track_id, session_id = context
+        if (
+            session_id != self._identity_session_id
+            or candidate_track_id != self._identity_session_track_id
+        ):
+            return
         try:
             result = future.result()
         except Exception:

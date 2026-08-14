@@ -289,7 +289,10 @@ def test_worker_reacquired_identity_uses_candidate_context_and_event_interval() 
     try:
         worker._schedule_identity_embedding(object(), candidate, 7, update)
         assert pipeline.request_count == 1
-        assert worker._identity_embedding_context == ("verify", TRIGGER_REACQUIRED, 7)
+        first_context = worker._identity_embedding_context
+        assert first_context is not None
+        assert first_context[:3] == ("verify", TRIGGER_REACQUIRED, 7)
+        assert first_context[3] == worker._identity_session_id
         worker._apply_identity_embedding_result()
 
         too_soon = replace(candidate, timestamp=candidate.timestamp + timedelta(seconds=0.1))
@@ -299,10 +302,92 @@ def test_worker_reacquired_identity_uses_candidate_context_and_event_interval() 
         ready = replace(candidate, timestamp=candidate.timestamp + timedelta(seconds=0.3))
         worker._schedule_identity_embedding(object(), ready, 7, update)
         assert pipeline.request_count == 2
-        assert worker._identity_embedding_context == ("verify", TRIGGER_REACQUIRED, 7)
+        second_context = worker._identity_embedding_context
+        assert second_context is not None
+        assert second_context[:3] == ("verify", TRIGGER_REACQUIRED, 7)
+        assert second_context[3] == first_context[3]
     finally:
         verifier.close()
     print("test_worker_reacquired_identity_uses_candidate_context_and_event_interval OK")
+
+
+def test_worker_rotates_identity_session_on_candidate_or_reacquisition_change() -> None:
+    engine = FakeEngine()
+    analyzer = HighPrecisionPostureAnalyzer(auto_calibrate=False, require_dual_anchor=True)
+    verifier = IdentityVerifier(
+        PrecomputedEmbedder(),
+        IdentityVerifierConfig(min_frames=2, max_frames=4, debounce_results=1),
+    )
+    assert verifier.enroll(
+        [
+            FaceObservation(
+                timestamp=float(index),
+                bbox_xyxy=(0.0, 0.0, 100.0, 100.0),
+                landmarks=((20.0, 35.0), (80.0, 35.0), (50.0, 60.0)),
+                embedding=(1.0, 0.0),
+            )
+            for index in range(2)
+        ]
+    ).ok
+    worker = VisionWorker(
+        engine_factory=lambda: engine,
+        analyzer=analyzer,
+        identity_verifier=verifier,
+        identity_embedding_pipeline=ImmediateEmbeddingPipeline(),
+    )
+    candidate = observation_from_sample(
+        make_production_dual_sample(datetime(2026, 1, 1, 12, 0, 1))
+    )[0]
+    uncertain = TargetUpdate(
+        state=IDENTITY_UNCERTAIN,
+        target_track_id=1,
+        target_observation=None,
+        tracks=(),
+        person_count=1,
+        reason="reacquired_candidate_needs_identity_confirmation",
+        identity_candidate_track_id=7,
+        identity_candidate_observation=candidate,
+    )
+    try:
+        worker._schedule_identity_embedding(object(), candidate, 7, uncertain)
+        first_session = worker._identity_session_id
+        assert first_session is not None
+
+        same_candidate = replace(candidate, timestamp=candidate.timestamp + timedelta(seconds=0.3))
+        worker._schedule_identity_embedding(object(), same_candidate, 7, uncertain)
+        assert worker._identity_session_id == first_session
+
+        new_candidate = replace(candidate, timestamp=candidate.timestamp + timedelta(seconds=0.6))
+        changed = replace(
+            uncertain,
+            identity_candidate_track_id=8,
+            identity_candidate_observation=new_candidate,
+        )
+        worker._schedule_identity_embedding(object(), new_candidate, 8, changed)
+        second_session = worker._identity_session_id
+        assert second_session is not None
+        assert second_session != first_session
+
+        locked = replace(
+            changed,
+            state=TARGET_LOCKED,
+            target_track_id=8,
+            target_observation=new_candidate,
+            identity_candidate_track_id=None,
+            identity_candidate_observation=None,
+        )
+        worker._schedule_identity_embedding(object(), new_candidate, 8, locked)
+        assert worker._identity_session_id == second_session
+        worker._schedule_identity_embedding(
+            object(),
+            replace(new_candidate, timestamp=new_candidate.timestamp + timedelta(seconds=1.0)),
+            8,
+            replace(uncertain, identity_candidate_track_id=8, identity_candidate_observation=new_candidate),
+        )
+        assert worker._identity_session_id != second_session
+    finally:
+        verifier.close()
+    print("test_worker_rotates_identity_session_on_candidate_or_reacquisition_change OK")
 
 
 def test_worker_builds_session_identity_template_from_transient_embeddings() -> None:
@@ -1019,6 +1104,7 @@ if __name__ == "__main__":
     test_dual_anchor_worker_accepts_borderline_pose_quality_for_anchor_repeatability()
     test_production_worker_dual_anchor_requires_normal_range_before_exposure()
     test_worker_reacquired_identity_uses_candidate_context_and_event_interval()
+    test_worker_rotates_identity_session_on_candidate_or_reacquisition_change()
     test_worker_builds_session_identity_template_from_transient_embeddings()
     test_worker_enrolls_embedding_already_supplied_by_backend()
     test_worker_rejects_ambiguous_face_before_identity_embedding()
