@@ -64,18 +64,33 @@ Professional mode Beta 在 Standard mode 之上换掉两件事：推理跑在 NV
 
 ## 本地安装
 
-产品运行时为裁剪过的 Python 3.11，不含 `pip`。在仓库根目录用 `uv` 把主运行时的 torch 换成 CUDA 构建：
+产品运行时为裁剪过的 Python 3.11，不含 `pip`。在仓库根目录用 `uv` 把主运行时的 torch 换成 CUDA 构建。
+PyTorch 官方 cu130 索引在本机实测只有约 24 KB/s（3 GB wheel 不可行），因此使用阿里云镜像
+（实测约 370 KB/s）：
 
 ```powershell
-uv pip install --python runtime\python311\python.exe --torch-backend cu130 --no-python-downloads `
-  --reinstall-package torch --reinstall-package torchvision -r requirements-professional.txt
+uv pip install --python runtime\python311\python.exe `
+  --index-url https://mirrors.aliyun.com/pytorch-wheels/cu130 `
+  --extra-index-url http://pypi.tuna.tsinghua.edu.cn/simple `
+  --trusted-host pypi.tuna.tsinghua.edu.cn --index-strategy unsafe-best-match `
+  --no-python-downloads --reinstall-package torch --reinstall-package torchvision `
+  torch==2.13.0 torchvision==0.28.0
 ```
+
+网络条件允许时也可直接用官方索引：`--torch-backend cu130`（其余参数相同）。
 
 选 **cu130** 而不是计划最初写的 cu128：cu130 索引上的 `torch==2.13.0` / `torchvision==0.28.0` 与 CPU 运行时
 版本号完全一致，只换构建不降级；cu128 索引最高只到 torch 2.11.0，会把主运行时降级并波及 Standard mode。
 CUDA 13.0 覆盖 RTX 5070 Ti 的 Blackwell（sm_120）。
 
-CUDA 版 torch 是 CPU 推理的超集，`StandardPoseBackend` 仍显式传 `device="cpu"`，行为不变。
+CUDA 版 torch 是 CPU 推理的超集，`StandardPoseBackend` 仍显式传 `device="cpu"`，行为不变。代价是冷导入
+变慢（实测 1.6 s → 4.47 s），CPU 推理速度基本不变。
+
+验证安装：
+
+```powershell
+runtime\python311\python.exe -c "import torch; print(torch.__version__, torch.cuda.is_available(), torch.cuda.get_device_name(0))"
+```
 
 把经过来源与许可证核验的 `yolo26l-pose.pt` / `yolo26x-pose.pt` 放到 `models\pose\`，或指定：
 
@@ -88,13 +103,15 @@ runtime\python311\python.exe debug_ui.py --professional-model C:\path\to\yolo26x
 | 结论 | 等级 |
 | --- | --- |
 | 选型逻辑、OOM 降级、缓存失效、CUDA 缺失拒绝启动、回退链顺序 | **已取证**：`test_professional_pose_backend.py`（12 项）与 `test_startup_guards.py`（5 项）确定性测试，全部走注入点，不依赖真实 GPU |
-| 可用性探测的四类失败原因与 <50 ms 预算 | **已取证**：`test_production_mode_onboarding.py` |
+| 可用性探测的四类失败原因与 <50 ms 预算 | **已取证**：`test_production_mode_onboarding.py`；真机实测 9.63 ms 且未导入 torch |
 | Debug UI 专业档可切换、失败经 Standard 中间降级、标签显示真实后端名 | **已取证**：`test_debug_ui.py` |
-| cu130 索引提供与 CPU 运行时同版本的 torch/torchvision | **已取证**：`uv --dry-run` 解析结果 |
-| 本机 GPU 为 RTX 5070 Ti Laptop 12 GB、驱动 610.74 | **已取证**：`nvidia-smi` |
-| l/x 在本机的真实 P50/P95 与所选权重 | **未取证**：需真机基准，结果记入 `docs/vision-evidence/` |
-| Blackwell sm_120 上 Ultralytics 推理的数值正确性（同帧 CPU vs CUDA 关键点偏差） | **未取证**：需真机对照 |
-| 90 s 启动预算是否合适、8 s 慢加载提示的体验 | **未取证**：需真机计时后收紧 |
-| 12 GB 显存下 x 的峰值占用与是否 OOM | **未取证**：由 OOM 降级链兜底，但未实测 |
-| 升级 CUDA torch 后 Standard mode 冷导入耗时的变化 | **未取证**：需重测并更新 `STANDARD_MODE.md` |
+| CUDA 运行时可用（torch 2.13.0+cu130、RTX 5070 Ti、sm_120、11.9 GB） | **已取证**：真机 `torch.cuda` 查询 |
+| 本机选中 `yolo26x-pose`：P50 16.8 ms / P95 20.8 ms（约 59 Hz），远超 20 Hz 目标 | **已取证**：真机基准，见 `docs/vision-evidence/benchmark-professional-20260815.md` |
+| Blackwell sm_120 推理数值正确：CUDA 与 CPU 关键点最大偏差 0.11 px、平均 0.01 px（门槛 <1 px） | **已取证**：真机同帧对照（Ultralytics 自带素材，未引入新人像资产） |
+| 峰值显存 0.35 GB，本机 x 无 OOM 风险 | **已取证**：真机 `torch.cuda.max_memory_allocated` |
+| 启动耗时：首启 14.5 s、缓存命中 3.3 s，90 s 预算余量充分 | **已取证**：真机计时 |
+| 升级 CUDA torch 后 Standard mode 冷导入从 1.6 s 增至 4.47 s，CPU 推理 P50 基本不变（23→25 ms） | **已取证**：真机重测，见上述证据文件 |
+| 真实摄像头会话下的端到端帧率（含采集与 UI 开销） | **未取证**：基准与一致性测试均为合成帧或静态图片 |
+| 三条 UI 路径（浮窗选专业、轮盘运行期切换、失败降级到标准）的真机走查 | **未取证**：仅有离屏确定性测试 |
+| 轮盘旋转动画的真机观感与动效时长 | **未取证**：离屏截图只能证明旋转时会重绘，不能证明手感 |
 | 真人多人准确率、跨设备外部效度、医学或临床结论 | **不主张** |

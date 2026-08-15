@@ -58,8 +58,9 @@ uv pip install --python runtime\python311\python.exe --torch-backend cpu --no-py
 
 装过 Professional mode Beta 的机器上，主运行时的 torch 会是 CUDA 构建（见
 `docs/PROFESSIONAL_MODE.md`）。这不改变 Standard mode 的行为：`StandardPoseBackend` 仍显式传
-`device="cpu"`，CUDA wheel 只是 CPU 推理的超集。但 CUDA 构建的原生库更大，本文引用的冷导入耗时需在
-该运行时上重测后再引用。
+`device="cpu"`，CUDA wheel 只是 CPU 推理的超集。但原生库更大，冷导入实测从 1.6 s 增至 4.47 s；
+CPU 单帧推理 P50 基本不变（23 → 25 ms）。详见
+`docs/vision-evidence/benchmark-professional-20260815.md`。
 
 将经过来源和许可证核验的 `yolo26n-pose.pt` 放到
 `models\pose\yolo26n-pose.pt`，或设置 `ECHOPOSTURE_STANDARD_MODEL`，也可以向 Debug UI 传入：

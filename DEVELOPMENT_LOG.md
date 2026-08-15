@@ -1,5 +1,37 @@
 # DEVELOPMENT_LOG（Development Log，开发日志）
 
+## 2026-08-15 (Asia/Shanghai) - Professional mode Beta: real-hardware benchmark closes the CUDA/Blackwell risks
+
+- Source: 上一条的 Phase 0 真机验证。上一条提交时 CUDA torch 尚在下载，全部 GPU 相关结论都还是"未取证"。
+- Git: 紧随 `8d6ab94` 的验证提交，branch `codex/pr2-phase1-calibration-safety`。
+- Install note: PyTorch 官方 cu130 索引在本机实测约 **24 KB/s**，3 GB wheel 不可行（初次尝试 40 分钟只落盘
+  5.5 MB）。改用阿里云 `mirrors.aliyun.com/pytorch-wheels/cu130`（约 370 KB/s）完成安装。清华的
+  `pytorch-wheels` 路径已 404，不可用。`requirements-professional.txt` 与 `docs/PROFESSIONAL_MODE.md`
+  已记录可用的完整命令。
+- Verified on hardware（RTX 5070 Ti Laptop、sm_120、11.9 GB、驱动 610.74、torch 2.13.0+cu130）：
+  - **CUDA 可用**：`torch.cuda.is_available()` 为 True，设备与计算能力均正确识别。
+  - **选型基准**：l 与 x 的 P50 均为 16.8 ms；x 的 P95 20.8 ms 满足 50 ms 预算，因此选中 `yolo26x-pose`，
+    约 59 Hz，远超 20 Hz 目标。l 与 x 的 P50 相同说明本机瓶颈不在算力，选最大权重不付出吞吐代价——但这是
+    本设备结论，其他 GPU 必须重跑，这正是自动选型存在的理由。
+  - **Blackwell 数值正确性**：同权重同帧在 `cuda:0` 与 `cpu` 上推理，`bus.jpg`（4 人）与 `zidane.jpg`（2 人）
+    检出人数一致，关键点最大偏差 **0.11 px**、平均 0.01 px，远低于计划设的 1 px 门槛。使用 Ultralytics 自带
+    素材，未引入任何新的人像资产。
+  - **显存**：峰值 0.35 GB，本机 x 的 OOM 风险可排除（降级链保留给显存更小的设备）。
+  - **启动耗时**：首启（含 CUDA 上下文 + 双权重加载 + 双基准）14.5 s，缓存命中 3.3 s。90 s 预算余量充分，
+    暂不收紧。
+  - **可用性探测**：三档均判定可用，耗时 9.63 ms（预算 50 ms），且 `'torch' in sys.modules` 为 False，
+    确认零重导入约束成立。
+  - **Standard mode 回归**：CUDA 构建让冷导入从 1.6 s 增至 **4.47 s**（原生库更大的直接代价），CPU 单帧
+    推理 P50 基本不变（23 → 25 ms）。本次权重加载只用 0.11 s，但那是文件系统缓存命中，与旧记录的 3.0 s
+    不同条件，**不能**据此声称升级让启动更快。`STANDARD_MODE.md` 已更正引用。
+- Evidence file: `docs/vision-evidence/benchmark-professional-20260815.md`（只含指标，无图像/人脸/身份数据）。
+- Verification: 全部测试在 CUDA runtime 上重跑通过——`test_professional_pose_backend`、
+  `test_production_mode_onboarding`、`test_startup_guards`、`test_standard_pose_backend`、
+  `test_vision_worker`、`test_debug_ui`。
+- Remaining risk: 真实摄像头会话下的端到端帧率（本轮全部数字为合成帧或静态图片，不含采集与 UI 开销）；
+  三条 UI 路径（浮窗选专业、轮盘运行期切换、失败降级到标准）的真机走查；轮盘旋转动画的真机观感与动效
+  时长；真人多人准确率；EXE 重打包自检。医学/临床/跨设备外部效度**不主张**。
+
 ## 2026-08-15 (Asia/Shanghai) - Professional mode Beta: CUDA pose backend, measured l/x selection, real availability probe, and a genuinely rotating mode wheel
 
 - Source: `docs/plans/EchoPosture_production_mode_onboarding_plan.md` 的后续。摸底发现该计划的 TASK-1~11 已在
@@ -7,7 +39,7 @@
   后端本体、把硬编码的"不可用"换成真实探测，外加用户当面提出的轮盘 UI 重做。
   用户拍板的四项：两者都做（后端 + 浮窗接真）、GPU 路径先走 CUDA PyTorch（TensorRT 留作后续）、
   l/x 实测后自动选、身份双模型共识（EP-PRO-003）本轮不做。
-- Git: commit `pending`, branch `codex/pr2-phase1-calibration-safety`.
+- Git: commit `8d6ab94`, branch `codex/pr2-phase1-calibration-safety`.
 - Scope:
   - **CUDA 运行时**（`requirements-professional.txt` 新建）：主 runtime 的 torch 换为 CUDA 构建。
     **选 cu130 而非计划最初写的 cu128**——`uv --dry-run` 实测 cu130 索引提供 `torch==2.13.0+cu130` /
