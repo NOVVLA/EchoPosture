@@ -2150,3 +2150,61 @@
 - Conclusion: the deterministic decision-priority defect is fixed without guessing new sensitivity constants. The
   source change is ready for audit commit, push, and remote CI verification; the reported physical scenario remains a
   manual live-camera confirmation gate.
+
+## 2026-08-15 - Production mode onboarding and console mode wheel
+
+- Source: user request and `docs/plans/EchoPosture_production_mode_onboarding_plan.md`; add the 2.0 production EXE
+  startup mode flow and a compact cyclic selector in the central console.
+- Git: commit `pending`, branch `codex/pr2-phase1-calibration-safety`, tag `none`; starting HEAD `2463387`.
+- Backup: `_backups/EchoPosture-source-backup-20260815-production-mode-onboarding/` contains
+  `source-head-2463387.zip` and `BACKUP_MANIFEST.txt`. The backup covers the committed source tree before this change
+  and intentionally excludes unrelated untracked workspace files.
+- Scope and user-visible behavior:
+  - `onboarding_toast.py`, `mode_select_card.py`, and `mode_themes.py` implement the fixed-geometry two-stage startup
+    toast, internally clipped growth, staggered cards, honest availability reasons, 15-second default selection,
+    persisted-mode notice, and real-stage loading/fallback/terminal-failure states without `QGraphicsEffect`.
+  - `tray_app.py`, `standard_pose_backend.py`, and `vision_modes.py` connect the selected mode to the production
+    `VisionWorker`, keep the face-enhanced wrapper for every supported backend, initialize heavy work off the GUI
+    thread, expose real import/model/camera progress, and visibly fall back to Compatibility when Standard fails.
+    If Compatibility also fails, the toast now reports terminal startup failure instead of claiming a working fallback.
+  - `user_settings.py` atomically persists only `version`, `vision_mode`, and `ask_on_startup` under LocalAppData.
+    Frames, face crops, templates, embeddings, measurements, and identity state are not accepted or stored.
+  - `mode_wheel_selector.py` and `posture_console.py` add the cyclic lower-edge wheel. Its circular body continues
+    below the viewport while all three themed choices remain visible on the upper arc; navigation may pass an
+    unavailable mode but only requests an available one. The complete status readout moves above the wheel.
+  - `i18n.py` contains matching Chinese and English startup, selector, loading, failure, and settings strings.
+  - `test_production_mode_onboarding.py` covers lightweight availability probes, privacy-minimal settings, theme
+    boundaries, fixed toast geometry, loading/failure states, cyclic wheel behavior, and full console layout at
+    1366x768- and 1920x1080-equivalent window sizes.
+- Risk and safeguards:
+  - Camera/model startup runs in a daemon initialization thread with generation and stopping guards; stale workers
+    are stopped before they can become active. Identity preparation remains asynchronous and is attached to whichever
+    worker is current when its signal arrives.
+  - Mode changes reset target state and require calibration before normal monitoring resumes. Standard mode never
+    downloads a model implicitly, and Professional Beta remains unavailable because no production backend exists.
+  - `ui/index.html`, runtime, models, packages, backups, user-authored plans/prototypes, screenshots, and unrelated
+    untracked files are outside the intended delivery set.
+- Verification from `C:\Users\aaabb\Documents\ICC`:
+  - `runtime\python311\python.exe -m py_compile i18n.py onboarding_toast.py posture_console.py
+    standard_pose_backend.py tray_app.py vision_modes.py mode_select_card.py mode_themes.py mode_wheel_selector.py
+    user_settings.py test_production_mode_onboarding.py`: passed.
+  - `ruff check` over the same changed source and test files: passed (`All checks passed!`).
+  - With `QT_QPA_FONTDIR=C:\Windows\Fonts`,
+    `runtime\python311\python.exe test_production_mode_onboarding.py`: passed. The offscreen Qt plugin emitted only
+    its expected unsupported raise/opacity/size-hint warnings.
+  - `test_startup_guards.py`, `test_standard_pose_backend.py`, `test_tray_flyout.py`, `test_vision_worker.py`, and
+    `test_feature_toggles.py`: passed. `git diff --check`: passed with only LF-to-CRLF notices.
+  - Playwright MCP was verified as the configured Microsoft Edge extension session (`Edg/151.0.0.0`) and exercised
+    `http://127.0.0.1:8765/ui/onboarding_modes.html` at 1366x768 through boot, mode reveal, unavailable Professional
+    hover, Compatibility selection, Standard loading, and handoff. Three temporary 1366x768 screenshots were
+    captured and reviewed, then removed with the task-owned localhost server. The three console errors were one
+    missing prototype favicon and two extension-injected resource restrictions; no page-script exception was observed.
+  - Font-valid offscreen Qt screenshots were manually reviewed at
+    `.codex/visual-checks/production-mode-onboarding-fonts/`: onboarding boot/modes/loading and console 1366x768 /
+    1920x1080. Text fits, all three wheel items are visible, and the wheel, readout, and side controls do not overlap.
+- Artifacts: no package, release, runtime, model, screenshot, recording, plan, HTML prototype, or backup is included.
+- Gaps: no live camera session, actual Standard cold model load/warmup, identity-process race under forced shutdown,
+  packaged EXE rebuild/self-test, keyboard-only desktop trial, multi-monitor placement trial, or real-user motion study
+  was performed. The exact animation timings and mode-theme recognizability remain manual product validation gates.
+- Conclusion: deterministic source, UI, and regression evidence is ready for a reviewed commit. Hardware, packaged
+  EXE, and remote CI evidence remain explicitly unclaimed.

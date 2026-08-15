@@ -92,6 +92,7 @@ class StandardPoseBackend:
         *,
         model=None,
         capture_factory: Optional[Callable[[int], object]] = None,
+        startup_progress: Optional[Callable[[int, str], None]] = None,
     ) -> None:
         configured_path = model_path or os.environ.get("ECHOPOSTURE_STANDARD_MODEL")
         self.model_path = Path(configured_path) if configured_path else DEFAULT_MODEL_PATH
@@ -105,6 +106,7 @@ class StandardPoseBackend:
         self._model = model
         self._injected_model = model is not None
         self._capture_factory = capture_factory or self._open_capture
+        self._startup_progress = startup_progress
         self._capture = None
         self._last_observations: Tuple[PersonObservation, ...] = ()
         self._black_frame_count = 0
@@ -133,6 +135,7 @@ class StandardPoseBackend:
             self._model = YOLO(str(self.model_path))
 
         self._validate_model_contract()
+        self._report_startup(80, "onb_mode_loading_model")
 
         self._capture = self._capture_factory(self.camera_id)
         if self._capture is None or not self._capture.isOpened():
@@ -144,6 +147,14 @@ class StandardPoseBackend:
         self._capture.set(cv2.CAP_PROP_FRAME_HEIGHT, self.height)
         self._capture.set(cv2.CAP_PROP_FPS, self._capture_fps)
         self._capture.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+        if self._startup_progress is not None:
+            self._report_startup(95, "onb_mode_loading_camera")
+            self.read_sample()
+            self._report_startup(100, "onb_mode_loading_camera")
+
+    def _report_startup(self, progress: int, message_key: str) -> None:
+        if self._startup_progress is not None:
+            self._startup_progress(progress, message_key)
 
     def _validate_model_contract(self) -> None:
         task = getattr(self._model, "task", None)

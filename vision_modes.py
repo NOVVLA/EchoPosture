@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import importlib.util
+import os
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Callable, Mapping, Optional, Tuple
 
 
@@ -17,6 +20,12 @@ class VisionModeSpec:
     label_key: str
     intended_backend: str
     unavailable_reason_key: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class ModeAvailability:
+    available: bool
+    reason_key: Optional[str] = None
 
 
 VISION_MODE_SPECS: Tuple[VisionModeSpec, ...] = (
@@ -55,6 +64,41 @@ def mode_available(
     return mode in backend_factories
 
 
+def detect_mode_availability(
+    *,
+    model_path: Optional[os.PathLike[str] | str] = None,
+    find_spec: Callable[[str], object] = importlib.util.find_spec,
+) -> Mapping[str, ModeAvailability]:
+    """Probe modes without importing torch, Ultralytics, MediaPipe, or TensorRT."""
+    root = Path(__file__).resolve().parent
+    configured_model = model_path or os.environ.get("ECHOPOSTURE_STANDARD_MODEL")
+    standard_model = Path(configured_model) if configured_model else root / "models" / "pose" / "yolo26n-pose.pt"
+
+    def installed(name: str) -> bool:
+        try:
+            return find_spec(name) is not None
+        except (ImportError, ModuleNotFoundError, ValueError):
+            return False
+
+    compatibility_ok = installed("cv2") and installed("mediapipe")
+    standard_ok = installed("torch") and installed("ultralytics") and standard_model.is_file()
+    return {
+        VISION_MODE_COMPATIBILITY: ModeAvailability(
+            compatibility_ok,
+            None if compatibility_ok else "vision_mode_compatibility_unavailable",
+        ),
+        VISION_MODE_STANDARD: ModeAvailability(
+            standard_ok,
+            None if standard_ok else "vision_mode_standard_unavailable",
+        ),
+        # TensorRT alone is not enough: no professional posture backend exists yet.
+        VISION_MODE_PROFESSIONAL_BETA: ModeAvailability(
+            False,
+            "vision_mode_professional_unavailable",
+        ),
+    }
+
+
 def backend_name(backend: object) -> str:
     capabilities = getattr(backend, "capabilities", None)
     name = getattr(capabilities, "backend_name", None)
@@ -66,8 +110,10 @@ __all__ = [
     "VISION_MODE_PROFESSIONAL_BETA",
     "VISION_MODE_SPECS",
     "VISION_MODE_STANDARD",
+    "ModeAvailability",
     "VisionModeSpec",
     "backend_name",
+    "detect_mode_availability",
     "mode_available",
     "mode_spec",
 ]

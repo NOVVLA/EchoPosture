@@ -21,10 +21,11 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Mapping, Optional
 
 from PyQt5.QtCore import (
     QEasingCurve,
+    QEvent,
     QParallelAnimationGroup,
     QPoint,
     QPointF,
@@ -49,6 +50,15 @@ from PyQt5.QtGui import (
 from PyQt5.QtWidgets import QApplication, QWidget
 
 from i18n import _t, add_listener, remove_listener
+from mode_select_card import CARD_H, ModeSelectCard
+from mode_themes import theme_for_mode
+from vision_modes import (
+    VISION_MODE_COMPATIBILITY,
+    VISION_MODE_SPECS,
+    VISION_MODE_STANDARD,
+    ModeAvailability,
+    mode_spec,
+)
 
 # ---- 配色（取自 onboarding.html 的 :root，仅复用数值） ----
 SILVER_HI = QColor("#eef1f4")
@@ -58,7 +68,8 @@ RED_SOFT = QColor("#ff6473")
 
 # 弹窗几何（CSS px；高 DPI 由 Qt 的缩放属性接管）
 TOAST_W = 340
-TOAST_H = 187
+BOOT_H = 187
+TOAST_H = 302
 TOAST_MARGIN = 34
 TOAST_RADIUS = 14
 PAD_X = 22
@@ -396,23 +407,46 @@ class EyeSlideSwitch(QWidget):
 
 
 class OnboardingToast(QWidget):
-    """右下角开场弹窗。armed = 开关已拨开；finished = 谢幕完成，可进入主流程。"""
+    """Fixed-geometry onboarding surface with honest mode initialization state."""
 
     armed = pyqtSignal()
+    mode_selected = pyqtSignal(str)
     finished = pyqtSignal()
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        availability: Optional[Mapping[str, ModeAvailability]] = None,
+        *,
+        persisted_mode: Optional[str] = None,
+    ) -> None:
         super().__init__()
         self.setWindowFlags(
-            Qt.Tool | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint
+            Qt.Tool
+            | Qt.FramelessWindowHint
+            | Qt.WindowStaysOnTopHint
+            | Qt.WindowDoesNotAcceptFocus
         )
         self.setAttribute(Qt.WA_TranslucentBackground, True)
+        self.setAttribute(Qt.WA_ShowWithoutActivating, True)
         self.setFixedSize(TOAST_W, TOAST_H)
         self.setWindowTitle("EchoPosture")
+        self.setMouseTracking(True)
 
-        self._card: Optional[QPixmap] = None
+        self._availability = dict(availability or {})
+        self._persisted_mode = persisted_mode
+        self._boot_card: Optional[QPixmap] = None
+        self._mode_card: Optional[QPixmap] = None
         self._final_pos = QPoint(0, 0)
         self._booted = False
+        self._phase = "boot"
+        self._selected_mode: Optional[str] = None
+        self._reveal_progress = 0.0
+        self._progress = 0.0
+        self._progress_message_key = "onb_mode_loading"
+        self._failure_detail = ""
+        self._countdown_seconds = 15
+        self._countdown_cancelled = False
+        self._close_hover = False
         self._anims: List = []  # 持有动画引用，防止被回收
 
         self._state_text = _t("onb_state_off")
@@ -420,14 +454,50 @@ class OnboardingToast(QWidget):
         self._state_font = _font("Microsoft YaHei", 10, 3.0)
 
         self.switch = EyeSlideSwitch(self)
-        self.switch.move(TOAST_W - PAD_X - TRACK_W - SWITCH_PAD, Y_ROW - SWITCH_PAD)
+        self.switch.move(
+            TOAST_W - PAD_X - TRACK_W - SWITCH_PAD,
+            TOAST_H - BOOT_H + Y_ROW - SWITCH_PAD,
+        )
         self.switch.toggled_on.connect(self._on_armed)
+
+        self._mode_clip = QWidget(self)
+        self._mode_clip.setAttribute(Qt.WA_TranslucentBackground, True)
+        self._mode_clip.setGeometry(0, TOAST_H - BOOT_H, TOAST_W, BOOT_H)
+        self._mode_clip.hide()
+        self.mode_cards: dict[str, ModeSelectCard] = {}
+        for index, spec in enumerate(VISION_MODE_SPECS):
+            available = self._availability.get(spec.mode, ModeAvailability(True))
+            card = ModeSelectCard(
+                spec.mode,
+                available=available.available,
+                reason_key=available.reason_key,
+                parent=self._mode_clip,
+            )
+            card.activated.connect(self._choose_mode)
+            card.unavailable_requested.connect(self._on_unavailable_requested)
+            card.height_changed.connect(self._layout_mode_cards)
+            card.installEventFilter(self)
+            card.hide()
+            self.mode_cards[spec.mode] = card
+        self._layout_mode_cards()
+
+        self._countdown_timer = QTimer(self)
+        self._countdown_timer.setInterval(1000)
+        self._countdown_timer.timeout.connect(self._countdown_step)
+        self._slow_timer = QTimer(self)
+        self._slow_timer.setSingleShot(True)
+        self._slow_timer.setInterval(8000)
+        self._slow_timer.timeout.connect(self._mark_loading_slow)
 
         # 监听全局语言变更：刷新状态文本 + 让卡片缓存失效重绘
         add_listener(self._on_language_changed)
 
     def closeEvent(self, event) -> None:
+        self._countdown_timer.stop()
+        self._slow_timer.stop()
         remove_listener(self._on_language_changed)
+        for card in self.mode_cards.values():
+            remove_listener(card._on_language_changed)
         super().closeEvent(event)
 
     # ---- 对外入口 ----
@@ -442,6 +512,8 @@ class OnboardingToast(QWidget):
         self.setWindowOpacity(0.0)
         self.show()
         QTimer.singleShot(450, self._animate_in)
+        if self._persisted_mode is not None:
+            QTimer.singleShot(720, self._show_persisted_mode)
 
     # ---- 入场 / 谢幕（只动 windowOpacity + 位置，内容零重绘） ----
     def _animate_in(self) -> None:
@@ -483,7 +555,7 @@ class OnboardingToast(QWidget):
         self.hide()
         self.finished.emit()
 
-    # ---- 开关拨开：状态行变色 → 820ms 后谢幕（让睁眼动画被看完整） ----
+    # ---- 开关拨开：状态行变色 → 820ms 后同窗展开模式区 ----
     def _on_armed(self) -> None:
         if self._booted:
             return
@@ -499,26 +571,266 @@ class OnboardingToast(QWidget):
         self._anims.append(recolor)
 
         self.armed.emit()
-        QTimer.singleShot(820, self._animate_out)
+        QTimer.singleShot(820, self._show_modes)
 
     def _set_state_color(self, color) -> None:
         self._state_color = QColor(color)
         self.update()
 
-    # ---- 绘制：缓存卡片一次成像，paintEvent 只 blit + 画状态行 ----
+    def _show_persisted_mode(self) -> None:
+        if self._phase != "boot" or self._persisted_mode is None:
+            return
+        self._booted = True
+        self.switch.hide()
+        self._show_modes(auto_countdown=False)
+        QTimer.singleShot(620, lambda: self._choose_mode(self._persisted_mode or VISION_MODE_COMPATIBILITY))
+
+    def _show_modes(self, auto_countdown: bool = True) -> None:
+        if self._phase != "boot":
+            return
+        self._phase = "modes"
+        self.switch.hide()
+        self._mode_clip.show()
+        reveal = QVariantAnimation(self)
+        reveal.setStartValue(0.0)
+        reveal.setEndValue(1.0)
+        reveal.setDuration(520)
+        reveal.setEasingCurve(QEasingCurve.OutCubic)
+        reveal.valueChanged.connect(self._set_reveal_progress)
+        reveal.start()
+        self._anims.append(reveal)
+        for index, card in enumerate(self.mode_cards.values()):
+            card.prepare_reveal()
+            QTimer.singleShot(80 + index * 100, lambda item=card: self._reveal_card(item))
+        if auto_countdown:
+            QTimer.singleShot(520, self._begin_countdown)
+
+    def _set_reveal_progress(self, value) -> None:
+        self._reveal_progress = float(value)
+        self._layout_mode_cards()
+        self.update()
+
+    def _reveal_card(self, card: ModeSelectCard) -> None:
+        if self._phase not in {"modes", "loading", "failed", "complete"}:
+            return
+        card.show()
+        card.reveal()
+
+    def _layout_mode_cards(self) -> None:
+        visible_height = round(BOOT_H + (TOAST_H - BOOT_H) * self._reveal_progress)
+        source_y = TOAST_H - visible_height
+        self._mode_clip.setGeometry(0, source_y, TOAST_W, visible_height)
+        absolute_y = 91
+        for card in self.mode_cards.values():
+            card.move(PAD_X, absolute_y - source_y)
+            absolute_y += card.height() + 7
+
+    def _begin_countdown(self) -> None:
+        if self._phase != "modes" or self._countdown_cancelled:
+            return
+        self._countdown_seconds = 15
+        self._countdown_timer.start()
+        self.update()
+
+    def _countdown_step(self) -> None:
+        if self._phase != "modes":
+            self._countdown_timer.stop()
+            return
+        self._countdown_seconds -= 1
+        if self._countdown_seconds <= 0:
+            self._countdown_timer.stop()
+            self._choose_mode(self.default_mode())
+        self.update()
+
+    def default_mode(self) -> str:
+        standard = self._availability.get(VISION_MODE_STANDARD, ModeAvailability(True))
+        return VISION_MODE_STANDARD if standard.available else VISION_MODE_COMPATIBILITY
+
+    def _choose_mode(self, mode: str) -> None:
+        if self._phase != "modes":
+            return
+        available = self._availability.get(mode, ModeAvailability(True))
+        if not available.available:
+            return
+        self._phase = "loading"
+        self._selected_mode = mode
+        self._countdown_timer.stop()
+        for card_mode, card in self.mode_cards.items():
+            card.set_selected(card_mode == mode)
+            card.set_dimmed(card_mode != mode)
+        self._progress = 0.0
+        self._progress_message_key = "onb_mode_loading"
+        self._slow_timer.start()
+        self.mode_selected.emit(mode)
+        self.update()
+
+    def _on_unavailable_requested(self, mode: str, reason_key: str) -> None:
+        del mode
+        self._failure_detail = _t(reason_key) if reason_key else ""
+        self.update()
+
+    def set_loading_progress(self, progress: int, message_key: Optional[str] = None) -> None:
+        if self._phase not in {"loading", "failed"}:
+            return
+        if message_key:
+            self._progress_message_key = message_key
+        target = max(self._progress, min(100.0, float(progress)))
+        animation = QVariantAnimation(self)
+        animation.setStartValue(self._progress)
+        animation.setEndValue(target)
+        animation.setDuration(260)
+        animation.setEasingCurve(QEasingCurve.OutCubic)
+        animation.valueChanged.connect(self._set_progress)
+        animation.start()
+        self._anims.append(animation)
+
+    def _set_progress(self, value) -> None:
+        self._progress = float(value)
+        self.update()
+
+    def _mark_loading_slow(self) -> None:
+        if self._phase == "loading" and self._progress < 100:
+            self._progress_message_key = "onb_mode_loading_slow"
+            self.update()
+
+    def show_mode_failure(self, detail: str) -> None:
+        self._slow_timer.stop()
+        self._phase = "failed"
+        self._failure_detail = _t("onb_mode_failed_fallback", detail=detail)
+        self._selected_mode = VISION_MODE_COMPATIBILITY
+        for mode, card in self.mode_cards.items():
+            card.set_selected(mode == VISION_MODE_COMPATIBILITY)
+            card.set_dimmed(mode != VISION_MODE_COMPATIBILITY)
+        self.update()
+
+    def show_terminal_failure(self, detail: str) -> None:
+        """Show that no backend became usable; do not imply a successful fallback."""
+        self._slow_timer.stop()
+        self._phase = "failed"
+        self._failure_detail = _t("onb_mode_failed_terminal", detail=detail)
+        self._selected_mode = None
+        for card in self.mode_cards.values():
+            card.set_selected(False)
+            card.set_dimmed(True)
+        self.update()
+
+    def complete_mode(self, mode: str) -> None:
+        self._slow_timer.stop()
+        self._phase = "complete"
+        self._selected_mode = mode
+        self._progress = 100.0
+        for card_mode, card in self.mode_cards.items():
+            card.set_selected(card_mode == mode)
+            card.set_dimmed(card_mode != mode)
+        self.update()
+        QTimer.singleShot(560, self._animate_out)
+
+    def enterEvent(self, event) -> None:
+        self._cancel_countdown()
+        super().enterEvent(event)
+
+    def eventFilter(self, watched, event) -> bool:
+        if watched in self.mode_cards.values() and event.type() in (QEvent.Enter, QEvent.MouseMove):
+            self._cancel_countdown()
+        return super().eventFilter(watched, event)
+
+    def _cancel_countdown(self) -> None:
+        if self._phase == "modes":
+            self._countdown_cancelled = True
+            self._countdown_timer.stop()
+            self.update()
+
+    def mouseMoveEvent(self, event) -> None:
+        hover = QRectF(310, 9, 18, 18).contains(event.pos())
+        if hover != self._close_hover:
+            self._close_hover = hover
+            self.update()
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event) -> None:
+        if event.button() == Qt.LeftButton and QRectF(310, 9, 18, 18).contains(event.pos()):
+            if self._phase == "modes":
+                self._choose_mode(self.default_mode())
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
+
+    # ---- 绘制：两张静态卡缓存 + 少量裁切/进度逐帧绘制 ----
     def paintEvent(self, event) -> None:
-        if self._card is None:
-            self._card = self._render_card()
+        del event
+        if self._boot_card is None:
+            self._boot_card = self._render_boot_card()
+        if self._mode_card is None:
+            self._mode_card = self._render_mode_card()
         p = QPainter(self)
-        p.drawPixmap(0, 0, self._card)
+        if self._phase == "boot":
+            y = TOAST_H - BOOT_H
+            p.drawPixmap(0, y, self._boot_card)
+            p.setFont(self._state_font)
+            p.setPen(self._state_color)
+            p.drawText(
+                QRectF(PAD_X, y + Y_ROW, 200, TRACK_H),
+                int(Qt.AlignLeft | Qt.AlignVCenter),
+                self._state_text,
+            )
+            return
 
-        p.setFont(self._state_font)
-        p.setPen(self._state_color)
-        p.drawText(QRectF(PAD_X, Y_ROW, 200, TRACK_H),
-                   int(Qt.AlignLeft | Qt.AlignVCenter), self._state_text)
+        visible_height = round(BOOT_H + (TOAST_H - BOOT_H) * self._reveal_progress)
+        source_y = TOAST_H - visible_height
+        p.save()
+        p.setClipRect(QRectF(0, source_y, TOAST_W, visible_height))
+        p.drawPixmap(0, 0, self._mode_card)
+        p.restore()
+        if self._close_hover and self._phase == "modes":
+            p.setPen(QPen(QColor("#c3c8cf"), 1.1))
+            p.drawLine(QPointF(315, 14), QPointF(323, 22))
+            p.drawLine(QPointF(323, 14), QPointF(315, 22))
 
-    def _render_card(self) -> QPixmap:
-        pm = render_glass_card(TOAST_W, TOAST_H, self.devicePixelRatioF())
+        if self._phase in {"loading", "failed", "complete"}:
+            self._paint_progress(p)
+        elif self._phase == "modes" and not self._countdown_cancelled:
+            p.setFont(_font("Microsoft YaHei", 8, 0.7))
+            p.setPen(SILVER_LO)
+            p.drawText(
+                QRectF(PAD_X, 276, TOAST_W - PAD_X * 2, 16),
+                int(Qt.AlignHCenter | Qt.AlignVCenter),
+                _t(
+                    "onb_mode_autoselect",
+                    seconds=self._countdown_seconds,
+                    mode=_t(mode_spec(self.default_mode()).label_key),
+                ),
+            )
+
+    def _paint_progress(self, painter: QPainter) -> None:
+        mode = self._selected_mode or VISION_MODE_COMPATIBILITY
+        theme = theme_for_mode(mode)
+        accent = QColor(theme.accent)
+        if self._progress_message_key == "onb_mode_loading_slow":
+            accent = QColor("#d8a94a")
+        if self._phase == "failed":
+            accent = RED
+        track = QRectF(PAD_X + 16, 271, TOAST_W - (PAD_X + 16) * 2, 2)
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QColor(255, 255, 255, 24))
+        painter.drawRoundedRect(track, 1, 1)
+        painter.setBrush(accent)
+        painter.drawRoundedRect(QRectF(track.left(), track.top(), track.width() * self._progress / 100.0, 2), 1, 1)
+        painter.setFont(_font("Microsoft YaHei", 8, 0.6))
+        painter.setPen(accent if self._phase != "complete" else QColor("#c3c8cf"))
+        if self._phase == "failed":
+            message = self._failure_detail
+        elif self._phase == "complete":
+            message = _t("onb_mode_ready", mode=_t(mode_spec(mode).label_key))
+        else:
+            message = _t(self._progress_message_key)
+        painter.drawText(
+            QRectF(PAD_X, 278, TOAST_W - PAD_X * 2, 17),
+            int(Qt.AlignHCenter | Qt.AlignVCenter),
+            message,
+        )
+
+    def _render_boot_card(self) -> QPixmap:
+        pm = render_glass_card(TOAST_W, BOOT_H, self.devicePixelRatioF())
         p = QPainter(pm)
         p.setRenderHint(QPainter.Antialiasing, True)
 
@@ -544,12 +856,41 @@ class OnboardingToast(QWidget):
         p.end()
         return pm
 
+    def _render_mode_card(self) -> QPixmap:
+        pm = render_glass_card(TOAST_W, TOAST_H, self.devicePixelRatioF())
+        p = QPainter(pm)
+        p.setRenderHint(QPainter.Antialiasing, True)
+        p.setFont(_font("Microsoft YaHei", 10, 4.2))
+        p.setPen(SILVER_LO)
+        p.drawText(
+            QRectF(PAD_X, 16, TOAST_W - PAD_X * 2, 14),
+            int(Qt.AlignLeft | Qt.AlignVCenter),
+            _t("onb_caption"),
+        )
+        p.setFont(_font("Microsoft YaHei", 15, 2.2))
+        p.setPen(SILVER_HI)
+        p.drawText(
+            QRectF(PAD_X, 39, TOAST_W - PAD_X * 2, 22),
+            int(Qt.AlignLeft | Qt.AlignVCenter),
+            _t("onb_mode_title"),
+        )
+        p.setFont(_font("Microsoft YaHei", 9, 0.9))
+        p.setPen(SILVER_LO)
+        p.drawText(
+            QRectF(PAD_X, 64, TOAST_W - PAD_X * 2, 16),
+            int(Qt.AlignLeft | Qt.AlignVCenter),
+            _t("onb_mode_sub"),
+        )
+        p.end()
+        return pm
+
     def _on_language_changed(self) -> None:
         """全局语言变更回调：刷新状态文本 + 让卡片缓存失效，下次 paint 重绘。"""
         # 状态文本：如果已经拨开过用 on 状态，否则 off 状态
         self._state_text = _t("onb_state_on") if self._booted else _t("onb_state_off")
         # 卡片缓存失效：下次 paintEvent 会重新 _render_card，画上新语言的静态文字
-        self._card = None
+        self._boot_card = None
+        self._mode_card = None
         self.update()
 
 
@@ -558,7 +899,10 @@ def main() -> int:
     QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
     QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
     app = QApplication(sys.argv)
-    toast = OnboardingToast()
+    from vision_modes import detect_mode_availability
+
+    toast = OnboardingToast(detect_mode_availability())
+    toast.mode_selected.connect(lambda mode: QTimer.singleShot(900, lambda: toast.complete_mode(mode)))
     toast.finished.connect(app.quit)
     toast.show_bottom_right()
     return app.exec_()

@@ -11,6 +11,7 @@ import argparse
 import os
 import signal
 import sys
+import threading
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
@@ -30,8 +31,10 @@ from PyQt5.QtCore import (
     QPointF,
     QPropertyAnimation,
     QRectF,
+    QObject,
     Qt,
     QTimer,
+    pyqtSignal,
 )
 from PyQt5.QtGui import (
     QBrush,
@@ -58,7 +61,7 @@ from PyQt5.QtWidgets import (
 
 from gpu_blur_overlay import GpuBlurOverlayController
 from face_embedding import FaceEmbeddingPipeline
-from face_observation_enhancer import FaceEnhancedBackend
+from face_observation_enhancer import FaceEnhancedBackend, face_enhanced_backend_factories
 from debug_ui import STATUS_TEXT
 from identity_model_adapters import (
     IR101_WEBFACE4M,
@@ -79,8 +82,14 @@ from onboarding_toast import (
 )
 from posture_console import PostureConsoleWindow
 from tray_flyout import TrayFlyout
+from user_settings import UserSettings, load_user_settings, save_user_settings
 from vision_backend import CompatibilityBackend
-from vision_modes import VISION_MODE_COMPATIBILITY
+from vision_modes import (
+    VISION_MODE_COMPATIBILITY,
+    VISION_MODE_STANDARD,
+    ModeAvailability,
+    detect_mode_availability,
+)
 from vision_tracking import TargetManager
 from vision_test import (
     CameraBlackFrameError,
@@ -118,6 +127,14 @@ class _EngineProxy:
 
     def get_capture_fps(self) -> float:
         return self._worker.get_capture_fps()
+
+
+class _ModeInitSignals(QObject):
+    progress = pyqtSignal(int, int, str)
+    fallback = pyqtSignal(int, str)
+    ready = pyqtSignal(int, str, object, bool)
+    failed = pyqtSignal(int, str)
+    identity_ready = pyqtSignal(object, object)
 
 
 class _CountdownRing(QWidget):
@@ -401,7 +418,29 @@ class TrayMonitor:
             require_dual_anchor=True,
         )
         self.target_manager = TargetManager()
-        self.vision_mode = VISION_MODE_COMPATIBILITY
+        self.mode_availability = dict(detect_mode_availability())
+        self.user_settings = load_user_settings()
+        configured_mode = self.user_settings.vision_mode
+        configured_available = self.mode_availability.get(configured_mode)
+        self.vision_mode = (
+            configured_mode
+            if configured_available is not None and configured_available.available
+            else VISION_MODE_COMPATIBILITY
+        )
+        self._target_fps = fps
+        self._mode_generation = 0
+        self._mode_operation = "idle"
+        self.vision_mode_switching = False
+        self.vision_mode_switch_error: Optional[str] = None
+        self._worker_started = False
+        self._identity_thread: Optional[threading.Thread] = None
+        self._mode_thread: Optional[threading.Thread] = None
+        self._mode_signals = _ModeInitSignals()
+        self._mode_signals.progress.connect(self._on_mode_progress)
+        self._mode_signals.fallback.connect(self._on_mode_fallback)
+        self._mode_signals.ready.connect(self._on_mode_ready)
+        self._mode_signals.failed.connect(self._on_mode_failed)
+        self._mode_signals.identity_ready.connect(self._on_identity_ready)
         requested_identity_model = os.environ.get("ECHOPOSTURE_P5_IDENTITY_MODEL", "vit").lower()
         identity_spec = IR101_WEBFACE4M if requested_identity_model == "ir101" else VIT_KPRPE_WEBFACE4M
         try:
@@ -413,19 +452,9 @@ class TrayMonitor:
             self.identity_model_error = None
         self.identity_verifier: Optional[IdentityVerifier] = None
         self.identity_embedding_pipeline: Optional[FaceEmbeddingPipeline] = None
-        # 摄像头 + MediaPipe + 评分全部活在 VisionWorker 工作线程；
-        # 主线程只低频取信箱快照，UI 不再被推理阻塞。
-        engine_factory = lambda: FaceEnhancedBackend(
-            CompatibilityBackend(
-                lambda: VisionEngine(camera_id=camera_id, width=width, height=height)
-            )
-        )
-        self.worker = VisionWorker(
-            engine_factory=engine_factory,
-            analyzer=self.analyzer,
-            target_fps=fps,
-            target_manager=self.target_manager,
-        )
+        # The worker is configured now but started only after mode selection.
+        # Camera/model startup therefore cannot block the Qt GUI thread.
+        self.worker = self._make_worker(self.vision_mode, self._mode_generation)
         self.engine = _EngineProxy(self.worker)
         self._shown_warning_keys: set[str] = set()
         self.overlay = GpuBlurOverlayController(enabled=gpu_blur_enabled)
@@ -463,8 +492,201 @@ class TrayMonitor:
         self.countdown_timer.timeout.connect(self._countdown_step)
         self.countdown_timer.setInterval(1000)
 
+    def _make_worker(self, mode: str, generation: int) -> VisionWorker:
+        def compatibility_factory():
+            self._mode_signals.progress.emit(generation, 35, "onb_mode_loading_import")
+            return CompatibilityBackend(
+                lambda: VisionEngine(
+                    camera_id=self.camera_id,
+                    width=self.capture_width,
+                    height=self.capture_height,
+                )
+            )
+
+        def standard_factory():
+            from standard_pose_backend import StandardPoseBackend
+
+            self._mode_signals.progress.emit(generation, 35, "onb_mode_loading_import")
+            return StandardPoseBackend(
+                camera_id=self.camera_id,
+                width=self.capture_width,
+                height=self.capture_height,
+                capture_fps=self._target_fps,
+                startup_progress=lambda progress, key: self._mode_signals.progress.emit(
+                    generation, progress, key
+                ),
+            )
+
+        raw_factories = {VISION_MODE_COMPATIBILITY: compatibility_factory}
+        if mode == VISION_MODE_STANDARD:
+            raw_factories[VISION_MODE_STANDARD] = standard_factory
+        wrapped_factories = face_enhanced_backend_factories(raw_factories)
+        if mode not in wrapped_factories:
+            raise ValueError(f"unsupported production vision mode: {mode}")
+        return VisionWorker(
+            engine_factory=wrapped_factories[mode],
+            analyzer=self.analyzer,
+            target_fps=self._target_fps,
+            target_manager=self.target_manager,
+            identity_verifier=self.identity_verifier,
+            identity_embedding_pipeline=self.identity_embedding_pipeline,
+        )
+
+    def _begin_mode_initialization(self, mode: str, operation: str = "startup") -> bool:
+        availability = self.mode_availability.get(mode)
+        if availability is None or not availability.available or self.vision_mode_switching:
+            return False
+        self._mode_generation += 1
+        generation = self._mode_generation
+        self._mode_operation = operation
+        self.vision_mode_switching = True
+        self.vision_mode_switch_error = None
+        previous_mode = self.vision_mode
+        previous_worker = self.worker
+
+        def initialize() -> None:
+            if operation == "runtime" and previous_worker.is_alive():
+                previous_worker.stop(join_timeout=3.0)
+            candidate = self._make_worker(mode, generation)
+            try:
+                candidate.start(timeout=25.0)
+                self._mode_signals.progress.emit(generation, 100, "onb_mode_loading_camera")
+            except Exception as exc:
+                candidate.stop(join_timeout=1.0)
+                if mode == VISION_MODE_COMPATIBILITY:
+                    self._mode_signals.failed.emit(generation, str(exc))
+                    return
+                self._mode_signals.fallback.emit(generation, str(exc))
+                fallback_mode = (
+                    previous_mode
+                    if operation == "runtime"
+                    and self.mode_availability.get(previous_mode, ModeAvailability(False)).available
+                    else VISION_MODE_COMPATIBILITY
+                )
+                candidate = self._make_worker(fallback_mode, generation)
+                try:
+                    candidate.start(timeout=25.0)
+                    self._mode_signals.progress.emit(generation, 100, "onb_mode_loading_camera")
+                except Exception as fallback_exc:
+                    candidate.stop(join_timeout=1.0)
+                    self._mode_signals.failed.emit(generation, str(fallback_exc))
+                    return
+                mode_ready = fallback_mode
+                used_fallback = True
+            else:
+                mode_ready = mode
+                used_fallback = False
+            if self._stopping or generation != self._mode_generation:
+                candidate.stop(join_timeout=1.0)
+                return
+            self._mode_signals.ready.emit(generation, mode_ready, candidate, used_fallback)
+
+        thread = threading.Thread(
+            target=initialize,
+            name=f"VisionModeInit-{generation}",
+            daemon=True,
+        )
+        self._mode_thread = thread
+        thread.start()
+        return True
+
+    def _on_mode_progress(self, generation: int, progress: int, message_key: str) -> None:
+        if generation != self._mode_generation:
+            return
+        if self.onboarding_toast is not None:
+            self.onboarding_toast.set_loading_progress(progress, message_key)
+
+    def _on_mode_fallback(self, generation: int, detail: str) -> None:
+        if generation != self._mode_generation:
+            return
+        self.vision_mode_switch_error = detail
+        if self.onboarding_toast is not None:
+            self.onboarding_toast.show_mode_failure(detail)
+        else:
+            self.tray.showMessage(
+                "EchoPosture",
+                _t("vision_mode_switch_failed", detail=detail),
+                QSystemTrayIcon.Warning,
+                5000,
+            )
+
+    def _on_mode_ready(
+        self,
+        generation: int,
+        mode: str,
+        worker: VisionWorker,
+        used_fallback: bool,
+    ) -> None:
+        if generation != self._mode_generation or self._stopping:
+            worker.stop(join_timeout=1.0)
+            return
+        operation = self._mode_operation
+        self.worker = worker
+        self.engine = _EngineProxy(worker)
+        worker.identity_verifier = self.identity_verifier
+        worker.identity_embedding_pipeline = self.identity_embedding_pipeline
+        self.vision_mode = mode
+        self._worker_started = True
+        self.vision_mode_switching = False
+        self._mode_operation = "idle"
+        self.target_manager.reset()
+        ask_on_startup = self.user_settings.ask_on_startup
+        if operation == "startup":
+            ask_on_startup = False
+        self.user_settings = UserSettings(mode, ask_on_startup)
+        try:
+            save_user_settings(self.user_settings)
+        except OSError as exc:
+            print(f"Could not save EchoPosture settings: {exc}", file=sys.stderr)
+
+        if self.onboarding_toast is not None:
+            self.onboarding_toast.complete_mode(mode)
+        elif operation == "runtime":
+            self._calibrated = False
+            self._monitoring_started = False
+            self._start_calibration_prompt("recal", True)
+        if used_fallback:
+            self.vision_mode_switch_error = self.vision_mode_switch_error or "fallback"
+
+    def _on_mode_failed(self, generation: int, detail: str) -> None:
+        if generation != self._mode_generation:
+            return
+        self.vision_mode_switching = False
+        self._mode_operation = "idle"
+        self.vision_mode_switch_error = detail
+        if self.onboarding_toast is not None:
+            self.onboarding_toast.show_terminal_failure(detail)
+        self.tray.showMessage(
+            "EchoPosture",
+            _t("tm_worker_error", exc=detail),
+            QSystemTrayIcon.Warning,
+            5000,
+        )
+        QTimer.singleShot(0, self.stop)
+
+    def request_vision_mode(self, mode: str) -> bool:
+        if self._stopping or self.vision_mode_switching or self.calibration_dialog is not None:
+            return False
+        availability = self.mode_availability.get(mode)
+        if availability is None or not availability.available:
+            self.vision_mode_switch_error = _t(
+                availability.reason_key if availability is not None else "vision_mode_switch_failed",
+                detail=mode,
+            )
+            return False
+        if mode == self.vision_mode:
+            return True
+        self.overlay.force_clear()
+        return self._begin_mode_initialization(mode, operation="runtime")
+
+    def set_ask_mode_on_startup(self, ask: bool) -> None:
+        self.user_settings = UserSettings(self.vision_mode, bool(ask))
+        try:
+            save_user_settings(self.user_settings)
+        except OSError as exc:
+            print(f"Could not save EchoPosture settings: {exc}", file=sys.stderr)
+
     def start(self, show_calibration: bool = True) -> None:
-        self._prepare_identity_verifier()
         if not show_calibration:
             # --self-test：完全同步的本地路径，不启动工作线程
             self.tray.show()
@@ -472,15 +694,21 @@ class TrayMonitor:
             self.run_startup_self_test()
             return
 
-        try:
-            self.worker.start(timeout=15.0)
-        except CameraPermissionError as exc:
-            self._show_camera_permission_warning(str(exc))
-            raise
         self.tray.show()
         self._show_pending_screen_capture_warning()
         self.timer.start()
+        self._start_identity_preparation()
         self._start_onboarding_prompt()
+
+    def _start_identity_preparation(self) -> None:
+        if self._identity_thread is not None or self.identity_model is None:
+            return
+        self._identity_thread = threading.Thread(
+            target=self._prepare_identity_verifier,
+            name="IdentityModelInit",
+            daemon=True,
+        )
+        self._identity_thread.start()
 
     def _prepare_identity_verifier(self) -> None:
         """Load the repository-bundled model before the first camera sample.
@@ -507,10 +735,24 @@ class TrayMonitor:
             self.identity_model_error = str(exc)
             print(f"P5 identity verification unavailable: {exc}", file=sys.stderr)
             return
-        self.identity_verifier = IdentityVerifier(self.identity_model)
-        self.identity_embedding_pipeline = FaceEmbeddingPipeline(self.identity_model)
-        self.worker.identity_verifier = self.identity_verifier
-        self.worker.identity_embedding_pipeline = self.identity_embedding_pipeline
+        verifier = IdentityVerifier(self.identity_model)
+        pipeline = FaceEmbeddingPipeline(self.identity_model)
+        if not self._stopping:
+            self._mode_signals.identity_ready.emit(verifier, pipeline)
+
+    def _on_identity_ready(
+        self,
+        verifier: IdentityVerifier,
+        pipeline: FaceEmbeddingPipeline,
+    ) -> None:
+        if self._stopping:
+            pipeline.close()
+            verifier.close()
+            return
+        self.identity_verifier = verifier
+        self.identity_embedding_pipeline = pipeline
+        self.worker.identity_verifier = verifier
+        self.worker.identity_embedding_pipeline = pipeline
 
     def stop(self) -> None:
         if self._stopping:
@@ -720,8 +962,17 @@ class TrayMonitor:
         return False
 
     def _start_onboarding_prompt(self) -> None:
-        """右下角开场弹窗：用户拨开滑条开关后，弹窗谢幕，再进入校准倒计时。"""
-        self.onboarding_toast = OnboardingToast()
+        """Show mode selection/loading before any production camera backend starts."""
+        persisted_mode = None
+        if not self.user_settings.ask_on_startup:
+            persisted_mode = self.vision_mode
+        self.onboarding_toast = OnboardingToast(
+            self.mode_availability,
+            persisted_mode=persisted_mode,
+        )
+        self.onboarding_toast.mode_selected.connect(
+            lambda mode: self._begin_mode_initialization(mode, operation="startup")
+        )
         self.onboarding_toast.finished.connect(self._on_onboarding_finished)
         self.onboarding_toast.show_bottom_right()
 
