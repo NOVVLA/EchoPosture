@@ -7,6 +7,7 @@ import os
 import tempfile
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -15,7 +16,7 @@ from PyQt5.QtWidgets import QApplication
 
 from mode_select_card import ModeSelectCard
 from mode_themes import MODE_THEMES
-from mode_wheel_selector import ModeWheelSelector
+from mode_wheel_selector import ModeWheelSelector, _SLOT_DEGREES
 from onboarding_toast import OnboardingToast, TOAST_H, TOAST_W
 from posture_console import PostureConsoleWindow
 from user_settings import UserSettings, load_user_settings, save_user_settings
@@ -25,6 +26,7 @@ from vision_modes import (
     VISION_MODE_STANDARD,
     ModeAvailability,
     detect_mode_availability,
+    probe_professional_support,
 )
 
 
@@ -128,11 +130,70 @@ def test_lightweight_availability_probe_uses_specs_without_importing() -> None:
         result = detect_mode_availability(model_path=model, find_spec=fake_find_spec)
         elapsed_ms = (time.perf_counter() - started) * 1000.0
 
+    # torch and ultralytics are each looked up once and shared by both tiers.
     assert looked_up == ["cv2", "mediapipe", "torch", "ultralytics"]
     assert result[VISION_MODE_COMPATIBILITY].available
     assert result[VISION_MODE_STANDARD].available
+    # A spec object with no origin cannot prove a CUDA build exists.
     assert not result[VISION_MODE_PROFESSIONAL_BETA].available
+    assert result[VISION_MODE_PROFESSIONAL_BETA].reason_key == "vision_mode_pro_unavailable_no_cuda_torch"
     assert elapsed_ms < 50.0
+
+
+def _torch_spec(directory: Path, *, cuda: bool):
+    """A stand-in torch spec whose lib/ folder decides the CUDA verdict."""
+    torch_root = directory / "torch"
+    (torch_root / "lib").mkdir(parents=True, exist_ok=True)
+    if cuda:
+        (torch_root / "lib" / "torch_cuda.dll").write_bytes(b"\x00")
+    else:
+        (torch_root / "lib" / "torch_cpu.dll").write_bytes(b"\x00")
+    (torch_root / "__init__.py").write_text("", encoding="utf-8")
+    return SimpleNamespace(origin=str(torch_root / "__init__.py"))
+
+
+def test_professional_probe_names_the_specific_blocker() -> None:
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        weight = root / "yolo26l-pose.pt"
+        weight.write_bytes(b"test")
+
+        # A CPU-only wheel is the most common blocker and must say so.
+        cpu_only = probe_professional_support(_torch_spec(root / "cpu", cuda=False), model_path=weight)
+        assert not cpu_only.available
+        assert cpu_only.reason_key == "vision_mode_pro_unavailable_no_cuda_torch"
+
+        # No torch at all reads the same way to the user.
+        assert probe_professional_support(None).reason_key == "vision_mode_pro_unavailable_no_cuda_torch"
+
+        cuda_spec = _torch_spec(root / "cuda", cuda=True)
+        missing_weights = probe_professional_support(cuda_spec, model_path=root / "absent.pt")
+        assert not missing_weights.available
+        assert missing_weights.reason_key == "vision_mode_pro_unavailable_no_weights"
+
+        ready = probe_professional_support(cuda_spec, model_path=weight)
+        assert ready.available, "CUDA torch plus a local weight must offer the tier"
+        assert ready.reason_key is None
+
+
+def test_professional_probe_reports_a_missing_nvidia_driver() -> None:
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        weight = root / "yolo26x-pose.pt"
+        weight.write_bytes(b"test")
+        spec = _torch_spec(root / "cuda", cuda=True)
+        previous = os.environ.get("SystemRoot")
+        # Point SystemRoot at a directory with no System32/nvml.dll.
+        os.environ["SystemRoot"] = str(root / "fake-windows")
+        try:
+            result = probe_professional_support(spec, model_path=weight)
+        finally:
+            if previous is None:
+                os.environ.pop("SystemRoot", None)
+            else:
+                os.environ["SystemRoot"] = previous
+        assert not result.available
+        assert result.reason_key == "vision_mode_pro_unavailable_no_driver"
 
 
 def test_user_settings_store_only_mode_preferences() -> None:
@@ -242,14 +303,28 @@ def test_mode_cards_and_wheel_render_and_cycle_over_available_modes() -> None:
         for x in range(0, wheel_image.width(), 16)
         for y in range(0, wheel_image.height(), 8)
     )
+    _save_widget(wheel, "wheel-settled.png")
+
+    # Mid-rotation the disc must render a different frame than at rest; a static
+    # arc of cards would look identical no matter the angle.
+    resting = wheel.grab().toImage()
+    wheel._set_wheel_angle(wheel._wheel_angle - _SLOT_DEGREES * 0.45)
+    app.processEvents()
+    turning = wheel.grab().toImage()
+    assert turning != resting, "the wheel must repaint as it rotates"
+    _save_widget(wheel, "wheel-turning.png")
+    wheel._set_wheel_angle(wheel._wheel_angle + _SLOT_DEGREES * 0.45)
+    app.processEvents()
 
     wheel._request_neighbor(1)
-    _wait(400)
+    _wait(520)
     assert requested == [VISION_MODE_STANDARD]
+    # The disc really turned: one slot of rotation per mode step.
+    assert abs(wheel._wheel_angle + _SLOT_DEGREES) < 0.01
     wheel.set_busy(False)
     wheel.set_current_mode(VISION_MODE_STANDARD)
     wheel._request_neighbor(1)
-    _wait(560)
+    _wait(720)
     assert requested[-1] == VISION_MODE_COMPATIBILITY
     card.close()
     wheel.close()
@@ -298,13 +373,60 @@ def test_full_console_renders_without_wheel_overlap_at_common_desktop_sizes() ->
     app.processEvents()
 
 
+def test_available_professional_tier_is_selectable_in_both_selectors() -> None:
+    app = _app()
+    available = {
+        VISION_MODE_COMPATIBILITY: ModeAvailability(True),
+        VISION_MODE_STANDARD: ModeAvailability(True),
+        VISION_MODE_PROFESSIONAL_BETA: ModeAvailability(True),
+    }
+
+    card = ModeSelectCard(VISION_MODE_PROFESSIONAL_BETA, available=True)
+    activated = []
+    refused = []
+    card.activated.connect(activated.append)
+    card.unavailable_requested.connect(lambda mode, reason: refused.append(mode))
+    card.show()
+    app.processEvents()
+    card._activate()
+    app.processEvents()
+    assert activated == [VISION_MODE_PROFESSIONAL_BETA], "an available Beta tier must be selectable"
+    assert refused == [], "an available tier must not shake or report a blocker"
+    card.close()
+
+    wheel = ModeWheelSelector(available, VISION_MODE_STANDARD)
+    requested = []
+    wheel.mode_requested.connect(requested.append)
+    wheel.show()
+    app.processEvents()
+    wheel._request_neighbor(1)
+    _wait(520)
+    assert requested == [VISION_MODE_PROFESSIONAL_BETA], "the wheel must stop on the now-usable tier"
+    wheel.close()
+    app.processEvents()
+
+    wheel = ModeWheelSelector(available, VISION_MODE_STANDARD)
+    requested = []
+    wheel.mode_requested.connect(requested.append)
+    wheel.show()
+    app.processEvents()
+    wheel._request_neighbor(1)
+    _wait(520)
+    assert requested == [VISION_MODE_PROFESSIONAL_BETA], "the wheel must stop on the now-usable tier"
+    wheel.close()
+    app.processEvents()
+
+
 def main() -> int:
     test_lightweight_availability_probe_uses_specs_without_importing()
+    test_professional_probe_names_the_specific_blocker()
+    test_professional_probe_reports_a_missing_nvidia_driver()
     test_user_settings_store_only_mode_preferences()
     test_mode_themes_are_complete_and_limited()
     test_onboarding_keeps_window_geometry_and_exposes_real_progress()
     test_terminal_mode_failure_does_not_claim_a_working_fallback()
     test_mode_cards_and_wheel_render_and_cycle_over_available_modes()
+    test_available_professional_tier_is_selectable_in_both_selectors()
     test_full_console_renders_without_wheel_overlap_at_common_desktop_sizes()
     print("test_production_mode_onboarding OK")
     return 0

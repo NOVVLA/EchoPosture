@@ -1,0 +1,14 @@
+# Professional Beta GPU runtime for the Debug UI and production tray.
+# Standard mode still forces device="cpu"; the CUDA wheel is a superset and
+# leaves StandardPoseBackend behaviour unchanged.
+# RTX 5070 Ti Laptop is Blackwell (sm_120). cu130 is used because it is the only
+# index carrying the same torch/torchvision versions as the CPU runtime, so the
+# switch changes the build only, never the version. cu128 would downgrade torch
+# to 2.11.0. Install with:
+#   uv pip install --python runtime\python311\python.exe --torch-backend cu130 \
+#     --no-python-downloads --reinstall-package torch --reinstall-package torchvision \
+#     -r requirements-professional.txt
+# Resolve and record the exact wheel used by each packaged runtime before release.
+ultralytics==8.4.120
+torch==2.13.0
+torchvision==0.28.0

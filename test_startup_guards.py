@@ -8,6 +8,12 @@ from types import SimpleNamespace
 
 from tray_app import TrayMonitor
 from tray_flyout import TrayFlyout
+from vision_modes import (
+    VISION_MODE_COMPATIBILITY,
+    VISION_MODE_PROFESSIONAL_BETA,
+    VISION_MODE_STANDARD,
+    ModeAvailability,
+)
 from vision_test import PostureDecision
 
 
@@ -326,6 +332,69 @@ class StartupGuardTests(unittest.TestCase):
         )
         monitor._intervention_candidate_started_at = datetime.now() - timedelta(seconds=4)
         self.assertFalse(TrayMonitor._should_intervene(monitor, eligible))
+
+
+class VisionModeFallbackTests(unittest.TestCase):
+    """The degradation order must never silently skip a usable tier."""
+
+    @staticmethod
+    def _monitor(available=(VISION_MODE_COMPATIBILITY, VISION_MODE_STANDARD)):
+        return SimpleNamespace(
+            mode_availability={
+                mode: ModeAvailability(mode in available)
+                for mode in (
+                    VISION_MODE_COMPATIBILITY,
+                    VISION_MODE_STANDARD,
+                    VISION_MODE_PROFESSIONAL_BETA,
+                )
+            }
+        )
+
+    def test_professional_degrades_through_standard_before_compatibility(self) -> None:
+        chain = TrayMonitor._fallback_chain(
+            self._monitor(),
+            VISION_MODE_PROFESSIONAL_BETA,
+            "startup",
+            VISION_MODE_COMPATIBILITY,
+        )
+        self.assertEqual(chain, [VISION_MODE_STANDARD, VISION_MODE_COMPATIBILITY])
+
+    def test_professional_skips_standard_when_it_is_unavailable(self) -> None:
+        chain = TrayMonitor._fallback_chain(
+            self._monitor(available=(VISION_MODE_COMPATIBILITY,)),
+            VISION_MODE_PROFESSIONAL_BETA,
+            "startup",
+            VISION_MODE_COMPATIBILITY,
+        )
+        self.assertEqual(chain, [VISION_MODE_COMPATIBILITY])
+
+    def test_runtime_switch_prefers_returning_to_the_previous_mode(self) -> None:
+        chain = TrayMonitor._fallback_chain(
+            self._monitor(),
+            VISION_MODE_PROFESSIONAL_BETA,
+            "runtime",
+            VISION_MODE_STANDARD,
+        )
+        # Standard is both the degradation target and the previous mode; it must
+        # appear once, ahead of compatibility.
+        self.assertEqual(chain, [VISION_MODE_STANDARD, VISION_MODE_COMPATIBILITY])
+
+    def test_compatibility_failure_is_terminal(self) -> None:
+        chain = TrayMonitor._fallback_chain(
+            self._monitor(),
+            VISION_MODE_COMPATIBILITY,
+            "startup",
+            VISION_MODE_COMPATIBILITY,
+        )
+        self.assertEqual(chain, [])
+
+    def test_professional_start_gets_a_longer_budget_than_the_other_tiers(self) -> None:
+        monitor = self._monitor()
+        professional = TrayMonitor._mode_start_timeout(monitor, VISION_MODE_PROFESSIONAL_BETA)
+        standard = TrayMonitor._mode_start_timeout(monitor, VISION_MODE_STANDARD)
+        # First professional launch builds a CUDA context and benchmarks l and x.
+        self.assertGreater(professional, standard)
+        self.assertEqual(standard, TrayMonitor._mode_start_timeout(monitor, VISION_MODE_COMPATIBILITY))
 
 
 if __name__ == "__main__":

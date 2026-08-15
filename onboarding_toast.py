@@ -693,14 +693,19 @@ class OnboardingToast(QWidget):
             self._progress_message_key = "onb_mode_loading_slow"
             self.update()
 
-    def show_mode_failure(self, detail: str) -> None:
+    def show_mode_failure(self, detail: str, fallback_mode: str = VISION_MODE_COMPATIBILITY) -> None:
         self._slow_timer.stop()
         self._phase = "failed"
-        self._failure_detail = _t("onb_mode_failed_fallback", detail=detail)
-        self._selected_mode = VISION_MODE_COMPATIBILITY
+        message_key = (
+            "onb_mode_failed_fallback_standard"
+            if fallback_mode == VISION_MODE_STANDARD
+            else "onb_mode_failed_fallback"
+        )
+        self._failure_detail = _t(message_key, detail=detail)
+        self._selected_mode = fallback_mode
         for mode, card in self.mode_cards.items():
-            card.set_selected(mode == VISION_MODE_COMPATIBILITY)
-            card.set_dimmed(mode != VISION_MODE_COMPATIBILITY)
+            card.set_selected(mode == fallback_mode)
+            card.set_dimmed(mode != fallback_mode)
         self.update()
 
     def show_terminal_failure(self, detail: str) -> None:

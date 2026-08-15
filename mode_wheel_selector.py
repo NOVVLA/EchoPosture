@@ -1,4 +1,9 @@
-"""Partially submerged cyclic mode wheel for the central console."""
+"""Partially submerged rotating mode wheel for the central console.
+
+The wheel is a real disc: slots repeat around a full circle, and every painted
+element (ticks, spokes, labels) rotates with it, so a mode change reads as the
+disc turning under a fixed notch rather than three cards sliding along an arc.
+"""
 
 from __future__ import annotations
 
@@ -11,22 +16,31 @@ from PyQt5.QtWidgets import QWidget
 
 from i18n import _t, add_listener, remove_listener
 from mode_themes import paint_mode_icon, theme_for_mode
-from vision_modes import ModeAvailability, VISION_MODE_SPECS, mode_spec
-
+from vision_modes import ModeAvailability, VISION_MODE_SPECS
 
 WHEEL_W = 400
 WHEEL_H = 126
 _CENTER = QPointF(WHEEL_W / 2, 200)
 _RING_RADIUS = 174.0
-_ITEM_RADIUS = 145.0
-_ITEM_W = 104.0
-_ITEM_H = 50.0
+_ITEM_RADIUS = 143.0
+_ITEM_W = 92.0
+_ITEM_H = 40.0
+
+# Three modes repeated three times fill the disc exactly, so the slot sequence
+# is seamless in both directions and the wheel never runs out of face.
+_REPEATS = 3
+_SLOT_DEGREES = 360.0 / (len(VISION_MODE_SPECS) * _REPEATS)
+_VISIBLE_DEGREES = 74.0
 
 _SHORT_LABEL_KEYS = {
     "compatibility": "console_mode_compat_short",
     "standard": "console_mode_standard_short",
     "professional_beta": "console_mode_professional_short",
 }
+
+
+def _wrap_degrees(value: float) -> float:
+    return (value + 180.0) % 360.0 - 180.0
 
 
 class ModeWheelSelector(QWidget):
@@ -40,15 +54,24 @@ class ModeWheelSelector(QWidget):
     ) -> None:
         super().__init__(parent)
         self._modes = [spec.mode for spec in VISION_MODE_SPECS]
+        self._slot_count = len(self._modes) * _REPEATS
         self._availability = dict(availability)
         self._current_index = self._modes.index(current_mode)
-        self._visual_shift = 0.0
+        # Absolute disc rotation in degrees; the selected slot sits at the top
+        # when this equals -current_index * _SLOT_DEGREES.
+        self._wheel_angle = -self._current_index * _SLOT_DEGREES
+        self._spin_rate = 0.0
         self._hover_mode: Optional[str] = None
         self._busy = False
         self._shake = 0.0
         self._animation: Optional[QVariantAnimation] = None
         self.setFixedSize(WHEEL_W, WHEEL_H)
-        self.setAttribute(Qt.WA_TranslucentBackground, True)
+        # WA_TranslucentBackground only applies to top-level windows. As a child
+        # of the console viewport the wheel needs the same styled-transparent
+        # treatment as DragBar, or its unpainted corners render as a dark slab.
+        self.setAttribute(Qt.WA_StyledBackground, True)
+        self.setStyleSheet("background: transparent;")
+        self.setAutoFillBackground(False)
         self.setMouseTracking(True)
         self.setFocusPolicy(Qt.StrongFocus)
         self.setCursor(Qt.PointingHandCursor)
@@ -62,8 +85,7 @@ class ModeWheelSelector(QWidget):
     def set_current_mode(self, mode: str) -> None:
         if mode not in self._modes or mode == self.current_mode:
             return
-        self._current_index = self._modes.index(mode)
-        self._visual_shift = 0.0
+        self._settle_on(self._modes.index(mode), self._shortest_steps(mode))
         self._busy = False
         self.update()
 
@@ -136,12 +158,13 @@ class ModeWheelSelector(QWidget):
         if mode == self.current_mode:
             self.mode_requested.emit(mode)
         else:
-            current = self._current_index
-            target = self._modes.index(mode)
-            forward = (target - current) % len(self._modes)
-            signed_steps = forward if forward <= len(self._modes) / 2 else forward - len(self._modes)
-            self._animate_to(mode, signed_steps)
+            self._animate_to(mode, self._shortest_steps(mode))
         event.accept()
+
+    def _shortest_steps(self, mode: str) -> int:
+        count = len(self._modes)
+        forward = (self._modes.index(mode) - self._current_index) % count
+        return forward if forward <= count / 2 else forward - count
 
     def _request_neighbor(self, direction: int) -> None:
         if self._busy or self._is_animating():
@@ -156,17 +179,29 @@ class ModeWheelSelector(QWidget):
     def _is_animating(self) -> bool:
         return self._animation is not None and self._animation.state() == QAbstractAnimation.Running
 
+    def _settle_on(self, mode_index: int, signed_steps: int) -> None:
+        self._current_index = mode_index
+        self._wheel_angle -= signed_steps * _SLOT_DEGREES
+        self._spin_rate = 0.0
+
     def _animate_to(self, mode: str, signed_steps: int) -> None:
+        target_index = self._modes.index(mode)
+        start_angle = self._wheel_angle
+        end_angle = start_angle - signed_steps * _SLOT_DEGREES
         animation = QVariantAnimation(self)
-        animation.setStartValue(0.0)
-        animation.setEndValue(float(-signed_steps))
-        animation.setDuration(360 + max(0, abs(signed_steps) - 1) * 150)
-        animation.setEasingCurve(QEasingCurve.OutCubic)
-        animation.valueChanged.connect(self._set_visual_shift)
+        animation.setStartValue(start_angle)
+        animation.setEndValue(end_angle)
+        animation.setDuration(420 + max(0, abs(signed_steps) - 1) * 160)
+        # Slight overshoot then settle, so the disc reads as detenting into place.
+        curve = QEasingCurve(QEasingCurve.OutBack)
+        curve.setOvershoot(1.12)
+        animation.setEasingCurve(curve)
+        animation.valueChanged.connect(self._set_wheel_angle)
 
         def finish() -> None:
-            self._current_index = self._modes.index(mode)
-            self._visual_shift = 0.0
+            self._current_index = target_index
+            self._wheel_angle = end_angle
+            self._spin_rate = 0.0
             self._busy = True
             self.setCursor(Qt.BusyCursor)
             self.update()
@@ -176,8 +211,10 @@ class ModeWheelSelector(QWidget):
         self._animation = animation
         animation.start()
 
-    def _set_visual_shift(self, value) -> None:
-        self._visual_shift = float(value)
+    def _set_wheel_angle(self, value) -> None:
+        angle = float(value)
+        self._spin_rate = min(1.0, abs(angle - self._wheel_angle) / 6.0)
+        self._wheel_angle = angle
         self.update()
 
     def _animate_shake(self) -> None:
@@ -196,22 +233,44 @@ class ModeWheelSelector(QWidget):
         self._shake = value
         self.update()
 
-    def _mode_positions(self) -> list[tuple[str, QRectF, float]]:
-        positions = []
-        count = len(self._modes)
-        for offset in range(-(count - 1), count):
-            mode = self._modes[(self._current_index + offset) % count]
-            visual_offset = offset + self._visual_shift
-            if abs(visual_offset) > 1.55:
+    def _slot_offsets(self) -> list[tuple[str, float]]:
+        """Return (mode, offset-in-slots-from-the-top-notch) for visible slots."""
+        visible = []
+        for slot in range(self._slot_count):
+            degrees = _wrap_degrees(slot * _SLOT_DEGREES + self._wheel_angle)
+            if abs(degrees) > _VISIBLE_DEGREES:
                 continue
-            angle = math.radians(-90.0 + visual_offset * 36.0)
+            visible.append((self._modes[slot % len(self._modes)], degrees / _SLOT_DEGREES))
+        return visible
+
+    def _slot_rect(self, offset: float) -> QRectF:
+        """Untransformed item rect, in the slot's own rotated frame."""
+        scale = max(0.74, 1.0 - abs(offset) * 0.13)
+        width, height = _ITEM_W * scale, _ITEM_H * scale
+        return QRectF(-width / 2, -_ITEM_RADIUS - height / 2, width, height)
+
+    def _mode_positions(self) -> list[tuple[str, QRectF, float]]:
+        """Axis-aligned bounding rects in widget coordinates, for hit testing."""
+        positions = []
+        for mode, offset in self._slot_offsets():
+            angle = math.radians(offset * _SLOT_DEGREES - 90.0)
             center = QPointF(
                 _CENTER.x() + math.cos(angle) * _ITEM_RADIUS,
                 _CENTER.y() + math.sin(angle) * _ITEM_RADIUS,
             )
-            scale = max(0.78, 1.0 - abs(visual_offset) * 0.12)
-            width, height = _ITEM_W * scale, _ITEM_H * scale
-            positions.append((mode, QRectF(center.x() - width / 2, center.y() - height / 2, width, height), visual_offset))
+            rect = self._slot_rect(offset)
+            positions.append(
+                (
+                    mode,
+                    QRectF(
+                        center.x() - rect.width() / 2,
+                        center.y() - rect.height() / 2,
+                        rect.width(),
+                        rect.height(),
+                    ),
+                    offset,
+                )
+            )
         return positions
 
     def _mode_at(self, point) -> Optional[str]:
@@ -226,44 +285,109 @@ class ModeWheelSelector(QWidget):
         painter.setRenderHint(QPainter.Antialiasing, True)
         painter.translate(self._shake, 0)
 
-        ring_glow = QRadialGradient(QPointF(_CENTER.x(), 78), 220)
-        ring_glow.setColorAt(0.0, QColor(255, 255, 255, 18))
-        ring_glow.setColorAt(1.0, QColor(255, 255, 255, 0))
-        painter.setPen(Qt.NoPen)
-        painter.setBrush(ring_glow)
-        painter.drawRect(self.rect())
+        selected_theme = theme_for_mode(self.current_mode)
+        accent = QColor(selected_theme.accent)
 
-        ring_pen = QPen(QColor(210, 216, 224, 44), 1.0)
-        ring_pen.setCapStyle(Qt.RoundCap)
-        painter.setPen(ring_pen)
-        painter.setBrush(QColor(10, 11, 14, 224))
-        painter.drawEllipse(_CENTER, _RING_RADIUS, _RING_RADIUS)
-        painter.setPen(QPen(QColor(255, 255, 255, 17), 1))
-        painter.drawEllipse(_CENTER, _RING_RADIUS - 9, _RING_RADIUS - 9)
+        self._paint_disc(painter, accent)
+        self._paint_ticks(painter, accent)
+        self._paint_slots(painter)
+        # Dissolve the flanks before the fixed chrome, so the notch and captions
+        # stay fully opaque while the disc itself fades out at the edges.
+        self._paint_edge_fade(painter)
+        self._paint_notch(painter, accent)
 
+        painter.setOpacity(1.0)
         painter.setFont(_font(7, 3.0))
         painter.setPen(QColor("#7d838c"))
-        painter.drawText(QRectF(0, 4, WHEEL_W, 15), int(Qt.AlignHCenter | Qt.AlignVCenter), _t("console_mode_selector"))
+        painter.drawText(
+            QRectF(0, 3, WHEEL_W, 14),
+            int(Qt.AlignHCenter | Qt.AlignVCenter),
+            _t("console_mode_selector"),
+        )
+        if self._busy:
+            painter.setFont(_font(7, 0.6))
+            painter.setPen(QColor("#d8a94a"))
+            painter.drawText(QRectF(0, 108, WHEEL_W, 15), int(Qt.AlignHCenter), _t("console_mode_switching"))
 
-        positions = sorted(self._mode_positions(), key=lambda item: abs(item[2]), reverse=True)
-        for mode, rect, offset in positions:
+    def _paint_disc(self, painter: QPainter, accent: QColor) -> None:
+        face = QRadialGradient(_CENTER, _RING_RADIUS)
+        face.setColorAt(0.0, QColor(22, 25, 30, 238))
+        face.setColorAt(0.86, QColor(14, 16, 20, 242))
+        face.setColorAt(1.0, QColor(7, 8, 10, 246))
+        painter.setBrush(face)
+        painter.setPen(QPen(QColor(210, 216, 224, 52), 1.0))
+        painter.drawEllipse(_CENTER, _RING_RADIUS, _RING_RADIUS)
+
+        # A tight accent bloom under the notch, clipped to the disc so it can
+        # never paint a lit rectangle over the console behind the widget.
+        painter.save()
+        painter.setClipRect(QRectF(self.rect()))
+        halo = QRadialGradient(QPointF(_CENTER.x(), _CENTER.y() - _RING_RADIUS + 16), 118)
+        halo.setColorAt(0.0, QColor(accent.red(), accent.green(), accent.blue(), 30))
+        halo.setColorAt(1.0, QColor(accent.red(), accent.green(), accent.blue(), 0))
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(halo)
+        painter.drawEllipse(_CENTER, _RING_RADIUS - 1, _RING_RADIUS - 1)
+        painter.restore()
+
+        painter.setBrush(Qt.NoBrush)
+        for radius, alpha in ((_RING_RADIUS - 8.0, 26), (_ITEM_RADIUS - 27.0, 17)):
+            painter.setPen(QPen(QColor(255, 255, 255, alpha), 1))
+            painter.drawEllipse(_CENTER, radius, radius)
+
+    def _paint_ticks(self, painter: QPainter, accent: QColor) -> None:
+        """Ticks and spokes rotate with the disc; they carry the sense of motion."""
+        painter.save()
+        painter.translate(_CENTER)
+        boost = int(self._spin_rate * 46)
+        minor_step = _SLOT_DEGREES / 5.0
+        steps = int(round(360.0 / minor_step))
+        for index in range(steps):
+            degrees = _wrap_degrees(index * minor_step + self._wheel_angle - 90.0)
+            if abs(degrees + 90.0) > _VISIBLE_DEGREES + 8.0:
+                continue
+            major = index % 5 == 0
+            painter.save()
+            painter.rotate(degrees + 90.0)
+            if major:
+                painter.setPen(QPen(QColor(accent.red(), accent.green(), accent.blue(), 128 + boost), 1.3))
+                painter.drawLine(QPointF(0, -_RING_RADIUS + 3), QPointF(0, -_RING_RADIUS + 15))
+                painter.setPen(QPen(QColor(255, 255, 255, 30 + boost // 2), 1))
+                painter.drawLine(QPointF(0, -_RING_RADIUS + 17), QPointF(0, -_ITEM_RADIUS + 24))
+            else:
+                painter.setPen(QPen(QColor(255, 255, 255, 52 + boost), 1))
+                painter.drawLine(QPointF(0, -_RING_RADIUS + 4), QPointF(0, -_RING_RADIUS + 10))
+            painter.restore()
+        painter.restore()
+
+    def _paint_slots(self, painter: QPainter) -> None:
+        for mode, offset in sorted(self._slot_offsets(), key=lambda item: abs(item[1]), reverse=True):
             availability = self._availability.get(mode, ModeAvailability(True))
-            selected = abs(offset) < 0.35
+            selected = abs(offset) < 0.34
             hovered = mode == self._hover_mode
             theme = theme_for_mode(mode)
             accent = QColor(theme.accent)
-            alpha = 0.35 if not availability.available else 1.0
-            painter.setOpacity(alpha * (1.0 if selected else 0.70))
+            fade = max(0.0, 1.0 - max(0.0, abs(offset) - 0.6) / 1.25)
+            opacity = (0.35 if not availability.available else 1.0) * (1.0 if selected else 0.72 * fade)
+            if opacity <= 0.02:
+                continue
+            painter.setOpacity(opacity)
+
+            painter.save()
+            painter.translate(_CENTER)
+            # Items ride the disc: they tilt tangentially instead of staying level.
+            painter.rotate(offset * _SLOT_DEGREES)
+            rect = self._slot_rect(offset)
 
             fill = QLinearGradient(rect.topLeft(), rect.bottomLeft())
-            fill.setColorAt(0.0, QColor(255, 255, 255, 18 if selected else 10))
+            fill.setColorAt(0.0, QColor(255, 255, 255, 20 if selected else 11))
             fill.setColorAt(1.0, QColor(255, 255, 255, 5))
-            border_alpha = 100 if selected else 35 + (28 if hovered else 0)
+            border_alpha = 110 if selected else 34 + (30 if hovered else 0)
             painter.setPen(QPen(QColor(accent.red(), accent.green(), accent.blue(), border_alpha), 1))
             painter.setBrush(fill)
             painter.drawRoundedRect(rect, 5, 5)
 
-            icon_rect = QRectF(rect.left() + 8, rect.top() + 9, 30, 30)
+            icon_rect = QRectF(rect.left() + 6, rect.center().y() - 12, 24, 24)
             paint_mode_icon(
                 painter,
                 icon_rect,
@@ -271,18 +395,53 @@ class ModeWheelSelector(QWidget):
                 progress=1.0 if selected or hovered else 0.0,
                 enabled=availability.available,
             )
-            painter.setFont(_font(8 if not selected else 9, 0.5))
+            painter.setFont(_font(9 if selected else 8, 0.4))
             painter.setPen(accent if selected else QColor("#c3c8cf"))
             painter.drawText(
-                QRectF(rect.left() + 41, rect.top(), rect.width() - 46, rect.height()),
+                QRectF(rect.left() + 32, rect.top(), rect.width() - 36, rect.height()),
                 int(Qt.AlignLeft | Qt.AlignVCenter),
                 _t(_SHORT_LABEL_KEYS[mode]),
             )
+            painter.restore()
         painter.setOpacity(1.0)
-        if self._busy:
-            painter.setFont(_font(7, 0.6))
-            painter.setPen(QColor("#d8a94a"))
-            painter.drawText(QRectF(0, 107, WHEEL_W, 15), int(Qt.AlignHCenter), _t("console_mode_switching"))
+
+    def _paint_edge_fade(self, painter: QPainter) -> None:
+        """Dissolve both flanks so the disc reads as continuing past the viewport.
+
+        This erases alpha rather than painting a dark band: the widget is
+        translucent, so an opaque overlay would show up as a hard-edged box on
+        top of the console instead of blending into it.
+        """
+        fade = QLinearGradient(QPointF(0, 0), QPointF(WHEEL_W, 0))
+        fade.setColorAt(0.00, QColor(0, 0, 0, 0))
+        fade.setColorAt(0.16, QColor(0, 0, 0, 130))
+        fade.setColorAt(0.30, QColor(0, 0, 0, 255))
+        fade.setColorAt(0.70, QColor(0, 0, 0, 255))
+        fade.setColorAt(0.84, QColor(0, 0, 0, 130))
+        fade.setColorAt(1.00, QColor(0, 0, 0, 0))
+        painter.save()
+        painter.setCompositionMode(QPainter.CompositionMode_DestinationIn)
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(fade)
+        painter.drawRect(self.rect())
+        painter.restore()
+
+    def _paint_notch(self, painter: QPainter, accent: QColor) -> None:
+        """A fixed detent above the disc: the wheel turns, this never moves."""
+        top = _CENTER.y() - _RING_RADIUS
+        cx = _CENTER.x()
+        painter.setPen(QPen(QColor(accent.red(), accent.green(), accent.blue(), 176), 1.2))
+        painter.setBrush(QColor(accent.red(), accent.green(), accent.blue(), 150))
+        marker = QPointF(cx, top - 3.0)
+        painter.drawPolygon(
+            marker,
+            QPointF(cx - 4.5, top - 10.0),
+            QPointF(cx + 4.5, top - 10.0),
+        )
+        painter.setBrush(Qt.NoBrush)
+        painter.setPen(QPen(QColor(accent.red(), accent.green(), accent.blue(), 54), 1))
+        painter.drawLine(QPointF(cx - 30, top - 10.0), QPointF(cx - 9, top - 10.0))
+        painter.drawLine(QPointF(cx + 9, top - 10.0), QPointF(cx + 30, top - 10.0))
 
     def _on_language_changed(self) -> None:
         self.setAccessibleName(_t("console_mode_selector"))

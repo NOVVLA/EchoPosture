@@ -81,6 +81,7 @@ from user_settings import UserSettings, load_user_settings, save_user_settings
 from vision_backend import CompatibilityBackend
 from vision_modes import (
     VISION_MODE_COMPATIBILITY,
+    VISION_MODE_PROFESSIONAL_BETA,
     VISION_MODE_STANDARD,
     ModeAvailability,
     detect_mode_availability,
@@ -135,7 +136,7 @@ class _EngineProxy:
 
 class _ModeInitSignals(QObject):
     progress = pyqtSignal(int, int, str)
-    fallback = pyqtSignal(int, str)
+    fallback = pyqtSignal(int, str, str)
     ready = pyqtSignal(int, str, object, bool)
     failed = pyqtSignal(int, str)
     identity_ready = pyqtSignal(object, object)
@@ -428,9 +429,25 @@ class TrayMonitor:
                 ),
             )
 
+        def professional_factory():
+            from professional_pose_backend import ProfessionalPoseBackend
+
+            self._mode_signals.progress.emit(generation, 35, "onb_mode_loading_import")
+            return ProfessionalPoseBackend(
+                camera_id=self.camera_id,
+                width=self.capture_width,
+                height=self.capture_height,
+                capture_fps=self._target_fps,
+                startup_progress=lambda progress, key: self._mode_signals.progress.emit(
+                    generation, progress, key
+                ),
+            )
+
         raw_factories = {VISION_MODE_COMPATIBILITY: compatibility_factory}
         if mode == VISION_MODE_STANDARD:
             raw_factories[VISION_MODE_STANDARD] = standard_factory
+        elif mode == VISION_MODE_PROFESSIONAL_BETA:
+            raw_factories[VISION_MODE_PROFESSIONAL_BETA] = professional_factory
         wrapped_factories = face_enhanced_backend_factories(raw_factories)
         if mode not in wrapped_factories:
             raise ValueError(f"unsupported production vision mode: {mode}")
@@ -442,6 +459,33 @@ class TrayMonitor:
             identity_verifier=self.identity_verifier,
             identity_embedding_pipeline=self.identity_embedding_pipeline,
         )
+
+    def _mode_start_timeout(self, mode: str) -> float:
+        # The professional tier may build a CUDA context, load a 120 MB weight,
+        # and benchmark both candidates on its first run; 25 s cannot cover that.
+        return 90.0 if mode == VISION_MODE_PROFESSIONAL_BETA else 25.0
+
+    def _fallback_chain(self, mode: str, operation: str, previous_mode: str) -> list[str]:
+        """Ordered degradation targets, best first, without repeats.
+
+        Professional steps down through Standard so a GPU failure still leaves
+        the user on multi-person tracking rather than dropping to Compatibility.
+        """
+
+        def usable(candidate: str) -> bool:
+            return (
+                candidate != mode
+                and self.mode_availability.get(candidate, ModeAvailability(False)).available
+            )
+
+        chain: list[str] = []
+        if mode == VISION_MODE_PROFESSIONAL_BETA and usable(VISION_MODE_STANDARD):
+            chain.append(VISION_MODE_STANDARD)
+        if operation == "runtime" and usable(previous_mode) and previous_mode not in chain:
+            chain.append(previous_mode)
+        if mode != VISION_MODE_COMPATIBILITY and VISION_MODE_COMPATIBILITY not in chain:
+            chain.append(VISION_MODE_COMPATIBILITY)
+        return chain
 
     def _begin_mode_initialization(self, mode: str, operation: str = "startup") -> bool:
         availability = self.mode_availability.get(mode)
@@ -458,39 +502,28 @@ class TrayMonitor:
         def initialize() -> None:
             if operation == "runtime" and previous_worker.is_alive():
                 previous_worker.stop(join_timeout=3.0)
-            candidate = self._make_worker(mode, generation)
-            try:
-                candidate.start(timeout=25.0)
-                self._mode_signals.progress.emit(generation, 100, "onb_mode_loading_camera")
-            except Exception as exc:
-                candidate.stop(join_timeout=1.0)
-                if mode == VISION_MODE_COMPATIBILITY:
-                    self._mode_signals.failed.emit(generation, str(exc))
-                    return
-                self._mode_signals.fallback.emit(generation, str(exc))
-                fallback_mode = (
-                    previous_mode
-                    if operation == "runtime"
-                    and self.mode_availability.get(previous_mode, ModeAvailability(False)).available
-                    else VISION_MODE_COMPATIBILITY
-                )
-                candidate = self._make_worker(fallback_mode, generation)
+
+            failures: list[str] = []
+            chain = [mode, *self._fallback_chain(mode, operation, previous_mode)]
+            for index, candidate_mode in enumerate(chain):
+                candidate = self._make_worker(candidate_mode, generation)
                 try:
-                    candidate.start(timeout=25.0)
-                    self._mode_signals.progress.emit(generation, 100, "onb_mode_loading_camera")
-                except Exception as fallback_exc:
+                    candidate.start(timeout=self._mode_start_timeout(candidate_mode))
+                except Exception as exc:
                     candidate.stop(join_timeout=1.0)
-                    self._mode_signals.failed.emit(generation, str(fallback_exc))
+                    failures.append(str(exc))
+                    if index + 1 < len(chain):
+                        # Announce where we are degrading to before trying it, so
+                        # the user sees the reason instead of a silent downgrade.
+                        self._mode_signals.fallback.emit(generation, str(exc), chain[index + 1])
+                    continue
+                self._mode_signals.progress.emit(generation, 100, "onb_mode_loading_camera")
+                if self._stopping or generation != self._mode_generation:
+                    candidate.stop(join_timeout=1.0)
                     return
-                mode_ready = fallback_mode
-                used_fallback = True
-            else:
-                mode_ready = mode
-                used_fallback = False
-            if self._stopping or generation != self._mode_generation:
-                candidate.stop(join_timeout=1.0)
+                self._mode_signals.ready.emit(generation, candidate_mode, candidate, index > 0)
                 return
-            self._mode_signals.ready.emit(generation, mode_ready, candidate, used_fallback)
+            self._mode_signals.failed.emit(generation, "; ".join(failures) or "no usable vision mode")
 
         thread = threading.Thread(
             target=initialize,
@@ -507,12 +540,12 @@ class TrayMonitor:
         if self.onboarding_toast is not None:
             self.onboarding_toast.set_loading_progress(progress, message_key)
 
-    def _on_mode_fallback(self, generation: int, detail: str) -> None:
+    def _on_mode_fallback(self, generation: int, detail: str, fallback_mode: str) -> None:
         if generation != self._mode_generation:
             return
         self.vision_mode_switch_error = detail
         if self.onboarding_toast is not None:
-            self.onboarding_toast.show_mode_failure(detail)
+            self.onboarding_toast.show_mode_failure(detail, fallback_mode)
         else:
             self.tray.showMessage(
                 "EchoPosture",

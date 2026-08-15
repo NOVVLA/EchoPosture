@@ -1,5 +1,68 @@
 # DEVELOPMENT_LOG（Development Log，开发日志）
 
+## 2026-08-15 (Asia/Shanghai) - Professional mode Beta: CUDA pose backend, measured l/x selection, real availability probe, and a genuinely rotating mode wheel
+
+- Source: `docs/plans/EchoPosture_production_mode_onboarding_plan.md` 的后续。摸底发现该计划的 TASK-1~11 已在
+  `a2cdb44` / `3aeacaa` 全部落地（文档头部的"未开始编码"已过时），因此本轮的实际范围收敛为：实现专业档的
+  后端本体、把硬编码的"不可用"换成真实探测，外加用户当面提出的轮盘 UI 重做。
+  用户拍板的四项：两者都做（后端 + 浮窗接真）、GPU 路径先走 CUDA PyTorch（TensorRT 留作后续）、
+  l/x 实测后自动选、身份双模型共识（EP-PRO-003）本轮不做。
+- Git: commit `pending`, branch `codex/pr2-phase1-calibration-safety`.
+- Scope:
+  - **CUDA 运行时**（`requirements-professional.txt` 新建）：主 runtime 的 torch 换为 CUDA 构建。
+    **选 cu130 而非计划最初写的 cu128**——`uv --dry-run` 实测 cu130 索引提供 `torch==2.13.0+cu130` /
+    `torchvision==0.28.0+cu130`，与现有 CPU 版号完全一致，只换构建不降级；cu128 索引最高只到 torch 2.11.0，
+    会连累共用同一 runtime 的 Standard mode。CUDA 13.0 覆盖本机 RTX 5070 Ti 的 Blackwell（sm_120）。
+  - **可用性探测接真**（`vision_modes.py`）：`detect_mode_availability` 的专业档从硬编码 `False` 改为四项
+    零导入检查（复用同一次 `find_spec("torch")` → `torch/lib/torch_cuda*.dll` glob → `System32/nvml.dll`
+    → l/x 权重存在性），各自映射到细分原因键；新增 `probe_professional_support` 与
+    `professional_model_paths`。`intended_backend` 从 `yolo26-pose-tensorrt` 改为
+    `ultralytics-yolo26-pose-cuda`。深度校验（`torch.cuda.is_available()`）推迟到 `start()`，失败走可见回退。
+  - **专业后端**（`professional_pose_backend.py` 新建，约 370 行）：`ProfessionalPoseBackend` 继承
+    `StandardPoseBackend`，复用其观测转换、姿态特征、黑帧检测与 COCO-17 契约校验。覆写：`device="cuda:0"`、
+    实例级 `capabilities`（选型后用 `dataclasses.replace` 更新为实际权重名）、CUDA 前置校验（可注入
+    `cuda_ready`）、CUDA OOM 识别与逐级跳过、`diagnostic_notice`（运行期最近 30 帧实测滑窗，帧数不足时
+    显示"正在采集"而不编造数字）。
+  - **权重自动选型**：`select_professional_model` 纯函数 + 合成帧基准（3 帧预热 + 12 帧计时，固定种子，
+    不开摄像头），nearest-rank P50/P95，x 的 P95 ≤ 50 ms 选 x，否则 l，都不达标则拒绝启动并给出实测数字。
+    结果缓存到 `%LOCALAPPDATA%\EchoPosture\professional_benchmark.json`——**刻意与 `settings.json` 分开**，
+    后者的隐私最小化契约（测试断言 payload 恰为三键）不应被性能遥测污染。指纹变化或
+    `ECHOPOSTURE_PRO_REBENCH=1` 触发重测；`ECHOPOSTURE_PROFESSIONAL_MODEL` 显式指定则跳过整个基准。
+  - **capabilities 读穿**（`face_observation_enhancer.py`）：`FaceEnhancedBackend.capabilities` 从 `__init__`
+    时的一次性拷贝改为 `@property` 动态读内层。否则专业档在 `start()` 里完成选型后，外层仍报告选型前的
+    占位名，Debug UI 会显示过期后端——违反"必须显示实际生效后端"的诚实性契约。
+  - **多级回退链**（`tray_app.py`）：`_begin_mode_initialization` 的单级回退改为候选列表循环，新增
+    `_fallback_chain`（professional → standard → previous → compatibility，去重）与 `_mode_start_timeout`
+    （专业档 90 s，其余保持 25 s；首启含 CUDA 上下文 + 两次权重加载 + 双基准，25 s 必然不够）。
+    `fallback` 信号增加第三个参数携带实际回退目标，`onboarding_toast.show_mode_failure` 据此选择
+    "已回退到标准模式"或"已回退到兼容模式"文案——回退到哪一档必须说清，不能一律说成兼容。
+  - **Debug UI**（`debug_ui.py`）：注册延迟导入的专业工厂、新增 `--professional-model`、多人框绘制条件
+    纳入专业档、`_switch_vision_mode` 改为沿降级链逐跳尝试并累积展示每一跳的失败原因。
+  - **轮盘重做**（`mode_wheel_selector.py`）：用户指出原实现"只能叫弧形选择器"——三个选项固定排布、
+    切换时只做整体平移，盘体本身没有任何旋转证据。改为真正的转盘：9 个循环槽位（3 档 × 3 轮）填满整圆、
+    以绝对角度 `_wheel_angle` 驱动、刻度与辐条随盘旋转（速度越快越亮）、选项沿切线倾斜而非始终水平、
+    顶部固定指针不动、`OutBack` 过冲缓动模拟机械咬合。同时修掉两侧的硬边光晕（改用 destination-in
+    擦除 alpha）、收紧顶部辉光到圆盘裁剪内、缩小卡片让相邻档露出更多。
+  - **i18n**（`i18n.py`，zh + en 同步）：新增 `vision_mode_pro_unavailable_no_cuda_torch` / `_no_driver` /
+    `_no_weights`、`vision_pro_active_notice` / `_active_warmup` / `_fallback_perf` / `_fallback_oom`、
+    `onb_mode_benchmarking`、`onb_mode_failed_fallback_standard`；改写 `vision_mode_professional_unavailable`
+    （去掉已不成立的"尚未提供 TensorRT 后端"措辞）。
+  - **文档**：新建 `docs/PROFESSIONAL_MODE.md`（差异表、选型规则、探测顺序、安装命令、证据等级声明）；
+    `docs/STANDARD_MODE.md` 加注主 runtime 可能已是 CUDA 构建、标准档仍强制 CPU、冷导入数字需重测。
+- Verification: `ruff check` 全过。确定性测试（均不依赖真实 GPU / 摄像头，CUDA 路径全走注入点）：
+  `test_professional_pose_backend.py` 新建 12 项全绿（cuda:0 device 契约、选型三分支、OOM 逐级降级与全 OOM
+  拒启、缓存命中/失效、env 覆写跳过基准、观测契约与标准一致、包装器跟随选型后的后端名）；
+  `test_startup_guards.py` 17 项（新增 5 项回退链与超时预算）；`test_production_mode_onboarding.py`
+  （新增探测四类失败原因、专业档可用时两个选择器均可选、轮盘旋转会重绘的断言）；
+  `test_debug_ui.py` 12 项（新增专业档可切换 + 失败经 Standard 中间降级，并更新了断言 "TensorRT" 字样的
+  过时用例）；`test_standard_pose_backend.py` / `test_vision_worker.py` / `test_feature_toggles.py` /
+  `test_compatibility_face_detection.py` / `test_tray_flyout.py` 回归全绿。
+- Remaining risk（均已写入 `docs/PROFESSIONAL_MODE.md` 的证据等级表）：cu130 wheel 的实际落盘与
+  `torch.cuda.is_available()` 真机确认；Blackwell sm_120 上 Ultralytics 推理的数值正确性（需同帧 CPU vs CUDA
+  关键点对照）；l/x 在本机的真实 P50/P95 与最终选型；90 s 启动预算需真机计时后收紧；12 GB 显存下 x 的峰值
+  占用；升级 CUDA torch 后 Standard mode 冷导入耗时的变化；轮盘旋转动画的真机观感与动效时长仍待人工确认
+  （离屏截图只能证明"旋转时会重绘"，不能证明手感）。EXE 重打包自测未做。
+
 ## 2026-08-15 (Asia/Shanghai) - Fix adopted PR-review items: identity toggle symmetry, UI language-refresh gaps, calibration feedback, and CVLFace model-cache integrity
 
 - Source: organized PR-comment feedback from closed-as-not-planned GitHub issues (#25-#29). Each accusation was

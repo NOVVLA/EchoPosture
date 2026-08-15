@@ -310,8 +310,13 @@ class FaceEnhancedBackend:
         self._enhancer_factory = enhancer_factory
         self._enhancer: Optional[FaceObservationEnhancer] = None
         self._last_observations: Tuple[PersonObservation, ...] = ()
-        capabilities = backend.capabilities
-        self.capabilities = VisionCapabilities(
+
+    @property
+    def capabilities(self) -> VisionCapabilities:
+        # Read through on every access: backends that resolve their model during
+        # start() (professional tier) must not be reported under a stale name.
+        capabilities = self._backend.capabilities
+        return VisionCapabilities(
             supports_multi_person_pose=capabilities.supports_multi_person_pose,
             supports_gpu=capabilities.supports_gpu,
             supports_world_coordinates=capabilities.supports_world_coordinates,

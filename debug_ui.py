@@ -97,6 +97,7 @@ from identity_verifier import (
 from vision_tracking import TargetManager, TargetUpdate
 from vision_modes import (
     VISION_MODE_COMPATIBILITY,
+    VISION_MODE_PROFESSIONAL_BETA,
     VISION_MODE_SPECS,
     VISION_MODE_STANDARD,
     backend_name,
@@ -227,6 +228,14 @@ def _create_standard_pose_backend(**kwargs):
     from standard_pose_backend import StandardPoseBackend
 
     return StandardPoseBackend(**kwargs)
+
+
+def _create_professional_pose_backend(**kwargs):
+    """Keep CUDA imports out of startup until the professional tier is chosen."""
+
+    from professional_pose_backend import ProfessionalPoseBackend
+
+    return ProfessionalPoseBackend(**kwargs)
 
 
 class PostureInterventionOverlay(QWidget):
@@ -451,6 +460,7 @@ class DebugWindow(QMainWindow):
         backend_factories: Optional[Dict[str, Callable[[], object]]] = None,
         initial_vision_mode: str = VISION_MODE_COMPATIBILITY,
         standard_model_path: Optional[str] = None,
+        professional_model_path: Optional[str] = None,
         identity_model=None,
         identity_verifier: Optional[IdentityVerifier] = None,
         identity_embedding_pipeline: Optional[FaceEmbeddingPipeline] = None,
@@ -479,6 +489,18 @@ class DebugWindow(QMainWindow):
                     height=height,
                     capture_fps=fps,
                     model_path=standard_model_path,
+                ),
+            )
+            # Registered unconditionally: the backend itself refuses to start
+            # without CUDA, and _switch_vision_mode surfaces that reason.
+            raw_backend_factories.setdefault(
+                VISION_MODE_PROFESSIONAL_BETA,
+                lambda: _create_professional_pose_backend(
+                    camera_id=camera_id,
+                    width=width,
+                    height=height,
+                    capture_fps=fps,
+                    model_path=professional_model_path,
                 ),
             )
         self._backend_factories = face_enhanced_backend_factories(
@@ -1121,25 +1143,43 @@ class DebugWindow(QMainWindow):
 
         self.timer.stop()
         previous_mode = self.vision_mode
-        previous_factory = self._backend_factories[previous_mode]
         self.cancel_dual_anchor_calibration()
         self._reset_identity_session()
         self.engine.close()
-        next_engine = None
-        try:
-            next_engine = factory()
-            next_engine.start()
-        except Exception as exc:
-            if next_engine is not None:
-                try:
-                    next_engine.close()
-                except Exception:
-                    pass
-            self.engine = previous_factory()
-            self.engine.start()
+
+        # Professional degrades through Standard before giving up, so a GPU that
+        # cannot carry the tier still leaves the user on the best backend that works.
+        chain = [requested_mode]
+        if requested_mode == VISION_MODE_PROFESSIONAL_BETA and previous_mode != VISION_MODE_STANDARD:
+            if VISION_MODE_STANDARD in self._backend_factories:
+                chain.append(VISION_MODE_STANDARD)
+        chain.append(previous_mode)
+
+        failures: list[str] = []
+        for candidate_mode in chain:
+            candidate_factory = self._backend_factories.get(candidate_mode)
+            if candidate_factory is None:
+                continue
+            next_engine = None
+            try:
+                next_engine = candidate_factory()
+                next_engine.start()
+            except Exception as exc:
+                if next_engine is not None:
+                    try:
+                        next_engine.close()
+                    except Exception:
+                        pass
+                failures.append(f"{candidate_mode}: {exc}")
+                continue
+            self.engine = next_engine
+            self.vision_mode = candidate_mode
+            break
+        else:
+            # Even the previous backend refused; leave the failure visible.
             self._set_vision_backend_status(
                 "vision_mode_switch_failed",
-                detail=str(exc),
+                detail="; ".join(failures),
             )
             self.vision_mode_combo.blockSignals(True)
             self.vision_mode_combo.setCurrentIndex(self._vision_mode_index(previous_mode))
@@ -1147,8 +1187,11 @@ class DebugWindow(QMainWindow):
             self.timer.start(self._interval_ms(self.normal_fps))
             return
 
-        self.engine = next_engine
-        self.vision_mode = requested_mode
+        if self.vision_mode != requested_mode:
+            self.vision_mode_combo.blockSignals(True)
+            self.vision_mode_combo.setCurrentIndex(self._vision_mode_index(self.vision_mode))
+            self.vision_mode_combo.blockSignals(False)
+
         if self.target_manager is not None:
             self.target_manager.reset()
         self.current_sample = None
@@ -1163,7 +1206,13 @@ class DebugWindow(QMainWindow):
         )
         self._set_calibration_message("debug_calib_init")
         self._set_calibration_stage_visual("idle")
-        self._refresh_runtime_backend_status()
+        if failures:
+            self._set_vision_backend_status(
+                "vision_mode_switch_failed",
+                detail="; ".join(failures),
+            )
+        else:
+            self._refresh_runtime_backend_status()
         self.timer.start(self._interval_ms(self.normal_fps))
 
     def _activate_vision_mode(self, index: int) -> None:
@@ -1838,7 +1887,7 @@ class DebugWindow(QMainWindow):
         target_update: Optional[TargetUpdate] = None,
     ) -> None:
         annotated = frame.copy()
-        if self.vision_mode == VISION_MODE_STANDARD:
+        if self.vision_mode in (VISION_MODE_STANDARD, VISION_MODE_PROFESSIONAL_BETA):
             self._draw_person_boxes(annotated, observations, target_update)
         self._draw_landmarks(annotated, sample)
 
@@ -2290,6 +2339,14 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--professional-model",
+        default=None,
+        help=(
+            "Local yolo26l-pose.pt or yolo26x-pose.pt path for professional mode. "
+            "Setting it skips the automatic l/x benchmark. Downloads are disabled."
+        ),
+    )
+    parser.add_argument(
         "--self-test",
         action="store_true",
         help="Create the debug window offscreen, process one frame, calibrate, and exit.",
@@ -2330,6 +2387,7 @@ def main() -> int:
             intervention_enabled=not args.self_test and not args.disable_intervention,
             target_panel=args.target_panel,
             standard_model_path=args.standard_model,
+            professional_model_path=args.professional_model,
         )
     except CameraPermissionError as exc:
         QMessageBox.warning(

@@ -298,7 +298,9 @@ def test_debug_panel_exposes_three_vision_modes_and_explicit_availability() -> N
         assert window.vision_mode_combo.currentData() == VISION_MODE_STANDARD
         assert "标准模式" in window.vision_backend_label.text()
         assert "fake-standard" in window.vision_backend_label.text()
-        assert "TensorRT" in window.vision_backend_label.text()
+        # Injected-backend callers never register a professional factory, so the
+        # request is refused with its reason and the live mode is unchanged.
+        assert "专业模式" in window.vision_backend_label.text()
 
         window.vision_mode_combo.setCurrentIndex(
             window._vision_mode_index(VISION_MODE_COMPATIBILITY)
@@ -306,12 +308,70 @@ def test_debug_panel_exposes_three_vision_modes_and_explicit_availability() -> N
         assert window.vision_mode == VISION_MODE_COMPATIBILITY
         assert "兼容模式" in window.vision_backend_label.text()
         assert "fake-compatibility" in window.vision_backend_label.text()
-        assert "TensorRT" not in window.vision_backend_label.text()
+        assert "专业模式" not in window.vision_backend_label.text()
         assert verifier.clear_count >= 2
     finally:
         window.close()
         app.processEvents()
     print("test_debug_panel_exposes_three_vision_modes_and_explicit_availability OK")
+
+
+def test_professional_mode_switches_and_degrades_through_standard() -> None:
+    app = QApplication.instance() or QApplication([])
+    compatibility = FakeDebugBackend()
+    standard_pose = FakeDebugBackend()
+    standard_pose.capabilities.backend_name = "fake-standard"
+    standard_pose.sample = make_pose_only_sample()
+    professional = FakeDebugBackend()
+    professional.capabilities.backend_name = "fake-professional-yolo26x-cuda"
+    professional.sample = make_pose_only_sample()
+
+    window = DebugWindow(
+        camera_id=0,
+        fps=4.0,
+        width=640,
+        height=480,
+        intervention_enabled=False,
+        target_panel=True,
+        backend_factory=lambda: compatibility,
+        backend_factories={
+            VISION_MODE_STANDARD: lambda: standard_pose,
+            VISION_MODE_PROFESSIONAL_BETA: lambda: professional,
+        },
+        face_enhancer_factory=FakeFaceEnhancer,
+    )
+    try:
+        window.vision_mode_combo.setCurrentIndex(
+            window._vision_mode_index(VISION_MODE_PROFESSIONAL_BETA)
+        )
+        assert window.vision_mode == VISION_MODE_PROFESSIONAL_BETA
+        text = window.vision_backend_label.text()
+        assert "专业模式" in text
+        # The label must name the backend that is actually running.
+        assert "fake-professional-yolo26x-cuda" in text
+
+        # A GPU that cannot carry the tier lands on Standard, not Compatibility.
+        window.vision_mode_combo.setCurrentIndex(
+            window._vision_mode_index(VISION_MODE_COMPATIBILITY)
+        )
+        assert window.vision_mode == VISION_MODE_COMPATIBILITY
+
+        def failing_professional():
+            raise RuntimeError("synthetic CUDA unavailable")
+
+        window._backend_factories[VISION_MODE_PROFESSIONAL_BETA] = failing_professional
+        window.vision_mode_combo.setCurrentIndex(
+            window._vision_mode_index(VISION_MODE_PROFESSIONAL_BETA)
+        )
+        assert window.vision_mode == VISION_MODE_STANDARD
+        assert window.vision_mode_combo.currentData() == VISION_MODE_STANDARD
+        failure_text = window.vision_backend_label.text()
+        assert "synthetic CUDA unavailable" in failure_text, "the fallback reason must stay visible"
+        assert "fake-standard" in failure_text
+    finally:
+        window.close()
+        app.processEvents()
+    print("test_professional_mode_switches_and_degrades_through_standard OK")
 
 
 def test_unavailable_mode_keeps_actual_compatibility_backend_visible() -> None:
@@ -678,6 +738,7 @@ def test_debug_panel_reports_incomplete_dual_anchor_profile() -> None:
 if __name__ == "__main__":
     test_debug_panel_exposes_non_intervention_statuses()
     test_debug_panel_exposes_three_vision_modes_and_explicit_availability()
+    test_professional_mode_switches_and_degrades_through_standard()
     test_unavailable_mode_keeps_actual_compatibility_backend_visible()
     test_compatibility_face_detector_fallback_is_visible_after_start()
     test_debug_panel_recovers_after_transient_frame_error()
