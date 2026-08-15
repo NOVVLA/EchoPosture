@@ -5,7 +5,7 @@ torch==2.1.2
 torchvision==0.16.2
 timm==0.9.12
 numpy<2
-transformers==4.33.0
+transformers==4.43.4
 huggingface-hub>=0.23,<1
 safetensors>=0.4,<1
 Pillow>=10,<12
