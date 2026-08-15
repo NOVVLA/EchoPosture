@@ -214,9 +214,11 @@ class IdentityVerifier:
         embedder: IdentityEmbedder | Callable[[FaceObservation], Sequence[float]],
         config: Optional[IdentityVerifierConfig] = None,
         executor: Optional[ThreadPoolExecutor] = None,
+        owns_embedder: bool = False,
     ) -> None:
         self.config = config or IdentityVerifierConfig()
         self._embedder = embedder
+        self._owns_embedder = bool(owns_embedder)
         self._executor = executor or ThreadPoolExecutor(
             max_workers=1,
             thread_name_prefix="IdentityVerifier",
@@ -421,6 +423,10 @@ class IdentityVerifier:
             self._last_trigger_at.clear()
         if self._owns_executor:
             self._executor.shutdown(wait=True, cancel_futures=True)
+        if self._owns_embedder:
+            close_embedder = getattr(self._embedder, "close", None)
+            if callable(close_embedder):
+                close_embedder()
 
     def _embed(self, observation: FaceObservation) -> Sequence[float]:
         embed = getattr(self._embedder, "embed", None)

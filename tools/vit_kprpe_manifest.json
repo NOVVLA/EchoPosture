@@ -1,0 +1,32 @@
+{
+  "schema_version": 1,
+  "model": "cvlface_adaface_vit_base_kprpe_webface4m",
+  "model_revision": "6530d73fb0af4d1d8287f31d559780c648ebd22a",
+  "source_repository": "mk-minchul/CVLface",
+  "source_revision": "308142aa50adf2e187711354f7524635d3414f1e",
+  "files": {
+    "config.json": "dcb1b5199a469f30f6f7d64dd3a2f3b9570f71ff1514aedf62edb9ff894ad5d0",
+    "wrapper.py": "a6ae0669f8274a33ad31db4e30d413999c28742b6f614a22ded3e75cab90632f",
+    "pretrained_model/model.pt": "b8d5adde0a00f6482b5e866b6e37eeaa947302a40d9af31c211af72f34d38afb",
+    "pretrained_model/model.yaml": "b11e7b6d38e8455a2ea06426ae989288386989144cb02e39f22313cd28605d0c",
+    "model.safetensors": "3c6d37ea874c2f38ffc9a7f0e9247efc994c3fb5c12d044759ac294e19d127f7",
+    "models/__init__.py": "dda1747063e80c8309221e0169d58d0ce75e3b7ca35c97c511688ca7b4645975",
+    "models/base/__init__.py": "2d038b0a87d752b1ca646b5fcad78f756133d1eaf83e359b0cbe9114e834eeb8",
+    "models/base/utils.py": "eb31982bdc79a059f088e43d1410b000cd9ca7fe802086c80b863ad1e4a51ead",
+    "models/base/configs/example.yaml": "1895b0bb4e4461ab2e6e5cfc9f6b884c99667f283e135c1d21699af2fb1879f7",
+    "models/vit_kprpe/__init__.py": "8af029e06238bc983d50accc67c34f85f247d97493af9481acf029df2692f950",
+    "models/vit_kprpe/vit.py": "43d32e885efdf071ac84965548b6ae05abd60960d21d25ea9bf36f467d0aef65",
+    "models/vit_kprpe/rpe_options.py": "89b237db33d51039a4ffa005ff5e3e30a76b20c1c135af39b7c62a1cd9fa0ace",
+    "models/vit_kprpe/configs/v1_base_kprpe_splithead_unshared.yaml": "e960265141b2f4d5189534a7fa7698c45aad81949913d697637052c49528267f",
+    "models/vit_kprpe/configs/v1_small_kprpe_splithead_unshared.yaml": "9c34b6e62b59f16cbccde958ea33ee89bf25e0f6d9d7f29b834f7a2edcc0f911",
+    "models/vit_kprpe/RPE/__init__.py": "d10b8a67955ec765dc9c98f0b265317389a591d58653896cba8b98c3b38a20be",
+    "models/vit_kprpe/RPE/rpe_ops/README.md": "d68ccce3b882e9c632ca110226d1ed15fe93809e3fe65770113cf9b5e1a5b65f",
+    "models/vit_kprpe/RPE/rpe_ops/rpe_index.cpp": "ce3ed63af3de83bb090b04b252b89421029d31d232270a170a19f9b57c5f6bc3",
+    "models/vit_kprpe/RPE/rpe_ops/rpe_index.py": "b3aafeff4ca2106f4131ed98074b69cd0cf4f43f0351663acd9db8180709eece",
+    "models/vit_kprpe/RPE/rpe_ops/rpe_index_cuda.cu": "e49731a6cb766e1b1df1ecca67e0c41559f8e6fe66f31c5dc55d7ec6d9c569f3",
+    "models/vit_kprpe/RPE/rpe_ops/setup.py": "5fba54fc1062920aeb80d1cea92f30ed80b39ecb612bc30a91435310f005a152",
+    "models/vit_kprpe/RPE/KPRPE/dist.py": "90776a2f2b6a77608229b456a81271fccff93df8aa7566750aea25ff72dab4b6",
+    "models/vit_kprpe/RPE/KPRPE/kprpe_shared.py": "30d374482c3921c6a90abcad4ea964a394b8a91de51283401f90fecf52361ce4",
+    "models/vit_kprpe/RPE/KPRPE/relative_keypoints.py": "02f77f9ee001c4cea2e071d430e70ce5f9e7617c54258162a34a92b7f070bcf2"
+  }
+}

@@ -164,6 +164,7 @@ class VisionWorker:
         self._snapshot = Snapshot()
         self._error: Optional[Exception] = None
         self._calib_result: Optional[CalibrationResult] = None
+        self._calib_extension_pending = False
         self._seq = 0
 
         # _mode 由主线程方法写、工作线程读（GIL 下 str 属性读写原子），
@@ -182,6 +183,7 @@ class VisionWorker:
         self._calibration_plan = CalibrationPlan()
         self._calibration_accumulator: Optional[CalibrationAccumulator] = None
         self._dual_calibration_request: Optional[tuple[float, int]] = None
+        self._calib_extension_notified = False
         self._preferred_cutoff_at = None
         self._calib_request_seq = 0
         self._identity_future = None
@@ -310,6 +312,13 @@ class VisionWorker:
             self._calib_result = None
             return result
 
+    def take_calibration_extension_pending(self) -> bool:
+        """一次性回执：relaxed 阶段是否刚进入有限延长期（样本仍不足）。"""
+        with self._lock:
+            pending = self._calib_extension_pending
+            self._calib_extension_pending = False
+            return pending
+
     # ============================================================
     # 工作线程
     # ============================================================
@@ -384,8 +393,14 @@ class VisionWorker:
                 self._calibration_missing_fields = set()
                 self._calibration_accumulator = CalibrationAccumulator(self._calibration_plan)
                 self._dual_calibration_request = None
+                self._calib_extension_notified = False
+                with self._lock:
+                    self._calib_extension_pending = False
                 self._identity_enrollment_samples = []
-                self._identity_enrollment_active = self.identity_verifier is not None
+                self._identity_enrollment_active = (
+                    self.identity_verifier is not None
+                    and getattr(self.analyzer, "identity_check_enabled", True)
+                )
                 self._last_identity_embedding_at.clear()
                 for future in (self._identity_embedding_future, self._identity_future):
                     if future is not None:
@@ -492,10 +507,17 @@ class VisionWorker:
         request = self._dual_calibration_request
         if accumulator is None or request is None or accumulator.phase != RELAXED:
             return
-        if not (
-            accumulator.ready_to_finalize(timestamp)
-            or accumulator.relaxed_deadline_reached(timestamp)
-        ):
+        ready = accumulator.ready_to_finalize(timestamp)
+        deadline = accumulator.relaxed_deadline_reached(timestamp)
+        if not (ready or deadline):
+            if (
+                not self._calib_extension_notified
+                and accumulator.relaxed_target_reached(timestamp)
+            ):
+                # 名义 5 秒已到但样本仍不足，即将进入有限延长期；一次性通知主线程。
+                self._calib_extension_notified = True
+                with self._lock:
+                    self._calib_extension_pending = True
             return
         distance_cm, request_id = request
         self._finalize_dual_anchor_calibration(distance_cm, request_id)

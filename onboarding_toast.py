@@ -891,6 +891,7 @@ class OnboardingToast(QWidget):
         # 卡片缓存失效：下次 paintEvent 会重新 _render_card，画上新语言的静态文字
         self._boot_card = None
         self._mode_card = None
+        self.switch.setAccessibleName(_t("onb_accessible_name"))
         self.update()
 
 

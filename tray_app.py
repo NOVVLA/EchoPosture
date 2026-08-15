@@ -49,20 +49,15 @@ from PyQt5.QtGui import (
 from PyQt5.QtWidgets import (
     QApplication,
     QDialog,
-    QLabel,
     QMessageBox,
-    QPushButton,
-    QSlider,
     QStyle,
     QSystemTrayIcon,
     QWidget,
-    QVBoxLayout,
 )
 
 from gpu_blur_overlay import GpuBlurOverlayController
 from face_embedding import FaceEmbeddingPipeline
 from face_observation_enhancer import FaceEnhancedBackend, face_enhanced_backend_factories
-from debug_ui import STATUS_TEXT
 from identity_model_adapters import (
     IR101_WEBFACE4M,
     ModelCacheError,
@@ -113,6 +108,15 @@ def _calibration_failure_details(result: CalibrationResult) -> str:
     return ", ".join(
         _t(f"calib_missing_{field}") for field in result.missing_fields
     )
+
+
+def _short_error_text(detail: object, max_length: int = 160) -> str:
+    """把原始异常/错误详情压缩成单行、限长的技术摘要，避免未翻译的长文本
+    或多行堆栈信息直接撑爆托盘气泡通知。"""
+    text = " ".join(str(detail).split())
+    if len(text) > max_length:
+        text = text[: max_length - 1].rstrip() + "…"
+    return text
 
 
 class _EngineProxy:
@@ -304,98 +308,6 @@ class StartupCalibrationDialog(QDialog):
         self.ring.set_values(max(self.remaining_seconds, 0), self.total_seconds)
 
 
-class StatusPanel(QWidget):
-    def __init__(self, monitor: "TrayMonitor") -> None:
-        super().__init__()
-        self.monitor = monitor
-        self.setWindowTitle("EchoPosture")
-        self.setWindowFlags(Qt.Tool | Qt.WindowStaysOnTopHint)
-        self.setFixedSize(320, 285)
-
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(18, 16, 18, 16)
-        layout.setSpacing(8)
-
-        self.status_label = QLabel()
-        self.dim_label = QLabel()
-        self.blur_label = QLabel()
-        self.max_dim_label = QLabel()
-        self.blur_scale_label = QLabel()
-        for label in (
-            self.status_label,
-            self.dim_label,
-            self.blur_label,
-            self.max_dim_label,
-            self.blur_scale_label,
-        ):
-            label.setFont(QFont("Microsoft YaHei", 11))
-            layout.addWidget(label)
-
-        self.max_dim_slider = QSlider(Qt.Horizontal)
-        self.max_dim_slider.setRange(0, 85)
-        self.max_dim_slider.setValue(round(self.monitor.overlay.max_dim_alpha * 100))
-        self.max_dim_slider.valueChanged.connect(self._visual_config_changed)
-        layout.addWidget(self.max_dim_slider)
-
-        self.blur_scale_slider = QSlider(Qt.Horizontal)
-        self.blur_scale_slider.setRange(0, 100)
-        self.blur_scale_slider.setValue(round(self.monitor.overlay.blur_scale * 100))
-        self.blur_scale_slider.valueChanged.connect(self._visual_config_changed)
-        layout.addWidget(self.blur_scale_slider)
-
-        self.max_effect_button = QPushButton(_t("max_effect"))
-        self.max_effect_button.clicked.connect(self.monitor.trigger_max_visual_effect)
-        layout.addWidget(self.max_effect_button)
-
-        layout.addStretch(1)
-        self.setStyleSheet(
-            """
-            QWidget { background: #f7f9fc; border: 1px solid #d8e0ea; }
-            QLabel { color: #172033; border: none; }
-            """
-        )
-
-        # 语言变更时刷新所有标签文本（按钮文字也跟着切）
-        add_listener(self._apply_texts)
-
-        self.refresh_timer = QTimer(self)
-        self.refresh_timer.timeout.connect(self.refresh)
-        self.refresh_timer.start(250)
-        self.refresh()
-
-    def _apply_texts(self) -> None:
-        """语言变更回调：刷新按钮文字。标签由 refresh() 自动用新模板重画。"""
-        self.max_effect_button.setText(_t("max_effect"))
-        self.refresh()
-
-    def closeEvent(self, event) -> None:
-        remove_listener(self._apply_texts)
-        super().closeEvent(event)
-
-    def refresh(self) -> None:
-        decision = self.monitor.last_decision
-        raw_status = decision.status if decision is not None else "WAITING"
-        # 内部码（如 GOOD/NEEDS_CALIB）经 STATUS_TEXT 映射 + _t() 翻译为本地化文本
-        status = _t(STATUS_TEXT.get(raw_status, "status.WAITING"))
-        dim = round(self.monitor.overlay.dim_level * 100)
-        blur = round(self.monitor.overlay.blur_level * 100)
-        self.status_label.setText(_t("sp_status", status=status))
-        self.dim_label.setText(_t("sp_dim", dim=dim))
-        self.blur_label.setText(_t("sp_blur", blur=blur))
-        self._refresh_control_labels()
-
-    def _visual_config_changed(self) -> None:
-        self.monitor.overlay.set_visual_config(
-            self.max_dim_slider.value() / 100.0,
-            self.blur_scale_slider.value() / 100.0,
-        )
-        self._refresh_control_labels()
-
-    def _refresh_control_labels(self) -> None:
-        self.max_dim_label.setText(_t("sp_max_dim", v=self.max_dim_slider.value()))
-        self.blur_scale_label.setText(_t("sp_blur_scale", v=self.blur_scale_slider.value()))
-
-
 class TrayMonitor:
     def __init__(
         self,
@@ -473,7 +385,6 @@ class TrayMonitor:
         self._manual_effect_until: Optional[datetime] = None
         self.calibration_dialog: Optional[StartupCalibrationDialog] = None
         self.onboarding_toast: Optional[OnboardingToast] = None
-        self.status_panel: Optional[StatusPanel] = None
         self.console: Optional[PostureConsoleWindow] = None
 
         self.tray = QSystemTrayIcon(self._icon(), self.app)
@@ -658,7 +569,7 @@ class TrayMonitor:
             self.onboarding_toast.show_terminal_failure(detail)
         self.tray.showMessage(
             "EchoPosture",
-            _t("tm_worker_error", exc=detail),
+            _t("tm_worker_error", exc=_short_error_text(detail)),
             QSystemTrayIcon.Warning,
             5000,
         )
@@ -769,9 +680,6 @@ class TrayMonitor:
         if self.calibration_dialog is not None:
             self.calibration_dialog.close()
             self.calibration_dialog = None
-        if self.status_panel is not None:
-            self.status_panel.close()
-            self.status_panel = None
         if self.console is not None:
             self.console.close()
             self.console = None
@@ -850,6 +758,14 @@ class TrayMonitor:
             self._on_worker_error(error)
             return
 
+        if self.worker.take_calibration_extension_pending():
+            self.tray.showMessage(
+                "EchoPosture",
+                _t("tm_calib_extending"),
+                QSystemTrayIcon.Information,
+                2000,
+            )
+
         result = self.worker.take_calibration_result()
         if result is not None:
             self._on_calibration_result(result)
@@ -872,9 +788,10 @@ class TrayMonitor:
         if isinstance(exc, (CameraPermissionError, CameraBlackFrameError)):
             self._handle_camera_failure(exc)
             return
+        print(f"[EchoPosture] worker error: {exc!r}")
         self.tray.showMessage(
             "EchoPosture",
-            _t("tm_worker_error", exc=exc),
+            _t("tm_worker_error", exc=_short_error_text(exc)),
             QSystemTrayIcon.Warning,
             5000,
         )

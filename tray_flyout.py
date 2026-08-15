@@ -115,9 +115,6 @@ class TrayFlyout(QWidget):
         self.lang_button.clicked.connect(self._on_toggle_language)
         self.exit_button.clicked.connect(self._on_exit)
 
-        # 监听全局语言变更：其他入口（如未来加的设置面板）切语言时，浮窗也跟着刷
-        add_listener(self._apply_texts)
-
         # 左上角灰色小齿轮 → 打开主配置 UI
         self.gear_button = QPushButton("⚙", self)
         self.gear_button.setObjectName("gearBtn")
@@ -240,6 +237,7 @@ class TrayFlyout(QWidget):
         self.caption.adjustSize()
         # 与 __init__ 中同一公式，保证 caption 纵向居中于齿轮行不漂移
         self.caption.move(44, 9 + (26 - self.caption.height()) // 2)
+        self.switch.setAccessibleName(_t("onb_accessible_name"))
         self._update_state_label(self.switch.is_on())
 
     # ---- 绘制：玻璃卡片预渲染，paintEvent 只 blit ----

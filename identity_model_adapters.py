@@ -10,8 +10,11 @@ or persists camera images.
 from __future__ import annotations
 
 import gc
+import hashlib
 import importlib
+import json
 import os
+import stat
 import subprocess
 import sys
 import warnings
@@ -71,18 +74,25 @@ IR101_WEBFACE4M = CvlFaceModelSpec(
     ),
 )
 
+REPOSITORY_MODEL_ROOT = Path(__file__).resolve().parent / "models" / "p5"
+LEGACY_DOWNLOAD_MODEL_ROOT = Path(r"D:\Download\EchoPosture-P5\models")
+USER_MODEL_ROOT = Path.home() / ".echoposture" / "models" / "p5"
+VIT_KPRPE_MANIFEST_PATH = Path(__file__).resolve().parent / "tools" / "vit_kprpe_manifest.json"
+_EXECUTABLE_MODEL_SUFFIXES = frozenset(
+    (".py", ".pyc", ".pyo", ".pyd", ".so", ".pth", ".dll", ".dylib")
+)
+_REQUIRED_MANIFEST_FILES = frozenset(("pretrained_model/model.pt", "model.safetensors"))
+
 
 def default_model_root() -> Path:
     configured = os.environ.get("ECHOPOSTURE_P5_MODEL_ROOT")
     if configured:
         return Path(configured)
-    repository_root = Path(__file__).resolve().parent / "models" / "p5"
-    if repository_root.exists():
-        return repository_root
-    download_root = Path(r"D:\Download\EchoPosture-P5\models")
-    if download_root.exists():
-        return download_root
-    return Path("runtime") / "models"
+    if REPOSITORY_MODEL_ROOT.exists():
+        return REPOSITORY_MODEL_ROOT
+    if LEGACY_DOWNLOAD_MODEL_ROOT.exists():
+        return LEGACY_DOWNLOAD_MODEL_ROOT
+    return USER_MODEL_ROOT
 
 
 def model_path(spec: CvlFaceModelSpec, root: Optional[Path] = None) -> Path:
@@ -92,6 +102,135 @@ def model_path(spec: CvlFaceModelSpec, root: Optional[Path] = None) -> Path:
 def missing_model_files(spec: CvlFaceModelSpec, root: Optional[Path] = None) -> Tuple[str, ...]:
     path = model_path(spec, root)
     return tuple(file for file in spec.required_files if not (path / file).is_file())
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _is_link_or_reparse_point(path: Path) -> bool:
+    metadata = path.lstat()
+    file_attributes = getattr(metadata, "st_file_attributes", 0)
+    reparse_attribute = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+    return stat.S_ISLNK(metadata.st_mode) or bool(file_attributes & reparse_attribute)
+
+
+def _discover_model_executables(local_path: Path) -> set[str]:
+    discovered: set[str] = set()
+
+    def raise_walk_error(error: OSError) -> None:
+        raise error
+
+    try:
+        if _is_link_or_reparse_point(local_path):
+            raise ModelCacheError(
+                f"Model cache root is a link or reparse point: {local_path}"
+            )
+        for current_root, directory_names, file_names in os.walk(
+            local_path,
+            topdown=True,
+            onerror=raise_walk_error,
+            followlinks=False,
+        ):
+            current_path = Path(current_root)
+            for name in directory_names:
+                candidate = current_path / name
+                if _is_link_or_reparse_point(candidate):
+                    relative_name = candidate.relative_to(local_path).as_posix()
+                    raise ModelCacheError(
+                        f"Model cache contains a link or reparse point: {relative_name}"
+                    )
+            for name in file_names:
+                candidate = current_path / name
+                relative_name = candidate.relative_to(local_path).as_posix()
+                if _is_link_or_reparse_point(candidate):
+                    raise ModelCacheError(
+                        f"Model cache contains a link or reparse point: {relative_name}"
+                    )
+                if candidate.suffix.lower() in _EXECUTABLE_MODEL_SUFFIXES:
+                    discovered.add(relative_name)
+    except ModelCacheError:
+        raise
+    except OSError as exc:
+        raise ModelCacheError(f"Cannot safely scan model cache {local_path}: {exc}") from exc
+    return discovered
+
+
+def verify_model_code_integrity(spec: CvlFaceModelSpec, local_path: Path) -> None:
+    """Reject model caches without a complete trusted code and weight manifest."""
+
+    if spec != VIT_KPRPE_WEBFACE4M:
+        raise ModelCacheError(
+            f"No trusted integrity manifest is available for {spec.name}; refusing to load it."
+        )
+    manifest_path = VIT_KPRPE_MANIFEST_PATH
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ModelCacheError(
+            f"Cannot read trusted ViT KP-RPE manifest: {manifest_path} ({exc})"
+        ) from exc
+    if (
+        manifest.get("schema_version") != 1
+        or manifest.get("model") != spec.name
+        or manifest.get("model_revision") != spec.revision
+        or manifest.get("source_repository") != "mk-minchul/CVLface"
+        or manifest.get("source_revision") != "308142aa50adf2e187711354f7524635d3414f1e"
+    ):
+        raise ModelCacheError(
+            f"Trusted ViT KP-RPE manifest metadata is invalid: {manifest_path}"
+        )
+    files = manifest.get("files")
+    if not isinstance(files, dict) or not files:
+        raise ModelCacheError(
+            f"Trusted ViT KP-RPE manifest has no file hashes: {manifest_path}"
+        )
+    missing_manifest_files = sorted(_REQUIRED_MANIFEST_FILES - files.keys())
+    if missing_manifest_files:
+        raise ModelCacheError(
+            "Trusted ViT KP-RPE manifest does not cover required unsafe-load files: "
+            + ", ".join(missing_manifest_files)
+        )
+
+    approved_executables: set[str] = set()
+    for relative_name, expected_hash in files.items():
+        if (
+            not isinstance(relative_name, str)
+            or not isinstance(expected_hash, str)
+            or len(expected_hash) != 64
+        ):
+            raise ModelCacheError(
+                f"Trusted ViT KP-RPE manifest contains an invalid entry: {relative_name!r}"
+            )
+        relative_path = Path(relative_name)
+        if relative_path.is_absolute() or ".." in relative_path.parts:
+            raise ModelCacheError(
+                f"Trusted ViT KP-RPE manifest contains an unsafe path: {relative_name}"
+            )
+        target = local_path / relative_path
+        if not target.is_file():
+            raise ModelCacheError(f"Trusted model code file is missing: {relative_name}")
+        actual_hash = _sha256_file(target)
+        if actual_hash != expected_hash.lower():
+            raise ModelCacheError(
+                f"SHA-256 mismatch for model code '{relative_name}': "
+                f"expected {expected_hash.lower()}, actual {actual_hash}"
+            )
+        normalized_name = relative_path.as_posix()
+        if target.suffix.lower() in _EXECUTABLE_MODEL_SUFFIXES:
+            approved_executables.add(normalized_name)
+
+    discovered_executables = _discover_model_executables(local_path)
+    unapproved_executables = sorted(discovered_executables - approved_executables)
+    if unapproved_executables:
+        raise ModelCacheError(
+            "Unapproved executable files are present in the model cache: "
+            + ", ".join(unapproved_executables)
+        )
 
 
 class CvlFaceAutoModelAdapter:
@@ -114,6 +253,8 @@ class CvlFaceAutoModelAdapter:
         return self._model is not None
 
     def load(self) -> None:
+        local_path = model_path(self.spec, self.root)
+        verify_model_code_integrity(self.spec, local_path)
         missing = missing_model_files(self.spec, self.root)
         if missing:
             raise ModelCacheError(
@@ -128,10 +269,11 @@ class CvlFaceAutoModelAdapter:
                 "P5 model adapter needs optional torch and transformers dependencies with "
                 f"loadable native DLLs ({exc})."
             ) from exc
-        local_path = model_path(self.spec, self.root)
         self._torch = torch
         model_path_text = str(local_path)
         previous_cwd = os.getcwd()
+        previous_dont_write_bytecode = sys.dont_write_bytecode
+        sys.dont_write_bytecode = True
         sys.path.insert(0, model_path_text)
         try:
             # CVLFace's wrapper opens model.yaml with a relative path.
@@ -147,6 +289,7 @@ class CvlFaceAutoModelAdapter:
         finally:
             os.chdir(previous_cwd)
             sys.path.remove(model_path_text)
+            sys.dont_write_bytecode = previous_dont_write_bytecode
         self._model.to(self.device)
         self._model.eval()
 
@@ -256,4 +399,5 @@ __all__ = [
     "default_model_root",
     "missing_model_files",
     "model_path",
+    "verify_model_code_integrity",
 ]

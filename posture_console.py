@@ -644,8 +644,9 @@ class ArtView(QGraphicsView):
 
     def _on_language_changed(self) -> None:
         """语言变更回调：刷新所有静态标签文本。"""
-        self.readout_state.setText(_t("console_state_paused"))
         self.hint.setText(_t("console_hint"))
+        # 状态行反映真实监测状态，而非固定显示"已暂停"（refresh() 内部会用新语言重算文案）
+        self.refresh()
 
     def _mk_label(self, text: str, pt: int, color: QColor, spacing: float) -> QLabel:
         # 浮层挂在 viewport 上，确保始终显示在场景渲染之上

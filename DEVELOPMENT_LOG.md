@@ -1,5 +1,133 @@
 # DEVELOPMENT_LOG（Development Log，开发日志）
 
+## 2026-08-15 (Asia/Shanghai) - Fix adopted PR-review items: identity toggle symmetry, UI language-refresh gaps, calibration feedback, and CVLFace model-cache integrity
+
+- Source: organized PR-comment feedback from closed-as-not-planned GitHub issues (#25-#29). Each accusation was
+  verified against current source before any fix; the user then gave explicit per-item accept/reject decisions.
+  Rejected and out of scope: #25-2 (exposure decay), #25-3 (forced identity re-check on reacquisition), #25-4
+  (runtime black-frame auto-fallback), #27-M3 (startup calibration cancel window), #28-A/B (multi-person pipeline
+  architecture changes), #28-D (motion-innovation-triggered identity re-check). #25-1 and #26-1 required no code
+  change (both were fabricated/incorrect accusations, refuted against source). #29 (package size reduction) was
+  never explicitly adopted and has no corresponding packaging script in this repo; still open, not addressed here.
+  The user's governing instruction for this delivery: fix the remaining adopted items directly, delegating
+  reasonably to a Codex agent for the larger security-sensitive batch to control cost rather than doing everything
+  personally.
+- Git: commit `pending`, branch `codex/pr2-phase1-calibration-safety`.
+- Scope:
+  - **#27-M1/M2 identity-toggle symmetry** (`vision_worker.py`, `vision_test.py`): `_identity_enrollment_active` now
+    also checks `analyzer.identity_check_enabled`; the `PROFILE_MISMATCH` decision branch in `vision_test.py` now
+    mirrors the existing `IDENTITY_UNCERTAIN` guard so a disabled identity toggle is honored symmetrically across
+    every decision branch that references identity state.
+  - **#27-L1-L7 UI language-refresh and control gaps**: `onboarding_toast.py` and `tray_flyout.py` now refresh the
+    eye-slide switch's accessible name on language change; `tray_flyout.py` no longer double-registers its language
+    listener; `posture_console.py`'s language-change handler no longer hardcodes a paused-state label and instead
+    calls `refresh()` so the state text reflects real monitoring state; `debug_ui.py`'s language-change handler
+    re-renders status/reason text from the live sample instead of resetting to init placeholders, and the
+    high-performance-FPS checkbox is now disabled during calibration and guarded against toggling mid-calibration,
+    matching the existing high-precision checkbox behavior; `tray_app.py` removed a dead, never-instantiated
+    `StatusPanel` class (~90 lines) and its unused imports, and worker/mode-failure error text shown in tray
+    notifications is now compressed to a single-line, length-bounded summary (`_short_error_text`) while the full
+    technical error is still printed to stderr.
+  - **#27-M4 relaxed-extension progress feedback** (`vision_worker.py`, `tray_app.py`, `i18n.py`): the production
+    dual-anchor calibration flow's background relaxed stage can silently extend up to `relaxed_max_extension_seconds`
+    (2s) beyond its nominal 5s window when samples are still insufficient, with no prior user feedback beyond the
+    initial "relax now" toast. `VisionWorker` now exposes a one-shot `take_calibration_extension_pending()` poll,
+    set once by `_maybe_finish_dual_anchor` when the nominal relaxed window has elapsed but `ready_to_finalize` is
+    still false and the bounded deadline has not yet been reached; `tray_app.py`'s existing 10Hz `_tick()` poll
+    surfaces this as a new tray toast (`tm_calib_extending`, zh/en) so the user knows collection is still active
+    rather than appearing stuck. Originally attempted via Codex delegation; two consecutive delegation attempts
+    failed on an unrelated Codex-session environment fault (`CreateProcessAsUserW failed: 1312`, Windows login
+    session error, zero files touched either time), so this item was implemented directly instead of retrying a
+    third time.
+  - **#26 CVLFace identity-model security/subprocess-robustness batch** (`identity_model_adapters.py`,
+    `identity_model_process.py`, `identity_verifier.py`, `tools/hydrate_p5_model_code.ps1`,
+    `tools/download_p5_models.ps1`, `tools/vit_kprpe_manifest.json`): delegated to a Codex agent given the
+    security-sensitive surface (`trust_remote_code=True` model loading, subprocess isolation, hash whitelisting).
+    Because self-reported "done, tests pass" summaries are not sufficient evidence for security-critical code, the
+    resulting diff was independently audited by a `code-reviewer` subagent before being trusted; that audit found 3
+    High-severity gaps and a related Medium finding, which were routed back to the same Codex thread for targeted
+    fixes, then re-audited:
+    - Hash-whitelist scan scope was widened from only the `models/vit_kprpe/` subtree to the entire model-cache root
+      (matching where the root is inserted at `sys.path[0]`), closing a path-shadowing bypass (e.g. a planted
+      `<model_root>/yaml.py` that would otherwise import ahead of the real `yaml` package); covered suffixes were
+      extended to `.py/.pyc/.pyo/.pyd/.so/.pth/.dll/.dylib`; symlinks and Windows reparse points (including
+      junctions, verified via `FILE_ATTRIBUTE_REPARSE_POINT` rather than the narrower `S_ISLNK`) are now rejected;
+      `sys.dont_write_bytecode` is set for the duration of the load to stop new unwhitelisted `.pyc` from being
+      generated.
+    - `pretrained_model/model.pt` (loaded via `torch.load`, i.e. pickle deserialization) is now a required,
+      hash-verified manifest entry; the hash check runs before `torch`/`transformers` are imported and before
+      `AutoModel.from_pretrained` executes any model code.
+    - Any model spec without a trusted manifest (currently the IR101 path) now fails closed with `ModelCacheError`
+      instead of silently skipping verification; the current production default (ViT/KP-RPE, confirmed via
+      `tray_app.py`, `debug_ui.py`, `identity_model_process.py`) is unaffected because it is fully covered by the
+      manifest.
+    - `IdentityVerifier.close()` no longer unconditionally closes a shared embedder via duck-typing; a new
+      `owns_embedder: bool = False` constructor parameter (default preserves existing shared-embedder behavior at
+      both production call sites) gates the cascade, matching the existing ownership convention already used by
+      `FaceEmbeddingPipeline`/`debug_ui.py`.
+  - **Post-re-audit follow-up, fixed directly (not re-delegated, small and well-scoped)**: the re-audit surfaced two
+    further items neither original pass had caught:
+    - `model.safetensors` — the file that actually initializes the model's weights at load time (loaded *after*
+      `model.pt`, overwriting its state dict) — was completely absent from the trusted manifest and therefore
+      unverified, meaning the `model.pt` hash protection could be bypassed by replacing the safetensors file to make
+      the identity check accept an attacker-chosen face. Added its SHA-256 to `tools/vit_kprpe_manifest.json` and to
+      `identity_model_adapters.py`'s `_REQUIRED_MANIFEST_FILES`, so the manifest cannot omit it. Updated
+      `test_identity_model_adapters.py`'s tampering-fixture to include and hash this file so the fail-closed test
+      still exercises the real required-file set.
+    - The repository's actual local model cache under `models/p5/cvlface_adaface_vit_base_kprpe_webface4m/` still
+      contained 11 stale `__pycache__/*.pyc` files from before the whitelist-widening fix existed. Under the new,
+      correctly-widened scan these are unapproved executables, so the real production model directory would have
+      failed `verify_model_code_integrity` and silently disabled identity checking (confirmed by reproducing the
+      failure locally before cleanup). Removed the stale `__pycache__` directories and added a cleanup step to
+      `tools/hydrate_p5_model_code.ps1` (after hydration, recursively remove `__pycache__` under both model roots) so
+      this cannot recur from a future hydration run.
+- Risk: the identity-model integrity changes are fail-closed by construction — a manifest gap, hash mismatch,
+  unapproved executable, or untrusted model spec now raises `ModelCacheError` and blocks loading rather than
+  degrading silently; this is a deliberate behavior change from the previous silent-skip posture and is the whole
+  point of the fix, not a regression. `IdentityVerifier.close()`'s new default preserves prior behavior at both
+  production call sites (`tray_app.py`, `debug_ui.py`), so no embedder-lifecycle change ships from this entry.
+  Calibration-flow and UI changes are additive (a new toast, corrected label refresh) or dead-code removal; no
+  decision-branch, threshold, or intervention-timing logic changed.
+- Verification from `C:\Users\aaabb\Documents\ICC驼背项目` (bundled `runtime\python311\python.exe`, this repo's
+  actual convention — pytest is not installed anywhere on this machine):
+  - `test_vision_worker.py` (26 tests, including `test_dual_anchor_worker_uses_bounded_relaxed_extension`),
+    `test_feature_toggles.py`, `test_debug_ui.py` (11 tests), `test_tray_flyout.py` (updated `_Switch` test double
+    to add the new `setAccessibleName` no-op it now needs) all passed with no regressions.
+  - `test_identity_model_adapters.py` and `test_identity_verifier.py` passed after both the Codex-delegated H1/H2/H3
+    fixes and the follow-up `model.safetensors`/fixture updates.
+  - Independently re-ran `verify_model_code_integrity(VIT_KPRPE_WEBFACE4M, model_path(...))` against the real local
+    model cache directory after cleanup: passes end-to-end with the updated manifest.
+  - `i18n._TEXTS['zh']`/`['en']` key sets compared programmatically: no gaps, `tm_calib_extending` present in both.
+  - `python -c "import tray_app"` succeeded after removing the dead `StatusPanel` class and its imports.
+  - `tools/hydrate_p5_model_code.ps1` re-parsed successfully via
+    `[System.Management.Automation.Language.Parser]::ParseFile` after the cleanup-step edit.
+  - Two independent adversarial reviews (`code-reviewer` subagent) were run against the #26 batch: the first
+    verdict was "needs changes before merge" (3 High, 5 Medium, 4 Low findings); after remediation the second
+    verdict confirmed H1/H2/H3/M1 fully fixed and flagged the two items above as the remaining blockers, both of
+    which are now fixed and independently re-verified in this entry.
+- Artifacts and privacy: no camera frame, face crop, embedding, or model weight was downloaded, generated, or
+  altered by this work beyond removing stale interpreter bytecode cache files (`__pycache__/*.pyc`, regenerable,
+  not source) under the untracked, per-machine `models/` directory, which remains outside version control. No
+  package, installer, or release artifact was built.
+- Gaps: the re-audit's remaining Medium/Low findings are deliberately deferred, not silently dropped:
+  - Windows reparse-point rejection currently uses the coarse `FILE_ATTRIBUTE_REPARSE_POINT` bit, which would also
+    reject OneDrive Files-On-Demand placeholder files if the model cache ever lived under an OneDrive-synced
+    folder; checked this machine directly (`fsutil reparsepoint query` on both `Documents` and `models/`) and
+    confirmed neither is a reparse point here, so this is not a live issue on this machine, but remains a
+    portability caveat for other deployments.
+  - The repository's symlink-rejection test silently no-ops on Windows without Developer Mode enabled (`OSError`
+    from `symlink_to` is caught and the assertion block never runs); the reparse-point/junction path is covered by
+    manual reasoning about `os.lstat`/`FILE_ATTRIBUTE_REPARSE_POINT` semantics, not by an executed test.
+  - `tools/hydrate_p5_model_code.ps1` still hydrates the IR101 code tree even though `identity_model_adapters.py`
+    now unconditionally rejects IR101 for lack of a trusted manifest; the script has no comment explaining this, so
+    a future maintainer could reasonably assume IR101 is loadable when it currently is not.
+  - No packaged EXE rebuild, self-test, live camera trial, or cross-machine hydration rerun was performed.
+  - #29 (package size reduction) remains unaddressed and unscoped; flagged to the user as an open question rather
+    than silently dropped.
+- Conclusion: all explicitly adopted PR-review items are implemented, independently re-verified past their
+  first-pass review findings, and ready to commit and push on the current branch; #29 and the deferred Medium/Low
+  hardening items above should be raised with the user as follow-up, not treated as resolved.
+
 ## 2026-08-14 (Asia/Shanghai) - Synchronize vision-mode documentation with current source
 
 - Source: user request to correct documentation after the recent Standard-mode, shared face-observation, CVLFace,

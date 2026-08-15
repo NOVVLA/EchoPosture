@@ -1,8 +1,12 @@
 param(
-    [string]$DestinationRoot = 'D:\Download\EchoPosture-P5\models'
+    [string]$DestinationRoot
 )
 
 $ErrorActionPreference = 'Stop'
+if ([string]::IsNullOrWhiteSpace($DestinationRoot)) {
+    $DestinationRoot = Join-Path (Split-Path -Parent $PSScriptRoot) 'models\p5'
+}
+$DestinationRoot = [IO.Path]::GetFullPath($DestinationRoot)
 $models = @(
     @{
         Name = 'cvlface_adaface_vit_base_kprpe_webface4m'

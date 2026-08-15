@@ -28,6 +28,9 @@ class _Switch:
     def is_on(self) -> bool:
         return True
 
+    def setAccessibleName(self, _value) -> None:
+        pass
+
 
 class _Monitor:
     def __init__(self) -> None:

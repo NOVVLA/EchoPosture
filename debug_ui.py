@@ -1251,6 +1251,7 @@ class DebugWindow(QMainWindow):
         self.calibrate_button.setText(_t("debug_dual_cancel_btn"))
         self.legacy_calibrate_button.setEnabled(False)
         self.precision_checkbox.setEnabled(False)
+        self.performance_checkbox.setEnabled(False)
         self.dual_calibration_timer.start(
             int(round(self.calibration_plan.preferred_seconds * 1000.0))
         )
@@ -1463,6 +1464,8 @@ class DebugWindow(QMainWindow):
         self._update_intervention(decision)
 
     def toggle_high_performance(self, enabled: bool) -> None:
+        if self._dual_calibration_accumulator is not None:
+            return
         target_fps = self.high_performance_fps if enabled else self.normal_fps
         self.timer.setInterval(self._interval_ms(target_fps))
         self.engine.set_capture_fps(target_fps)
@@ -1530,6 +1533,7 @@ class DebugWindow(QMainWindow):
         self.calibrate_button.setText(_t("debug_dual_calibrate_btn"))
         self.legacy_calibrate_button.setEnabled(True)
         self.precision_checkbox.setEnabled(True)
+        self.performance_checkbox.setEnabled(True)
 
     def _set_calibration_message(self, key: str, **kwargs: object) -> None:
         self._calibration_message_key = key
@@ -2161,8 +2165,12 @@ class DebugWindow(QMainWindow):
         周期刷新，会自动用新语言；这里只刷一次性的静态控件。
         """
         self.title_label.setText(_t("debug_panel_title"))
-        self.status_label.setText(_t("debug_status_init"))
-        self.reason_label.setText(_t("debug_reason_init"))
+        if self.current_sample is not None:
+            decision = self.analyzer.evaluate(self.current_sample)
+            self._show_metrics(self.current_sample, decision)
+        else:
+            self.status_label.setText(_t("debug_status_init"))
+            self.reason_label.setText(_t("debug_reason_init"))
         self.calibration_label.setText(
             _t(self._calibration_message_key, **self._calibration_message_kwargs)
         )

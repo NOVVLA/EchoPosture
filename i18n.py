@@ -82,6 +82,7 @@ _TEXTS: Dict[str, Dict[str, str]] = {
         # ---- tray_app: 托盘消息 ----
         "tm_worker_error": "监测已停止：{exc}",
         "tm_calib_relax_now": "舒适坐姿测量完成，现在可以自然放松。后台将测量约 5 秒，请保持自然放松直到完成。",
+        "tm_calib_extending": "放松姿势样本还不够，正在多花几秒继续采集，请稍候……",
         "tm_calib_ok": "双锚点采集完成，正在复验个人正常姿态范围；复验期间不累计静态暴露。",
         "tm_calib_fail_startup": "校准失败：{details}。请正对摄像头，并保持画面中只有一个人。",
         "tm_recal_ok": "双锚点重新采集完成，正在复验个人正常姿态范围。",
@@ -427,6 +428,7 @@ _TEXTS: Dict[str, Dict[str, str]] = {
         # ---- tray_app: 托盘消息 ----
         "tm_worker_error": "Monitoring stopped: {exc}",
         "tm_calib_relax_now": "Preferred-posture measurement is complete. Relax naturally now; background measurement continues for about 5 seconds, so remain relaxed until completion.",
+        "tm_calib_extending": "Still gathering a few more relaxed-posture samples, please hold on a moment longer…",
         "tm_calib_ok": "Two-anchor collection is complete. EchoPosture is validating your personal normal range; static exposure remains paused during this check.",
         "tm_calib_fail_startup": "Calibration failed: {details}. Face the camera and keep only one person in view.",
         "tm_recal_ok": "Two-anchor re-calibration collected; validating the personal normal range.",

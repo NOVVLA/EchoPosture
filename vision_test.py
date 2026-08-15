@@ -1299,6 +1299,8 @@ class HighPrecisionPostureAnalyzer(PostureAnalyzer):
                 True,
             )
         if state == "PROFILE_MISMATCH":
+            if not self.identity_check_enabled:
+                return None
             self._reset_risk_state()
             return PostureDecision("PROFILE_MISMATCH", sample.target_reason or "profile_mismatch", True)
         if state == "AWAY":

@@ -111,6 +111,25 @@ def test_async_submit_event_gate_and_close_clear_in_memory_state() -> None:
         assert not verifier.has_template
 
 
+def test_close_only_cascades_to_owned_embedder_once() -> None:
+    class ClosableEmbedder(PrecomputedEmbedder):
+        def __init__(self) -> None:
+            self.close_count = 0
+
+        def close(self) -> None:
+            self.close_count += 1
+
+    embedder = ClosableEmbedder()
+    shared_verifier = IdentityVerifier(embedder)
+    shared_verifier.close()
+    assert embedder.close_count == 0
+
+    verifier = IdentityVerifier(embedder, owns_embedder=True)
+    verifier.close()
+    verifier.close()
+    assert embedder.close_count == 1
+
+
 def test_new_candidate_session_cannot_reuse_confirmed_history() -> None:
     verifier = _verifier()
     try:
