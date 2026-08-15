@@ -8,19 +8,33 @@ startup calibration, camera monitoring, and reversible visual intervention.
 from __future__ import annotations
 
 import argparse
+import os
 import signal
 import sys
+import threading
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
+
+from windows_runtime_paths import RuntimePathBridgeError, preload_package_dll
+
+
+try:
+    preload_package_dll("torch", "c10.dll")
+except RuntimePathBridgeError:
+    # Compatibility monitoring does not require Torch. Optional P5 adapters
+    # surface their dependency error only when configured.
+    pass
 
 from PyQt5.QtCore import (
     QEasingCurve,
     QPointF,
     QPropertyAnimation,
     QRectF,
+    QObject,
     Qt,
     QTimer,
+    pyqtSignal,
 )
 from PyQt5.QtGui import (
     QBrush,
@@ -35,18 +49,23 @@ from PyQt5.QtGui import (
 from PyQt5.QtWidgets import (
     QApplication,
     QDialog,
-    QLabel,
     QMessageBox,
-    QPushButton,
-    QSlider,
     QStyle,
     QSystemTrayIcon,
     QWidget,
-    QVBoxLayout,
 )
 
 from gpu_blur_overlay import GpuBlurOverlayController
-from debug_ui import STATUS_TEXT
+from face_embedding import FaceEmbeddingPipeline
+from face_observation_enhancer import FaceEnhancedBackend, face_enhanced_backend_factories
+from identity_model_adapters import (
+    IR101_WEBFACE4M,
+    ModelCacheError,
+    ModelDependencyError,
+    VIT_KPRPE_WEBFACE4M,
+)
+from identity_model_process import IdentityModelProcessError, create_identity_model_adapter
+from identity_verifier import IdentityVerifier
 from i18n import _t, add_listener, remove_listener
 from onboarding_toast import (
     RED_SOFT,
@@ -58,6 +77,16 @@ from onboarding_toast import (
 )
 from posture_console import PostureConsoleWindow
 from tray_flyout import TrayFlyout
+from user_settings import UserSettings, load_user_settings, save_user_settings
+from vision_backend import CompatibilityBackend
+from vision_modes import (
+    VISION_MODE_COMPATIBILITY,
+    VISION_MODE_PROFESSIONAL_BETA,
+    VISION_MODE_STANDARD,
+    ModeAvailability,
+    detect_mode_availability,
+)
+from vision_tracking import TargetManager
 from vision_test import (
     CameraBlackFrameError,
     CameraPermissionError,
@@ -82,6 +111,15 @@ def _calibration_failure_details(result: CalibrationResult) -> str:
     )
 
 
+def _short_error_text(detail: object, max_length: int = 160) -> str:
+    """把原始异常/错误详情压缩成单行、限长的技术摘要，避免未翻译的长文本
+    或多行堆栈信息直接撑爆托盘气泡通知。"""
+    text = " ".join(str(detail).split())
+    if len(text) > max_length:
+        text = text[: max_length - 1].rstrip() + "…"
+    return text
+
+
 class _EngineProxy:
     """posture_console 通过 monitor.engine.set/get_capture_fps 调节采集帧率；
     真正的 VisionEngine 活在工作线程内，这里只做转发，调用方零改动。"""
@@ -94,6 +132,14 @@ class _EngineProxy:
 
     def get_capture_fps(self) -> float:
         return self._worker.get_capture_fps()
+
+
+class _ModeInitSignals(QObject):
+    progress = pyqtSignal(int, int, str)
+    fallback = pyqtSignal(int, str, str)
+    ready = pyqtSignal(int, str, object, bool)
+    failed = pyqtSignal(int, str)
+    identity_ready = pyqtSignal(object, object)
 
 
 class _CountdownRing(QWidget):
@@ -263,98 +309,6 @@ class StartupCalibrationDialog(QDialog):
         self.ring.set_values(max(self.remaining_seconds, 0), self.total_seconds)
 
 
-class StatusPanel(QWidget):
-    def __init__(self, monitor: "TrayMonitor") -> None:
-        super().__init__()
-        self.monitor = monitor
-        self.setWindowTitle("EchoPosture")
-        self.setWindowFlags(Qt.Tool | Qt.WindowStaysOnTopHint)
-        self.setFixedSize(320, 285)
-
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(18, 16, 18, 16)
-        layout.setSpacing(8)
-
-        self.status_label = QLabel()
-        self.dim_label = QLabel()
-        self.blur_label = QLabel()
-        self.max_dim_label = QLabel()
-        self.blur_scale_label = QLabel()
-        for label in (
-            self.status_label,
-            self.dim_label,
-            self.blur_label,
-            self.max_dim_label,
-            self.blur_scale_label,
-        ):
-            label.setFont(QFont("Microsoft YaHei", 11))
-            layout.addWidget(label)
-
-        self.max_dim_slider = QSlider(Qt.Horizontal)
-        self.max_dim_slider.setRange(0, 85)
-        self.max_dim_slider.setValue(round(self.monitor.overlay.max_dim_alpha * 100))
-        self.max_dim_slider.valueChanged.connect(self._visual_config_changed)
-        layout.addWidget(self.max_dim_slider)
-
-        self.blur_scale_slider = QSlider(Qt.Horizontal)
-        self.blur_scale_slider.setRange(0, 100)
-        self.blur_scale_slider.setValue(round(self.monitor.overlay.blur_scale * 100))
-        self.blur_scale_slider.valueChanged.connect(self._visual_config_changed)
-        layout.addWidget(self.blur_scale_slider)
-
-        self.max_effect_button = QPushButton(_t("max_effect"))
-        self.max_effect_button.clicked.connect(self.monitor.trigger_max_visual_effect)
-        layout.addWidget(self.max_effect_button)
-
-        layout.addStretch(1)
-        self.setStyleSheet(
-            """
-            QWidget { background: #f7f9fc; border: 1px solid #d8e0ea; }
-            QLabel { color: #172033; border: none; }
-            """
-        )
-
-        # 语言变更时刷新所有标签文本（按钮文字也跟着切）
-        add_listener(self._apply_texts)
-
-        self.refresh_timer = QTimer(self)
-        self.refresh_timer.timeout.connect(self.refresh)
-        self.refresh_timer.start(250)
-        self.refresh()
-
-    def _apply_texts(self) -> None:
-        """语言变更回调：刷新按钮文字。标签由 refresh() 自动用新模板重画。"""
-        self.max_effect_button.setText(_t("max_effect"))
-        self.refresh()
-
-    def closeEvent(self, event) -> None:
-        remove_listener(self._apply_texts)
-        super().closeEvent(event)
-
-    def refresh(self) -> None:
-        decision = self.monitor.last_decision
-        raw_status = decision.status if decision is not None else "WAITING"
-        # 内部码（如 GOOD/NEEDS_CALIB）经 STATUS_TEXT 映射 + _t() 翻译为本地化文本
-        status = _t(STATUS_TEXT.get(raw_status, "status.WAITING"))
-        dim = round(self.monitor.overlay.dim_level * 100)
-        blur = round(self.monitor.overlay.blur_level * 100)
-        self.status_label.setText(_t("sp_status", status=status))
-        self.dim_label.setText(_t("sp_dim", dim=dim))
-        self.blur_label.setText(_t("sp_blur", blur=blur))
-        self._refresh_control_labels()
-
-    def _visual_config_changed(self) -> None:
-        self.monitor.overlay.set_visual_config(
-            self.max_dim_slider.value() / 100.0,
-            self.blur_scale_slider.value() / 100.0,
-        )
-        self._refresh_control_labels()
-
-    def _refresh_control_labels(self) -> None:
-        self.max_dim_label.setText(_t("sp_max_dim", v=self.max_dim_slider.value()))
-        self.blur_scale_label.setText(_t("sp_blur_scale", v=self.blur_scale_slider.value()))
-
-
 class TrayMonitor:
     def __init__(
         self,
@@ -374,17 +328,46 @@ class TrayMonitor:
         self.analyzer = HighPrecisionPostureAnalyzer(
             auto_calibrate=False,
             calibrated_distance_cm=calibrated_distance_cm,
+            require_dual_anchor=True,
         )
-        # 摄像头 + MediaPipe + 评分全部活在 VisionWorker 工作线程；
-        # 主线程只低频取信箱快照，UI 不再被推理阻塞。
-        engine_factory = lambda: VisionEngine(
-            camera_id=camera_id, width=width, height=height
+        self.target_manager = TargetManager()
+        self.mode_availability = dict(detect_mode_availability())
+        self.user_settings = load_user_settings()
+        configured_mode = self.user_settings.vision_mode
+        configured_available = self.mode_availability.get(configured_mode)
+        self.vision_mode = (
+            configured_mode
+            if configured_available is not None and configured_available.available
+            else VISION_MODE_COMPATIBILITY
         )
-        self.worker = VisionWorker(
-            engine_factory=engine_factory,
-            analyzer=self.analyzer,
-            target_fps=fps,
-        )
+        self._target_fps = fps
+        self._mode_generation = 0
+        self._mode_operation = "idle"
+        self.vision_mode_switching = False
+        self.vision_mode_switch_error: Optional[str] = None
+        self._worker_started = False
+        self._identity_thread: Optional[threading.Thread] = None
+        self._mode_thread: Optional[threading.Thread] = None
+        self._mode_signals = _ModeInitSignals()
+        self._mode_signals.progress.connect(self._on_mode_progress)
+        self._mode_signals.fallback.connect(self._on_mode_fallback)
+        self._mode_signals.ready.connect(self._on_mode_ready)
+        self._mode_signals.failed.connect(self._on_mode_failed)
+        self._mode_signals.identity_ready.connect(self._on_identity_ready)
+        requested_identity_model = os.environ.get("ECHOPOSTURE_P5_IDENTITY_MODEL", "vit").lower()
+        identity_spec = IR101_WEBFACE4M if requested_identity_model == "ir101" else VIT_KPRPE_WEBFACE4M
+        try:
+            self.identity_model = create_identity_model_adapter(identity_spec)
+        except IdentityModelProcessError as exc:
+            self.identity_model = None
+            self.identity_model_error = str(exc)
+        else:
+            self.identity_model_error = None
+        self.identity_verifier: Optional[IdentityVerifier] = None
+        self.identity_embedding_pipeline: Optional[FaceEmbeddingPipeline] = None
+        # The worker is configured now but started only after mode selection.
+        # Camera/model startup therefore cannot block the Qt GUI thread.
+        self.worker = self._make_worker(self.vision_mode, self._mode_generation)
         self.engine = _EngineProxy(self.worker)
         self._shown_warning_keys: set[str] = set()
         self.overlay = GpuBlurOverlayController(enabled=gpu_blur_enabled)
@@ -392,15 +375,17 @@ class TrayMonitor:
         self.last_decision: Optional[PostureDecision] = None
         # 进行中的校准请求：(用途 "startup"/"recal", 此前是否在监测)
         self._awaiting_calibration: Optional[tuple] = None
+        self._calibration_prompt_context: Optional[tuple] = None
         self._stopping = False
         self._calibrated = False
         self._last_calibration_missing_fields: tuple[str, ...] = ()
         self._monitoring_started = False
         self._intervention_candidate_started_at: Optional[datetime] = None
+        self._intervention_episode_active = False
+        self._last_intervention_ended_at: Optional[datetime] = None
         self._manual_effect_until: Optional[datetime] = None
         self.calibration_dialog: Optional[StartupCalibrationDialog] = None
         self.onboarding_toast: Optional[OnboardingToast] = None
-        self.status_panel: Optional[StatusPanel] = None
         self.console: Optional[PostureConsoleWindow] = None
 
         self.tray = QSystemTrayIcon(self._icon(), self.app)
@@ -419,6 +404,232 @@ class TrayMonitor:
         self.countdown_timer.timeout.connect(self._countdown_step)
         self.countdown_timer.setInterval(1000)
 
+    def _make_worker(self, mode: str, generation: int) -> VisionWorker:
+        def compatibility_factory():
+            self._mode_signals.progress.emit(generation, 35, "onb_mode_loading_import")
+            return CompatibilityBackend(
+                lambda: VisionEngine(
+                    camera_id=self.camera_id,
+                    width=self.capture_width,
+                    height=self.capture_height,
+                )
+            )
+
+        def standard_factory():
+            from standard_pose_backend import StandardPoseBackend
+
+            self._mode_signals.progress.emit(generation, 35, "onb_mode_loading_import")
+            return StandardPoseBackend(
+                camera_id=self.camera_id,
+                width=self.capture_width,
+                height=self.capture_height,
+                capture_fps=self._target_fps,
+                startup_progress=lambda progress, key: self._mode_signals.progress.emit(
+                    generation, progress, key
+                ),
+            )
+
+        def professional_factory():
+            from professional_pose_backend import ProfessionalPoseBackend
+
+            self._mode_signals.progress.emit(generation, 35, "onb_mode_loading_import")
+            return ProfessionalPoseBackend(
+                camera_id=self.camera_id,
+                width=self.capture_width,
+                height=self.capture_height,
+                capture_fps=self._target_fps,
+                startup_progress=lambda progress, key: self._mode_signals.progress.emit(
+                    generation, progress, key
+                ),
+            )
+
+        raw_factories = {VISION_MODE_COMPATIBILITY: compatibility_factory}
+        if mode == VISION_MODE_STANDARD:
+            raw_factories[VISION_MODE_STANDARD] = standard_factory
+        elif mode == VISION_MODE_PROFESSIONAL_BETA:
+            raw_factories[VISION_MODE_PROFESSIONAL_BETA] = professional_factory
+        wrapped_factories = face_enhanced_backend_factories(raw_factories)
+        if mode not in wrapped_factories:
+            raise ValueError(f"unsupported production vision mode: {mode}")
+        return VisionWorker(
+            engine_factory=wrapped_factories[mode],
+            analyzer=self.analyzer,
+            target_fps=self._target_fps,
+            target_manager=self.target_manager,
+            identity_verifier=self.identity_verifier,
+            identity_embedding_pipeline=self.identity_embedding_pipeline,
+        )
+
+    def _mode_start_timeout(self, mode: str) -> float:
+        # The professional tier may build a CUDA context, load a 120 MB weight,
+        # and benchmark both candidates on its first run; 25 s cannot cover that.
+        return 90.0 if mode == VISION_MODE_PROFESSIONAL_BETA else 25.0
+
+    def _fallback_chain(self, mode: str, operation: str, previous_mode: str) -> list[str]:
+        """Ordered degradation targets, best first, without repeats.
+
+        Professional steps down through Standard so a GPU failure still leaves
+        the user on multi-person tracking rather than dropping to Compatibility.
+        """
+
+        def usable(candidate: str) -> bool:
+            return (
+                candidate != mode
+                and self.mode_availability.get(candidate, ModeAvailability(False)).available
+            )
+
+        chain: list[str] = []
+        if mode == VISION_MODE_PROFESSIONAL_BETA and usable(VISION_MODE_STANDARD):
+            chain.append(VISION_MODE_STANDARD)
+        if operation == "runtime" and usable(previous_mode) and previous_mode not in chain:
+            chain.append(previous_mode)
+        if mode != VISION_MODE_COMPATIBILITY and VISION_MODE_COMPATIBILITY not in chain:
+            chain.append(VISION_MODE_COMPATIBILITY)
+        return chain
+
+    def _begin_mode_initialization(self, mode: str, operation: str = "startup") -> bool:
+        availability = self.mode_availability.get(mode)
+        if availability is None or not availability.available or self.vision_mode_switching:
+            return False
+        self._mode_generation += 1
+        generation = self._mode_generation
+        self._mode_operation = operation
+        self.vision_mode_switching = True
+        self.vision_mode_switch_error = None
+        previous_mode = self.vision_mode
+        previous_worker = self.worker
+
+        def initialize() -> None:
+            if operation == "runtime" and previous_worker.is_alive():
+                previous_worker.stop(join_timeout=3.0)
+
+            failures: list[str] = []
+            chain = [mode, *self._fallback_chain(mode, operation, previous_mode)]
+            for index, candidate_mode in enumerate(chain):
+                candidate = self._make_worker(candidate_mode, generation)
+                try:
+                    candidate.start(timeout=self._mode_start_timeout(candidate_mode))
+                except Exception as exc:
+                    candidate.stop(join_timeout=1.0)
+                    failures.append(str(exc))
+                    if index + 1 < len(chain):
+                        # Announce where we are degrading to before trying it, so
+                        # the user sees the reason instead of a silent downgrade.
+                        self._mode_signals.fallback.emit(generation, str(exc), chain[index + 1])
+                    continue
+                self._mode_signals.progress.emit(generation, 100, "onb_mode_loading_camera")
+                if self._stopping or generation != self._mode_generation:
+                    candidate.stop(join_timeout=1.0)
+                    return
+                self._mode_signals.ready.emit(generation, candidate_mode, candidate, index > 0)
+                return
+            self._mode_signals.failed.emit(generation, "; ".join(failures) or "no usable vision mode")
+
+        thread = threading.Thread(
+            target=initialize,
+            name=f"VisionModeInit-{generation}",
+            daemon=True,
+        )
+        self._mode_thread = thread
+        thread.start()
+        return True
+
+    def _on_mode_progress(self, generation: int, progress: int, message_key: str) -> None:
+        if generation != self._mode_generation:
+            return
+        if self.onboarding_toast is not None:
+            self.onboarding_toast.set_loading_progress(progress, message_key)
+
+    def _on_mode_fallback(self, generation: int, detail: str, fallback_mode: str) -> None:
+        if generation != self._mode_generation:
+            return
+        self.vision_mode_switch_error = detail
+        if self.onboarding_toast is not None:
+            self.onboarding_toast.show_mode_failure(detail, fallback_mode)
+        else:
+            self.tray.showMessage(
+                "EchoPosture",
+                _t("vision_mode_switch_failed", detail=detail),
+                QSystemTrayIcon.Warning,
+                5000,
+            )
+
+    def _on_mode_ready(
+        self,
+        generation: int,
+        mode: str,
+        worker: VisionWorker,
+        used_fallback: bool,
+    ) -> None:
+        if generation != self._mode_generation or self._stopping:
+            worker.stop(join_timeout=1.0)
+            return
+        operation = self._mode_operation
+        self.worker = worker
+        self.engine = _EngineProxy(worker)
+        worker.identity_verifier = self.identity_verifier
+        worker.identity_embedding_pipeline = self.identity_embedding_pipeline
+        self.vision_mode = mode
+        self._worker_started = True
+        self.vision_mode_switching = False
+        self._mode_operation = "idle"
+        self.target_manager.reset()
+        ask_on_startup = self.user_settings.ask_on_startup
+        if operation == "startup":
+            ask_on_startup = False
+        self.user_settings = UserSettings(mode, ask_on_startup)
+        try:
+            save_user_settings(self.user_settings)
+        except OSError as exc:
+            print(f"Could not save EchoPosture settings: {exc}", file=sys.stderr)
+
+        if self.onboarding_toast is not None:
+            self.onboarding_toast.complete_mode(mode)
+        elif operation == "runtime":
+            self._calibrated = False
+            self._monitoring_started = False
+            self._start_calibration_prompt("recal", True)
+        if used_fallback:
+            self.vision_mode_switch_error = self.vision_mode_switch_error or "fallback"
+
+    def _on_mode_failed(self, generation: int, detail: str) -> None:
+        if generation != self._mode_generation:
+            return
+        self.vision_mode_switching = False
+        self._mode_operation = "idle"
+        self.vision_mode_switch_error = detail
+        if self.onboarding_toast is not None:
+            self.onboarding_toast.show_terminal_failure(detail)
+        self.tray.showMessage(
+            "EchoPosture",
+            _t("tm_worker_error", exc=_short_error_text(detail)),
+            QSystemTrayIcon.Warning,
+            5000,
+        )
+        QTimer.singleShot(0, self.stop)
+
+    def request_vision_mode(self, mode: str) -> bool:
+        if self._stopping or self.vision_mode_switching or self.calibration_dialog is not None:
+            return False
+        availability = self.mode_availability.get(mode)
+        if availability is None or not availability.available:
+            self.vision_mode_switch_error = _t(
+                availability.reason_key if availability is not None else "vision_mode_switch_failed",
+                detail=mode,
+            )
+            return False
+        if mode == self.vision_mode:
+            return True
+        self.overlay.force_clear()
+        return self._begin_mode_initialization(mode, operation="runtime")
+
+    def set_ask_mode_on_startup(self, ask: bool) -> None:
+        self.user_settings = UserSettings(self.vision_mode, bool(ask))
+        try:
+            save_user_settings(self.user_settings)
+        except OSError as exc:
+            print(f"Could not save EchoPosture settings: {exc}", file=sys.stderr)
+
     def start(self, show_calibration: bool = True) -> None:
         if not show_calibration:
             # --self-test：完全同步的本地路径，不启动工作线程
@@ -427,15 +638,65 @@ class TrayMonitor:
             self.run_startup_self_test()
             return
 
-        try:
-            self.worker.start(timeout=15.0)
-        except CameraPermissionError as exc:
-            self._show_camera_permission_warning(str(exc))
-            raise
         self.tray.show()
         self._show_pending_screen_capture_warning()
         self.timer.start()
+        self._start_identity_preparation()
         self._start_onboarding_prompt()
+
+    def _start_identity_preparation(self) -> None:
+        if self._identity_thread is not None or self.identity_model is None:
+            return
+        self._identity_thread = threading.Thread(
+            target=self._prepare_identity_verifier,
+            name="IdentityModelInit",
+            daemon=True,
+        )
+        self._identity_thread.start()
+
+    def _prepare_identity_verifier(self) -> None:
+        """Load the repository-bundled model before the first camera sample.
+
+        Identity verification is deliberately fail-open for posture capture:
+        a missing optional runtime dependency or damaged cache disables only
+        the identity gate and records a diagnostic reason.
+        """
+        if (
+            self.identity_verifier is not None
+            or self.identity_model_error is not None
+            or self.identity_model is None
+        ):
+            return
+        try:
+            self.identity_model.load()
+        except (
+            IdentityModelProcessError,
+            ModelCacheError,
+            ModelDependencyError,
+            OSError,
+            RuntimeError,
+        ) as exc:
+            self.identity_model_error = str(exc)
+            print(f"P5 identity verification unavailable: {exc}", file=sys.stderr)
+            return
+        verifier = IdentityVerifier(self.identity_model)
+        pipeline = FaceEmbeddingPipeline(self.identity_model)
+        if not self._stopping:
+            self._mode_signals.identity_ready.emit(verifier, pipeline)
+
+    def _on_identity_ready(
+        self,
+        verifier: IdentityVerifier,
+        pipeline: FaceEmbeddingPipeline,
+    ) -> None:
+        if self._stopping:
+            pipeline.close()
+            verifier.close()
+            return
+        self.identity_verifier = verifier
+        self.identity_embedding_pipeline = pipeline
+        self.worker.identity_verifier = verifier
+        self.worker.identity_embedding_pipeline = pipeline
 
     def stop(self) -> None:
         if self._stopping:
@@ -452,22 +713,28 @@ class TrayMonitor:
         if self.calibration_dialog is not None:
             self.calibration_dialog.close()
             self.calibration_dialog = None
-        if self.status_panel is not None:
-            self.status_panel.close()
-            self.status_panel = None
         if self.console is not None:
             self.console.close()
             self.console = None
         self.overlay.force_clear()
         self.overlay.close()
         self.worker.stop(join_timeout=2.0)
+        if self.identity_embedding_pipeline is not None:
+            self.identity_embedding_pipeline.close()
+            self.identity_embedding_pipeline = None
+        if self.identity_verifier is not None:
+            self.identity_verifier.close()
+            self.identity_verifier = None
+        if self.identity_model is not None:
+            self.identity_model.close()
         self.tray.hide()
         self.app.quit()
 
     def run_startup_self_test(self) -> bool:
-        """--self-test 专用：主线程同步完成 校准→单次评估。
+        """--self-test 专用：主线程同步完成 legacy 单帧校准→单次评估。
 
         MediaPipe/摄像头的构造、使用、释放都在本线程内完成，不经工作线程。
+        This is a camera/runtime-chain check, not production scientific calibration.
         """
         engine = VisionEngine(
             camera_id=self.camera_id,
@@ -493,7 +760,7 @@ class TrayMonitor:
                 missing_fields.update(calibration_sample_missing_fields(sample))
             averaged = average_calibration_sample(samples)
             self._calibrated = averaged is not None and self.analyzer.set_baseline_from_sample(
-                averaged, self.calibrated_distance_cm
+                averaged, self.calibrated_distance_cm, legacy_debug=True
             )
             self._last_calibration_missing_fields = (
                 tuple(sorted(missing_fields)) if not self._calibrated else ()
@@ -512,11 +779,8 @@ class TrayMonitor:
             return
         if self.onboarding_toast is not None or self.calibration_dialog is not None:
             return
-        # 后台重采 18 帧并定基线；UI 全程不阻塞，结果经 _tick 的回执分支处理
         was_monitoring = self.worker.is_monitoring_active()
-        self.worker.begin_calibration_sampling()
-        self._awaiting_calibration = ("recal", was_monitoring)
-        self.worker.finalize_calibration(self.calibrated_distance_cm, sample_count=18)
+        self._start_calibration_prompt("recal", was_monitoring)
 
     def _tick(self) -> None:
         if self._stopping:
@@ -526,6 +790,14 @@ class TrayMonitor:
         if error is not None:
             self._on_worker_error(error)
             return
+
+        if self.worker.take_calibration_extension_pending():
+            self.tray.showMessage(
+                "EchoPosture",
+                _t("tm_calib_extending"),
+                QSystemTrayIcon.Information,
+                2000,
+            )
 
         result = self.worker.take_calibration_result()
         if result is not None:
@@ -549,9 +821,10 @@ class TrayMonitor:
         if isinstance(exc, (CameraPermissionError, CameraBlackFrameError)):
             self._handle_camera_failure(exc)
             return
+        print(f"[EchoPosture] worker error: {exc!r}")
         self.tray.showMessage(
             "EchoPosture",
-            _t("tm_worker_error", exc=exc),
+            _t("tm_worker_error", exc=_short_error_text(exc)),
             QSystemTrayIcon.Warning,
             5000,
         )
@@ -594,6 +867,8 @@ class TrayMonitor:
         if result.ok:
             self._calibrated = True
             self._intervention_candidate_started_at = None
+            self._intervention_episode_active = False
+            self._last_intervention_ended_at = None
             self._manual_effect_until = None
             self.overlay.force_clear()
             if self._monitoring_started or was_monitoring:
@@ -637,8 +912,17 @@ class TrayMonitor:
         return False
 
     def _start_onboarding_prompt(self) -> None:
-        """右下角开场弹窗：用户拨开滑条开关后，弹窗谢幕，再进入校准倒计时。"""
-        self.onboarding_toast = OnboardingToast()
+        """Show mode selection/loading before any production camera backend starts."""
+        persisted_mode = None
+        if not self.user_settings.ask_on_startup:
+            persisted_mode = self.vision_mode
+        self.onboarding_toast = OnboardingToast(
+            self.mode_availability,
+            persisted_mode=persisted_mode,
+        )
+        self.onboarding_toast.mode_selected.connect(
+            lambda mode: self._begin_mode_initialization(mode, operation="startup")
+        )
         self.onboarding_toast.finished.connect(self._on_onboarding_finished)
         self.onboarding_toast.show_bottom_right()
 
@@ -648,7 +932,12 @@ class TrayMonitor:
             return
         self._start_calibration_prompt()
 
-    def _start_calibration_prompt(self) -> None:
+    def _start_calibration_prompt(
+        self,
+        purpose: str = "startup",
+        was_monitoring: bool = False,
+    ) -> None:
+        self._calibration_prompt_context = (purpose, was_monitoring)
         self.calibration_dialog = StartupCalibrationDialog(seconds=5)
         self.calibration_dialog.show()
         self.calibration_dialog.raise_()
@@ -667,9 +956,18 @@ class TrayMonitor:
         self.calibration_dialog.close()
         self.calibration_dialog = None
 
-        # 让工作线程平均样本并定基线；结果经 _tick 的回执分支处理
-        self._awaiting_calibration = ("startup", False)
-        self.worker.finalize_calibration(self.calibrated_distance_cm, sample_count=1)
+        # The visible five seconds measured only the preferred posture. Close
+        # that UI first, then tell the user they may relax while the worker
+        # ignores the transition and collects the relaxed anchor in the background.
+        self._awaiting_calibration = self._calibration_prompt_context or ("startup", False)
+        self._calibration_prompt_context = None
+        self.worker.complete_preferred_calibration(self.calibrated_distance_cm)
+        self.tray.showMessage(
+            "EchoPosture",
+            _t("tm_calib_relax_now"),
+            QSystemTrayIcon.Information,
+            2200,
+        )
 
     def _start_monitoring(self) -> None:
         if self._monitoring_started:
@@ -685,19 +983,20 @@ class TrayMonitor:
 
     def pause_monitoring(self) -> bool:
         """暂停监测并清理覆盖层；启动流程拒绝操作时返回 False。"""
-        if self._stopping:
+        if self._stopping or self._awaiting_calibration is not None:
             return False
         if self.onboarding_toast is not None or self.calibration_dialog is not None:
             return False
         self.worker.pause()
         self._intervention_candidate_started_at = None
+        self._intervention_episode_active = False
         self._manual_effect_until = None
         self.overlay.force_clear()
         return True
 
     def resume_monitoring(self) -> bool:
         """恢复监测；若启动流程尚未结束则返回 False。"""
-        if self._stopping:
+        if self._stopping or self._awaiting_calibration is not None:
             return False
         if self.onboarding_toast is not None or self.calibration_dialog is not None:
             return False
@@ -750,17 +1049,41 @@ class TrayMonitor:
 
     def _should_intervene(self, decision: PostureDecision) -> bool:
         if decision.status not in {"BAD", "CRITICAL"}:
+            if getattr(self, "_intervention_episode_active", False):
+                self._last_intervention_ended_at = datetime.now()
+            self._intervention_episode_active = False
             self._intervention_candidate_started_at = None
             return False
-        if decision.risk_score < 45.0 or decision.sustained_seconds < 12.0:
+        scientific = decision.calibration_quality > 0.0
+        exposure_seconds = (
+            decision.exposure_seconds if scientific else decision.sustained_seconds
+        )
+        posture_deviation = (
+            decision.posture_deviation if scientific else decision.risk_score / 100.0
+        )
+        confidence_ok = not scientific or decision.confidence >= 0.65
+        if (
+            posture_deviation < 0.70
+            or exposure_seconds < 12.0
+            or not confidence_ok
+        ):
             self._intervention_candidate_started_at = None
             return False
 
         now = datetime.now()
+        if getattr(self, "_intervention_episode_active", False):
+            return True
+        last_ended = getattr(self, "_last_intervention_ended_at", None)
+        if last_ended is not None and (now - last_ended).total_seconds() < 60.0:
+            self._intervention_candidate_started_at = None
+            return False
         if self._intervention_candidate_started_at is None:
             self._intervention_candidate_started_at = now
             return False
-        return (now - self._intervention_candidate_started_at).total_seconds() >= 3.0
+        confirmed = (now - self._intervention_candidate_started_at).total_seconds() >= 3.0
+        if confirmed:
+            self._intervention_episode_active = True
+        return confirmed
 
     def _tray_activated(self, reason) -> None:
         if reason == QSystemTrayIcon.DoubleClick:

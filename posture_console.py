@@ -45,6 +45,7 @@ from PyQt5.QtGui import (
 from PyQt5.QtSvg import QGraphicsSvgItem, QSvgRenderer
 from PyQt5.QtWidgets import (
     QApplication,
+    QCheckBox,
     QGraphicsItem,
     QGraphicsObject,
     QGraphicsScene,
@@ -59,6 +60,7 @@ from PyQt5.QtWidgets import (
 
 from debug_ui import STATUS_TEXT
 from i18n import _t, add_listener, remove_listener
+from mode_wheel_selector import ModeWheelSelector
 
 # ============================================================
 # 配色（取自 ui/index.html 的 :root，仅复用数值，不读取文件）
@@ -623,6 +625,7 @@ class ArtView(QGraphicsView):
         self._bg_pixmap: Optional[QPixmap] = None
         self.drag_bar: Optional["DragBar"] = None
         self.side_panel: Optional["SidePanel"] = None
+        self.mode_wheel: Optional[ModeWheelSelector] = None
 
         # 左下状态读出 + 右下提示（叠加在视图上，保持清晰、不随场景缩放）
         self.readout_title = self._mk_label("SYSTEM", 8, SILVER_LO, 4.2)
@@ -641,8 +644,9 @@ class ArtView(QGraphicsView):
 
     def _on_language_changed(self) -> None:
         """语言变更回调：刷新所有静态标签文本。"""
-        self.readout_state.setText(_t("console_state_paused"))
         self.hint.setText(_t("console_hint"))
+        # 状态行反映真实监测状态，而非固定显示"已暂停"（refresh() 内部会用新语言重算文案）
+        self.refresh()
 
     def _mk_label(self, text: str, pt: int, color: QColor, spacing: float) -> QLabel:
         # 浮层挂在 viewport 上，确保始终显示在场景渲染之上
@@ -669,9 +673,18 @@ class ArtView(QGraphicsView):
         self._render_background()
         self._place_overlays()
 
-    def attach_overlays(self, drag_bar: "DragBar", side_panel: "SidePanel") -> None:
+    def attach_overlays(
+        self,
+        drag_bar: "DragBar",
+        side_panel: "SidePanel",
+        mode_wheel: ModeWheelSelector,
+    ) -> None:
         self.drag_bar = drag_bar
         self.side_panel = side_panel
+        self.mode_wheel = mode_wheel
+        # The bottom wheel replaces the old instructional hint. Keeping both
+        # forces the hint across the central spine at compact desktop sizes.
+        self.hint.setVisible(mode_wheel is None)
         self._place_overlays()
 
     def _place_overlays(self) -> None:
@@ -693,18 +706,37 @@ class ArtView(QGraphicsView):
             self.side_panel.setGeometry(x, y, sw, sh)
             side_left = x
 
+        # The circular selector continues below the viewport. Only its upper
+        # third is visible, so it reads as a restrained mechanical wheel.
+        if self.mode_wheel is not None:
+            wheel_x = max(0, (side_left - self.mode_wheel.width()) // 2)
+            self.mode_wheel.move(wheel_x, h - self.mode_wheel.height() + _scaled(2))
+
         # 左下状态读出
         self.readout_title.adjustSize()
         self.readout_state.adjustSize()
         self.readout_mods.adjustSize()
-        self.readout_title.move(_scaled(20), h - _scaled(20) - _scaled(18) - _scaled(8) - self.readout_mods.height()
-                                - self.readout_state.height() - self.readout_title.height())
-        self.readout_state.move(_scaled(20), self.readout_title.y() + self.readout_title.height() + _scaled(6))
-        self.readout_mods.move(_scaled(20), self.readout_state.y() + self.readout_state.height() + _scaled(8))
+        readout_gap_1 = _scaled(6)
+        readout_gap_2 = _scaled(8)
+        readout_block_h = (
+            self.readout_title.height()
+            + readout_gap_1
+            + self.readout_state.height()
+            + readout_gap_2
+            + self.readout_mods.height()
+        )
+        readout_y = h - _scaled(20) - readout_block_h
+        if self.mode_wheel is not None:
+            readout_y = min(readout_y, h - self.mode_wheel.height() - readout_block_h - _scaled(8))
+        self.readout_title.move(_scaled(20), readout_y)
+        self.readout_state.move(_scaled(20), self.readout_title.y() + self.readout_title.height() + readout_gap_1)
+        self.readout_mods.move(_scaled(20), self.readout_state.y() + self.readout_state.height() + readout_gap_2)
 
         # 右下提示（避让右侧控制栏）
-        self.hint.adjustSize()
-        self.hint.move(side_left - self.hint.width() - _scaled(20), h - self.hint.height() - _scaled(14))
+        if self.hint.isVisible():
+            self.hint.adjustSize()
+            hint_y = h - self.hint.height() - _scaled(14)
+            self.hint.move(side_left - self.hint.width() - _scaled(20), hint_y)
 
     def _render_background(self) -> None:
         """把“深邃亮光银”径向渐变 + 暗角预渲染成一张 pixmap，仅尺寸变化时重建。"""
@@ -814,6 +846,9 @@ class SidePanel(QWidget):
                 padding: 7px; border-radius: 6px;
             }
             QPushButton:hover { background: rgba(255,47,67,0.18); color: #ffffff; }
+            QCheckBox { color: #9aa0a8; spacing: 7px; }
+            QCheckBox::indicator { width: 12px; height: 12px; border: 1px solid #5a5f66; border-radius: 2px; }
+            QCheckBox::indicator:checked { background: #ff3145; border-color: #ff6473; }
             QSlider::groove:horizontal { height: 4px; background: transparent; }
             QSlider::sub-page:horizontal { height: 4px; background: #ff3145; border-radius: 2px; }
             QSlider::add-page:horizontal { height: 4px; background: #3a3f47; border-radius: 2px; }
@@ -861,6 +896,10 @@ class SidePanel(QWidget):
         self.blur_scale_slider.setMinimumHeight(_scaled(22))
         layout.addWidget(self.blur_scale_slider)
 
+        self.ask_mode_checkbox = QCheckBox(_t("console_mode_ask_startup"))
+        self.ask_mode_checkbox.setFont(QFont("Microsoft YaHei", _scaled(8)))
+        layout.addWidget(self.ask_mode_checkbox)
+
         layout.addSpacing(_scaled(8))
         self.max_effect_button = QPushButton(_t("max_effect"))
         self.max_effect_button.setFont(QFont("Microsoft YaHei", _scaled(9)))
@@ -876,6 +915,7 @@ class SidePanel(QWidget):
         """语言变更回调：刷新标题、按钮文字。状态标签由 refresh() 自动刷新。"""
         self.title_label.setText(_t("console_side_title"))
         self.max_effect_button.setText(_t("max_effect"))
+        self.ask_mode_checkbox.setText(_t("console_mode_ask_startup"))
 
     def add_control_row(self, widget: QWidget) -> None:
         """扩展点：未来要加控制项时调用，自动插在测试按钮之前。"""
@@ -917,10 +957,15 @@ class PostureConsoleWindow(QWidget):
         # 控制栏与拖动条作为视图浮层（挂在 viewport 上），坐在同一渐变背景之上
         self.drag_bar = DragBar(self.view.viewport())
         self.side = SidePanel(self, parent=self.view.viewport())
+        self.mode_wheel = ModeWheelSelector(
+            getattr(self.monitor, "mode_availability", {}),
+            getattr(self.monitor, "vision_mode", "compatibility"),
+            parent=self.view.viewport(),
+        )
 
         self._build_scene()
         self._wire_side_panel()
-        self.view.attach_overlays(self.drag_bar, self.side)
+        self.view.attach_overlays(self.drag_bar, self.side, self.mode_wheel)
 
         # 250ms 刷新：从 monitor 拉状态，同步眼睛/椎骨/读出/侧栏
         self.refresh_timer = QTimer(self)
@@ -1078,6 +1123,16 @@ class PostureConsoleWindow(QWidget):
         self.side.max_dim_slider.valueChanged.connect(self._on_slider_changed)
         self.side.blur_scale_slider.valueChanged.connect(self._on_slider_changed)
         self.side.max_effect_button.clicked.connect(self.monitor.trigger_max_visual_effect)
+        self.side.ask_mode_checkbox.toggled.connect(self.monitor.set_ask_mode_on_startup)
+        self.mode_wheel.mode_requested.connect(self._on_mode_requested)
+
+    def _on_mode_requested(self, mode: str) -> None:
+        if mode == getattr(self.monitor, "vision_mode", None):
+            self.mode_wheel.set_busy(False)
+            return
+        if not self.monitor.request_vision_mode(mode):
+            self.mode_wheel.set_busy(False)
+            self.mode_wheel.set_current_mode(self.monitor.vision_mode)
 
     # ---- 入场动画 ----
     def _run_entrance(self) -> None:
@@ -1217,6 +1272,16 @@ class PostureConsoleWindow(QWidget):
         self.side.blur_label.setText(_t("sp_blur", blur=blur))
         self.side.max_dim_label.setText(_t("sp_max_dim", v=self.side.max_dim_slider.value()))
         self.side.blur_scale_label.setText(_t("sp_blur_scale", v=self.side.blur_scale_slider.value()))
+        settings = getattr(self.monitor, "user_settings", None)
+        ask_on_startup = bool(getattr(settings, "ask_on_startup", True))
+        if self.side.ask_mode_checkbox.isChecked() != ask_on_startup:
+            self.side.ask_mode_checkbox.blockSignals(True)
+            self.side.ask_mode_checkbox.setChecked(ask_on_startup)
+            self.side.ask_mode_checkbox.blockSignals(False)
+        switching = bool(getattr(self.monitor, "vision_mode_switching", False))
+        self.mode_wheel.set_busy(switching)
+        if not switching:
+            self.mode_wheel.set_current_mode(getattr(self.monitor, "vision_mode", "compatibility"))
 
         # 左下状态行（仅变化时更新）
         if monitoring:
@@ -1239,4 +1304,5 @@ class PostureConsoleWindow(QWidget):
         remove_listener(self._on_language_changed)
         remove_listener(self.view._on_language_changed)
         remove_listener(self.side._on_language_changed)
+        remove_listener(self.mode_wheel._on_language_changed)
         super().closeEvent(event)

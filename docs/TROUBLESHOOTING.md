@@ -18,7 +18,7 @@ original report private until it has been checked for personal paths or other se
 | Application does not start | Extract the whole ZIP; confirm `runtime\python311\python.exe` and `tray_app.py` exist | Run the self-test and inspect its startup error |
 | Camera cannot open | Windows camera privacy settings; camera in use by another app; physical shutter | Close competing apps, grant desktop-app camera access, retry |
 | Camera opens but self-test reports dark or unusable frames | Lens cover, lighting, virtual camera, wrong device | Improve front lighting or select another camera index in source diagnostics |
-| Startup calibration fails | Face and shoulders visible; one person in frame; stable upright pose | Reposition camera, improve lighting, retry calibration |
+| Startup calibration fails | Face, shoulders, ears and upper torso visible; one person; stable preferred/relaxed stages | Reposition camera, improve lighting, remain still for both stages, retry calibration |
 | Tray icon is missing | Notification-area overflow; process exited; startup warning behind another window | Expand hidden tray icons, then run the self-test |
 | Console does not open | App finished onboarding and calibration; tray icon is active | Double-click the tray icon; review any tray warning |
 | Dimming works but blur does not | Native-host stage and `mode`/reason in diagnostics | Allow compositor fallback or use `--disable-gpu-blur` to isolate the host |
@@ -37,15 +37,16 @@ Expected stages:
 [4/4] Tray monitor self-test
 ```
 
-For a complete pass, all four stages exit `0`; the tray stage reports `startup_calibrated=True` and `baseline=True`.
+For a complete pass, all four stages exit `0`; the tray stage reports that the camera and runtime chain started. The
+self-test's legacy one-frame baseline is not evidence that the production two-anchor scientific calibration passed.
 Interpret failures by stage:
 
 - Stage 1 only: native overlay or desktop-capture problem. Monitoring may still run through the PyQt compositor
   fallback, but native blur is not verified.
 - Stage 2 only: PyQt platform plugin, display, or packaged module problem.
 - Stage 3 only: camera, OpenCV, MediaPipe resource, or one-frame landmark path problem.
-- Stage 4 only: camera sampling or startup calibration problem. This can fail when no usable face or shoulder sample is
-  visible even if the package files are intact.
+- Stage 4 only: camera sampling or startup runtime problem. Production calibration can still fail later if either the
+  visible 5-second preferred stage or the background relaxed stage has fewer than five quality-gated samples.
 - Several missing-file failures: incomplete extraction or an incorrectly assembled package.
 
 An environment-sensitive failure is still a failed check. Record the exact stage and observation instead of reporting
@@ -110,17 +111,59 @@ the default camera first.
 
 ## Dark Frames and Calibration Failure
 
-Camera-open success does not prove that usable landmarks are available. EchoPosture needs at least a visible face or
-usable shoulder/torso measurement to establish a baseline.
+Camera-open success does not prove that usable landmarks are available. EchoPosture's production path needs complete,
+single-person, quality-gated samples in both calibration stages; it does not silently promote one frame to a baseline.
 
 - Face the camera with even front lighting; avoid a bright window behind you.
 - Keep the face, both shoulders, and upper torso in frame.
 - Remove lens covers and verify that the preview is not black.
-- Keep one person in frame and remain still during the five-second countdown.
-- Recalibrate after moving the camera, chair, or monitor.
+- Keep one person in frame. Hold the preferred posture throughout the visible 5-second countdown; relax only after the
+  prompt, then remain reasonably still during the background relaxed measurement until completion.
+- A moving target, low visibility, turned head, temporary target uncertainty, or missing keypoint skips that frame but
+  preserves earlier valid samples. Multiple people or an ambiguous target reset the current anchor because identity
+  contamination cannot be averaged away.
+- Hip visibility gates only hip-dependent torso features. Clear shoulders and face measurements can still contribute
+  to calibration when the hips are less visible.
+- Moving closer to or farther from the camera does not by itself require recalibration. Uniform body scale changes
+  remain measurable through normalized posture features. Recalibrate after moving or rotating the camera, chair, or
+  monitor when the viewing geometry itself changes. The compatibility backend does not promise a universal
+  camera-motion detector; supported reference/denominator failures pause exposure as `OBSERVING`, while unresolved
+  camera moves still require manual recalibration.
+- Remain naturally relaxed until the relaxed measurement completes. The app then briefly validates that the
+  target-locked measurements still fall in the two-anchor personal normal range. This validation reports `OBSERVING`
+  and pauses exposure; staying in the relaxed calibration ending pose must not create a static-exposure episode.
+- Small landmark or posture changes remain normal variation. A larger corroborated change first reports
+  `ADJUSTING` for about two seconds; returning to the personal range during that interval never opens WATCH or adds
+  exposure. Only a sustained, independently supported change can enter WATCH.
+- A clear side-recline can still be detected when the shoulders stay parallel: pelvis-relative trunk lean is allowed
+  as a single lateral evidence channel only after it clears the explicit product reliability gate. If the posture is
+  already corroborated and remains static for about a minute, the Debug UI may show a small bounded static-hold add-on;
+  it is supporting evidence only and cannot turn a normal posture into a reminder.
 
-A successful debug preview with a failed tray calibration usually means the sample did not contain sufficient usable
-landmarks during the short calibration window, not that the tray icon itself is broken.
+A successful debug preview with a failed tray calibration usually means one of the two stages did not contain enough
+quality-gated samples, not that the tray icon itself is broken. The debug panel's one-frame button is an explicit legacy
+path and must not be used as proof of scientific calibration.
+
+The preferred and relaxed poses are not required to look visibly different. They only establish the lower and upper
+ends of each personal normal-feature range, so an identical or near-identical pair is valid. Do not deliberately slump
+to make calibration pass. A range-separation or “did not exceed noise” failure indicates stale behavior; current
+calibration fails only for insufficient stage samples, target contamination, or no posture feature with enough valid
+values in both stages. The Debug UI red failure card shows the specific reason and both valid-sample counts.
+
+## Numeric Reliability Report
+
+To collect repeatability evidence deliberately, run the command from the repository root:
+
+```text
+runtime\python311\python.exe tools\collect_posture_reliability.py --frames 200 --output report.json
+```
+
+The command prompts for two equal numeric sampling blocks with a short transition between them; this validation tool
+is separate from the production UI timing path. The report contains only numeric feature statistics, descriptive
+anchor ranges and deltas, runtime noise bands and response scales, hardware/resolution/backend/model metadata, sample
+counts, and an explicit unverified-items list. Anchor separation is reported for audit and never gates calibration.
+Without `--output`, the JSON is printed and no report is written. This command does not establish clinical validity
+or cross-device reliability by itself.
 
 ## Tray and Console
 
@@ -174,6 +217,47 @@ Use these only from a trusted source checkout with its local embedded runtime or
 .\run_overlay_test.cmd
 .\BlurOverlayHost.exe --self-test
 ```
+
+`run_debug_ui.cmd` opens the live P3/P4 target-tracking panel. Use
+`.\run_debug_ui.cmd --camera 1` when the default camera index is wrong. Keep
+one clear person in view during calibration. The panel should first show
+`ACQUIRING`; after calibration it should show `TARGET_LOCKED`, a numeric locked
+track, and `People present = 1`. `MULTI_PRESENT`, `TARGET_OCCLUDED`,
+`TARGET_REACQUIRING`, `IDENTITY_UNCERTAIN`, or `TARGET_AMBIGUOUS` are safety
+states, not posture scores; read the adjacent state reason before treating the
+posture result as valid.
+
+The panel's `视觉模式` selector always lists `兼容模式`, `标准模式`, and `专业模式 Beta`. The normal Debug UI now
+provides a real `ultralytics-yolo26n-pose-cpu` standard backend. It requires the explicitly local
+`models/pose/yolo26n-pose.pt` file (or `ECHOPOSTURE_STANDARD_MODEL`) and the optional dependencies in
+`requirements-standard.txt`; it never downloads a model. If initialization fails, the panel restores the previous
+backend and shows the actual failure reason rather than silently relabeling Compatibility mode. Professional mode
+remains unavailable. The production tray/EXE still uses Compatibility posture extraction, wrapped by the shared face
+boundary; it does not register the Standard pose backend.
+
+`StandardPoseBackend` itself emits pose-only observations: its COCO nose/eye/ear points remain body-pose landmarks and
+are not treated as identity data. The live Debug UI then wraps every registered pose backend in the shared
+`FaceEnhancedBackend`. That boundary runs BlazeFace, associates faces to body observations, extracts five target-face
+points with FaceMesh, and can submit transient face crops to the local CVLFace verifier when its isolated runtime is
+available. Geometry is used only for face/body ownership and track association; only a CVLFace result may confirm or
+reject identity. Frames, crops, session templates, and embeddings are not written to disk by this path.
+
+Switching modes cancels an active calibration, clears the target and identity session, and requires a new two-anchor
+calibration. If Standard initialization fails, the panel closes the failed backend, restores the previous live backend
+(normally Compatibility), and displays the actual dependency, weight, model-contract, DLL, or camera error. A working
+source Debug UI still does not prove that Standard mode or the isolated P5 identity runtime is present in the GA
+package.
+
+To prove the panel wiring without a camera or desktop display, run:
+
+```powershell
+runtime\python311\python.exe test_debug_ui.py
+```
+
+This uses a fixed frame and a real target manager/analyzer, then asserts the
+`ACQUIRING` -> `TARGET_LOCKED` transition, track `1`, and person count `1`.
+It does not prove camera permissions, MediaPipe landmark quality, or packaged
+Windows behavior; those still require the live CMD or the packaged self-test.
 
 `run_overlay_test.cmd` repeatedly fades a simple click-through dimming overlay and is separate from the production
 native blur host. Stop it with `Ctrl+C` in its terminal.

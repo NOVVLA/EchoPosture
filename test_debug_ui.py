@@ -1,0 +1,751 @@
+"""Deterministic offscreen checks for the visual debug panel."""
+
+from __future__ import annotations
+
+import os
+from dataclasses import replace
+from datetime import datetime, timedelta
+from types import SimpleNamespace
+
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+import numpy as np
+from PyQt5.QtWidgets import QApplication, QMessageBox
+
+import debug_ui as debug_ui_module
+from debug_ui import STATUS_TEXT, DebugWindow
+from vision_tracking import TargetUpdate
+from vision_backend import observation_from_sample
+from vision_modes import (
+    VISION_MODE_COMPATIBILITY,
+    VISION_MODE_PROFESSIONAL_BETA,
+    VISION_MODE_STANDARD,
+)
+from vision_test import PostureDecision, VisionSample
+
+
+T0 = datetime(2026, 1, 1, 12, 0, 0)
+
+
+def make_sample(timestamp: datetime = T0, relaxed: float = 0.0) -> VisionSample:
+    shoulder_width = 200.0
+    return VisionSample(
+        timestamp=timestamp,
+        interpupillary_px=60.0 + relaxed * 20.0,
+        shoulder_diff_px=4.0 + relaxed * 18.0,
+        signed_shoulder_diff_px=4.0 + relaxed * 18.0,
+        shoulder_width_px=shoulder_width,
+        trunk_lean_deg=2.0 + relaxed * 10.0,
+        face_detected=True,
+        pose_detected=True,
+        face_count=1,
+        frame_width=640,
+        frame_height=480,
+        left_eye_center=(290.0, 150.0),
+        right_eye_center=(350.0, 150.0),
+        face_nose_point=(320.0, 170.0),
+        face_left_mouth_point=(300.0, 190.0),
+        face_right_mouth_point=(340.0, 190.0),
+        nose_point=(320.0, 170.0),
+        left_shoulder_point=(220.0, 240.0),
+        right_shoulder_point=(420.0, 244.0 + relaxed * 18.0),
+        left_hip_point=(260.0, 390.0),
+        right_hip_point=(380.0, 390.0),
+        shoulder_center=(320.0, 242.0 + relaxed * 9.0),
+        hip_center=(320.0, 390.0),
+        head_turn_ratio=0.02,
+        torso_height_px=180.0 - relaxed * 40.0,
+        face_quality=1.0,
+        pose_quality=1.0,
+        target_motion=0.0,
+        activity_state="STATIC",
+    )
+
+
+def make_pose_only_sample(timestamp: datetime = T0) -> VisionSample:
+    return replace(
+        make_sample(timestamp),
+        interpupillary_px=None,
+        face_detected=False,
+        face_count=0,
+        face_quality=None,
+        face_required_for_calibration=False,
+    )
+
+
+class FakeDebugBackend:
+    """Camera-free backend implementing the subset used by DebugWindow."""
+
+    def __init__(self) -> None:
+        self.sample = make_sample()
+        self.observations = ()
+        self.started = False
+        self.closed = False
+        self.capabilities = type(
+            "Capabilities",
+            (),
+            {
+                "backend_name": "fake-compatibility",
+                "supports_multi_person_pose": False,
+                "supports_gpu": False,
+                "supports_world_coordinates": False,
+                "supports_face_bbox": True,
+            },
+        )()
+
+    def start(self) -> None:
+        self.started = True
+
+    def read_frame_sample(self):
+        self.observations = observation_from_sample(self.sample)
+        return np.zeros((480, 640, 3), dtype=np.uint8), self.sample
+
+    def observations_for_last_sample(self):
+        return self.observations
+
+    def set_capture_fps(self, _fps: float) -> None:
+        pass
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class FakeDegradedCompatibilityBackend(FakeDebugBackend):
+    diagnostic_notice = (
+        "vision_compat_face_detector_fallback",
+        {"detail": "synthetic detector failure"},
+    )
+
+
+class FailOnceDebugBackend(FakeDebugBackend):
+    def __init__(self) -> None:
+        super().__init__()
+        self.read_count = 0
+
+    def read_frame_sample(self):
+        self.read_count += 1
+        if self.read_count == 1:
+            raise ValueError("synthetic frame failure")
+        return super().read_frame_sample()
+
+
+class FakeFaceEnhancer:
+    def __init__(self) -> None:
+        self.closed = False
+
+    def enrich(self, _frame, observations):
+        enriched = []
+        for observation in observations:
+            features = replace(
+                observation.posture_features,
+                interpupillary_px=60.0,
+                face_detected=True,
+                left_eye_center=(290.0, 150.0),
+                right_eye_center=(350.0, 150.0),
+                face_nose_point=(320.0, 170.0),
+                face_left_mouth_point=(300.0, 190.0),
+                face_right_mouth_point=(340.0, 190.0),
+                face_quality=0.95,
+                face_required_for_calibration=True,
+            )
+            enriched.append(
+                replace(
+                    observation,
+                    face_bbox_xyxy=(270.0, 110.0, 370.0, 215.0),
+                    face_landmarks=(
+                        (290.0, 150.0),
+                        (350.0, 150.0),
+                        (320.0, 170.0),
+                        (300.0, 190.0),
+                        (340.0, 190.0),
+                    ),
+                    face_quality=0.95,
+                    posture_features=features,
+                )
+            )
+        return tuple(enriched)
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class FakeIdentityVerifier:
+    def __init__(self) -> None:
+        self.clear_count = 0
+        self.session_count = 0
+        self.config = SimpleNamespace(
+            heartbeat_seconds=5.0,
+            min_event_interval_seconds=0.25,
+        )
+
+    def clear_template(self) -> None:
+        self.clear_count += 1
+
+    def start_session(self, _track_id: int | None) -> int:
+        self.session_count += 1
+        return self.session_count
+
+
+class FakeIdentityPipeline:
+    def request(self, _frame, _observation):
+        raise RuntimeError("synthetic pipeline disabled")
+
+
+def make_window(app: QApplication, backend: FakeDebugBackend) -> DebugWindow:
+    return DebugWindow(
+        camera_id=0,
+        fps=4.0,
+        width=640,
+        height=480,
+        intervention_enabled=False,
+        target_panel=True,
+        backend_factory=lambda: backend,
+    )
+
+
+def test_debug_panel_exposes_non_intervention_statuses() -> None:
+    assert STATUS_TEXT["MOVING"] == "status.MOVING"
+    assert STATUS_TEXT["ADJUSTING"] == "status.ADJUSTING"
+    assert STATUS_TEXT["OBSERVING"] == "status.OBSERVING"
+    assert DebugWindow._status_style("MOVING") != DebugWindow._status_style("UNKNOWN")
+    assert DebugWindow._status_style("ADJUSTING") != DebugWindow._status_style("UNKNOWN")
+    assert DebugWindow._status_style("OBSERVING") != DebugWindow._status_style("UNKNOWN")
+    print("test_debug_panel_exposes_non_intervention_statuses OK")
+
+
+def test_debug_panel_exposes_three_vision_modes_and_explicit_availability() -> None:
+    app = QApplication.instance() or QApplication([])
+    compatibility = FakeDebugBackend()
+    standard_pose = FakeDebugBackend()
+    standard_pose.capabilities.backend_name = "fake-standard"
+    standard_pose.sample = make_pose_only_sample()
+    verifier = FakeIdentityVerifier()
+    window = DebugWindow(
+        camera_id=0,
+        fps=4.0,
+        width=640,
+        height=480,
+        intervention_enabled=False,
+        target_panel=True,
+        backend_factory=lambda: compatibility,
+        backend_factories={VISION_MODE_STANDARD: lambda: standard_pose},
+        identity_verifier=verifier,
+        identity_embedding_pipeline=FakeIdentityPipeline(),
+        face_enhancer_factory=FakeFaceEnhancer,
+    )
+    try:
+        modes = {
+            window.vision_mode_combo.itemData(index)
+            for index in range(window.vision_mode_combo.count())
+        }
+        assert modes == {
+            VISION_MODE_COMPATIBILITY,
+            VISION_MODE_STANDARD,
+            VISION_MODE_PROFESSIONAL_BETA,
+        }
+        assert "兼容模式" in window.vision_backend_label.text()
+        assert "fake-compatibility" in window.vision_backend_label.text()
+
+        window.vision_mode_combo.setCurrentIndex(
+            window._vision_mode_index(VISION_MODE_STANDARD)
+        )
+        assert compatibility.closed
+        assert standard_pose.started
+        assert window.vision_mode == VISION_MODE_STANDARD
+        assert "标准模式" in window.vision_backend_label.text()
+        assert "fake-standard" in window.vision_backend_label.text()
+        drawn_boxes = []
+        original_rectangle = debug_ui_module.cv2.rectangle
+        debug_ui_module.cv2.rectangle = (
+            lambda _frame, top_left, bottom_right, color, thickness, line_type:
+            drawn_boxes.append((top_left, bottom_right, color, thickness, line_type))
+        )
+        try:
+            window.update_frame()
+        finally:
+            debug_ui_module.cv2.rectangle = original_rectangle
+        assert window.current_sample is not None
+        assert window.current_sample.face_required_for_calibration is True
+        assert "60.0" in window.face_label.text()
+        assert len(drawn_boxes) == 2
+        assert drawn_boxes[0][0] == (204, 152)
+        assert drawn_boxes[0][1] == (436, 408)
+        assert drawn_boxes[1][0] == (270, 110)
+        assert drawn_boxes[1][1] == (370, 215)
+
+        window._show_target_metrics(
+            TargetUpdate(
+                state="TARGET_REACQUIRING",
+                target_track_id=1,
+                target_observation=None,
+                tracks=(),
+                person_count=1,
+                reason="target_missing_candidate_present",
+            )
+        )
+        assert "人体轨迹" in window.target_state_label.text()
+        assert "兼容模式" not in window.target_state_label.text()
+        identity_reason = window._human_reason(
+            "reacquired_candidate_needs_identity_confirmation"
+        )
+        assert "重新出现的候选目标需确认" in identity_reason
+        assert "尚未接入" not in identity_reason
+
+        window.vision_mode_combo.setCurrentIndex(
+            window._vision_mode_index(VISION_MODE_PROFESSIONAL_BETA)
+        )
+        assert window.vision_mode == VISION_MODE_STANDARD
+        assert window.vision_mode_combo.currentData() == VISION_MODE_STANDARD
+        assert "标准模式" in window.vision_backend_label.text()
+        assert "fake-standard" in window.vision_backend_label.text()
+        # Injected-backend callers never register a professional factory, so the
+        # request is refused with its reason and the live mode is unchanged.
+        assert "专业模式" in window.vision_backend_label.text()
+
+        window.vision_mode_combo.setCurrentIndex(
+            window._vision_mode_index(VISION_MODE_COMPATIBILITY)
+        )
+        assert window.vision_mode == VISION_MODE_COMPATIBILITY
+        assert "兼容模式" in window.vision_backend_label.text()
+        assert "fake-compatibility" in window.vision_backend_label.text()
+        assert "专业模式" not in window.vision_backend_label.text()
+        assert verifier.clear_count >= 2
+    finally:
+        window.close()
+        app.processEvents()
+    print("test_debug_panel_exposes_three_vision_modes_and_explicit_availability OK")
+
+
+def test_professional_mode_switches_and_degrades_through_standard() -> None:
+    app = QApplication.instance() or QApplication([])
+    compatibility = FakeDebugBackend()
+    standard_pose = FakeDebugBackend()
+    standard_pose.capabilities.backend_name = "fake-standard"
+    standard_pose.sample = make_pose_only_sample()
+    professional = FakeDebugBackend()
+    professional.capabilities.backend_name = "fake-professional-yolo26x-cuda"
+    professional.sample = make_pose_only_sample()
+
+    window = DebugWindow(
+        camera_id=0,
+        fps=4.0,
+        width=640,
+        height=480,
+        intervention_enabled=False,
+        target_panel=True,
+        backend_factory=lambda: compatibility,
+        backend_factories={
+            VISION_MODE_STANDARD: lambda: standard_pose,
+            VISION_MODE_PROFESSIONAL_BETA: lambda: professional,
+        },
+        face_enhancer_factory=FakeFaceEnhancer,
+    )
+    try:
+        window.vision_mode_combo.setCurrentIndex(
+            window._vision_mode_index(VISION_MODE_PROFESSIONAL_BETA)
+        )
+        assert window.vision_mode == VISION_MODE_PROFESSIONAL_BETA
+        text = window.vision_backend_label.text()
+        assert "专业模式" in text
+        # The label must name the backend that is actually running.
+        assert "fake-professional-yolo26x-cuda" in text
+
+        # A GPU that cannot carry the tier lands on Standard, not Compatibility.
+        window.vision_mode_combo.setCurrentIndex(
+            window._vision_mode_index(VISION_MODE_COMPATIBILITY)
+        )
+        assert window.vision_mode == VISION_MODE_COMPATIBILITY
+
+        def failing_professional():
+            raise RuntimeError("synthetic CUDA unavailable")
+
+        window._backend_factories[VISION_MODE_PROFESSIONAL_BETA] = failing_professional
+        window.vision_mode_combo.setCurrentIndex(
+            window._vision_mode_index(VISION_MODE_PROFESSIONAL_BETA)
+        )
+        assert window.vision_mode == VISION_MODE_STANDARD
+        assert window.vision_mode_combo.currentData() == VISION_MODE_STANDARD
+        failure_text = window.vision_backend_label.text()
+        assert "synthetic CUDA unavailable" in failure_text, "the fallback reason must stay visible"
+        assert "fake-standard" in failure_text
+    finally:
+        window.close()
+        app.processEvents()
+    print("test_professional_mode_switches_and_degrades_through_standard OK")
+
+
+def test_unavailable_mode_keeps_actual_compatibility_backend_visible() -> None:
+    app = QApplication.instance() or QApplication([])
+    compatibility = FakeDebugBackend()
+    window = make_window(app, compatibility)
+    try:
+        window.vision_mode_combo.setCurrentIndex(
+            window._vision_mode_index(VISION_MODE_STANDARD)
+        )
+        text = window.vision_backend_label.text()
+        assert window.vision_mode == VISION_MODE_COMPATIBILITY
+        assert window.vision_mode_combo.currentData() == VISION_MODE_COMPATIBILITY
+        assert "兼容模式" in text
+        assert "fake-compatibility" in text
+        assert "YOLO26n-pose" in text
+
+        window._switch_vision_mode(
+            window._vision_mode_index(VISION_MODE_COMPATIBILITY)
+        )
+        assert "YOLO26n-pose" not in window.vision_backend_label.text()
+        assert "兼容模式" in window.vision_backend_label.text()
+    finally:
+        window.close()
+        app.processEvents()
+    print("test_unavailable_mode_keeps_actual_compatibility_backend_visible OK")
+
+
+def test_compatibility_face_detector_fallback_is_visible_after_start() -> None:
+    app = QApplication.instance() or QApplication([])
+    compatibility = FakeDegradedCompatibilityBackend()
+    window = make_window(app, compatibility)
+    try:
+        text = window.vision_backend_label.text()
+        assert "FaceMesh" in text
+        assert "synthetic detector failure" in text
+    finally:
+        window.close()
+        app.processEvents()
+    print("test_compatibility_face_detector_fallback_is_visible_after_start OK")
+
+
+def test_debug_panel_recovers_after_transient_frame_error() -> None:
+    app = QApplication.instance() or QApplication([])
+    backend = FailOnceDebugBackend()
+    window = make_window(app, backend)
+    original_critical = QMessageBox.critical
+    shown_errors = []
+    QMessageBox.critical = lambda *args: shown_errors.append(args)
+    try:
+        window.timer.stop()
+        window.update_frame()
+        assert window.timer.isActive()
+        assert len(shown_errors) == 1
+        assert "synthetic frame failure" in str(shown_errors[0][-1])
+
+        window.timer.stop()
+        window.update_frame()
+        assert window.current_sample is not None
+        assert window._last_frame_error_detail is None
+
+        window._switch_vision_mode(
+            window._vision_mode_index(VISION_MODE_COMPATIBILITY)
+        )
+        assert window.timer.isActive()
+    finally:
+        QMessageBox.critical = original_critical
+        window.close()
+        app.processEvents()
+    print("test_debug_panel_recovers_after_transient_frame_error OK")
+
+
+def test_debug_panel_exposes_projected_axes_and_target_activity() -> None:
+    app = QApplication.instance() or QApplication([])
+    backend = FakeDebugBackend()
+    window = make_window(app, backend)
+    sample = make_sample()
+    try:
+        window._show_metrics(
+            sample,
+            PostureDecision(
+                "GOOD",
+                "within_personal_posture_range",
+                True,
+                calibration_quality=1.0,
+                activity_state="STATIC",
+            ),
+        )
+        assert "0.0" in window.projected_trunk_axis_label.text()
+        assert "0.0" in window.projected_head_trunk_label.text()
+        assert window.target_motion_label.text() == "0.000 /s"
+        assert window.target_activity_label.text() == "静止"
+        assert window.risk_metric_label.text() == "姿态偏离 / 综合风险 / 暴露 / 置信度"
+        assert window.risk_label.text().startswith("0.00 / 0.00 / 0.0s / 0.00")
+    finally:
+        window.close()
+        app.processEvents()
+    print("test_debug_panel_exposes_projected_axes_and_target_activity OK")
+
+
+def test_debug_panel_runs_full_dual_anchor_calibration() -> None:
+    app = QApplication.instance() or QApplication([])
+    backend = FakeDebugBackend()
+    window = make_window(app, backend)
+    try:
+        window.update_frame()
+        assert backend.started
+        assert window.target_state_label.text() == "正在获取目标"
+        assert window.target_track_label.text() == "--"
+        assert window.target_count_label.text() == "1"
+        assert window.current_sample is not None
+        assert window.current_sample.target_state == "ACQUIRING"
+
+        window.start_dual_anchor_calibration()
+        window.dual_calibration_timer.stop()
+        preferred_style = window.calibration_stage_card.styleSheet()
+        assert window._calibration_visual_phase == "preferred"
+        assert window.calibration_stage_card.accessibleName() == "calibration-stage-preferred"
+        assert "background: #17633a" in preferred_style
+        assert "color: white" in preferred_style
+        assert window.calibration_stage_badge.text() == "1/2"
+        assert window.calibration_stage_progress.value() == 20
+        assert "第一段" in window.calibration_stage_title.text()
+        assert "现在坐直" in window.calibration_stage_title.text()
+        assert "5s" in window.calibration_stage_title.text()
+        assert "此刻不要放松" in window.calibration_stage_detail.text()
+        assert not window.calibration_camera_stage_banner.isHidden()
+        assert "第 1 段 / 2" in window.calibration_camera_stage_banner.text()
+        assert "现在坐直" in window.calibration_camera_stage_banner.text()
+        assert "不要放松" in window.calibration_camera_stage_banner.text()
+        assert window.calibration_camera_stage_banner.width() >= window.video_label.width() - 24
+        assert window.calibration_camera_stage_banner.height() >= 214
+        assert not window.calibration_phase_rail.isHidden()
+        assert window.calibration_phase_preferred.text() == "1  坐直中"
+        assert window.calibration_phase_relaxed.text() == "2  放松（随后）"
+        assert "border: 12px solid #22c55e" in window.video_label.styleSheet()
+        for index in range(5):
+            backend.sample = make_sample(T0 + timedelta(seconds=index))
+            window.update_frame()
+        assert window._dual_calibration_accumulator is not None
+        assert window._dual_calibration_accumulator.stage_counts == {
+            "preferred": 5,
+            "relaxed": 0,
+        }
+        window.complete_preferred_stage(T0 + timedelta(seconds=5))
+        assert window.calibration_label.text().startswith("舒适坐姿阶段完成")
+        transition_style = window.calibration_stage_card.styleSheet()
+        assert window._calibration_visual_phase == "transition"
+        assert "background: #9a4f00" in transition_style
+        assert window.calibration_stage_badge.text() == "放松"
+        assert window.calibration_stage_progress.value() == 50
+        assert "现在放松" in window.calibration_stage_title.text()
+        assert not window.calibration_camera_prompt.isHidden()
+        assert "请现在自然放松" in window.calibration_camera_prompt.text()
+        assert window.calibration_camera_prompt.parent() is window.video_label
+        assert "停止坐直" in window.calibration_camera_stage_banner.text()
+        assert "现在放松" in window.calibration_camera_stage_banner.text()
+        assert window.calibration_phase_preferred.text() == "1  坐直完成"
+        assert window.calibration_phase_relaxed.text() == "2  现在放松"
+        assert "border: 12px solid #f59e0b" in window.video_label.styleSheet()
+        prompt_geometry = window.calibration_camera_prompt.geometry()
+        assert window.video_label.rect().contains(prompt_geometry)
+        assert transition_style != preferred_style
+        backend.sample = make_sample(T0 + timedelta(seconds=5.5), relaxed=0.5)
+        window.update_frame()
+        assert window._dual_calibration_accumulator.stage_counts == {
+            "preferred": 5,
+            "relaxed": 0,
+        }
+        assert window._calibration_visual_phase == "transition"
+        backend.sample = make_sample(T0 + timedelta(seconds=6), relaxed=1.0)
+        window.update_frame()
+        relaxed_style = window.calibration_stage_card.styleSheet()
+        assert window._calibration_visual_phase == "relaxed"
+        assert window.calibration_stage_card.accessibleName() == "calibration-stage-relaxed"
+        assert "background: #6d35ad" in relaxed_style
+        window.calibration_camera_prompt_timer.stop()
+        window.calibration_camera_prompt.hide()
+        assert window.calibration_stage_badge.text() == "2/2"
+        assert window.calibration_stage_progress.minimum() == 0
+        assert window.calibration_stage_progress.maximum() == 0
+        assert "第二段" in window.calibration_stage_title.text()
+        assert "保持自然放松" in window.calibration_stage_title.text()
+        # Relaxed collection is silent: the persistent banner identifies the
+        # active stage without presenting a second user-facing countdown.
+        assert "5s" not in window.calibration_stage_title.text()
+        assert "保持放松" in window.calibration_stage_detail.text()
+        assert not window.calibration_camera_stage_banner.isHidden()
+        assert "第 2 段 / 2" in window.calibration_camera_stage_banner.text()
+        assert "保持自然放松" in window.calibration_camera_stage_banner.text()
+        assert "静默记录放松姿势" in window.calibration_camera_stage_banner.text()
+        assert window.calibration_phase_preferred.text() == "1  坐直完成"
+        assert window.calibration_phase_relaxed.text() == "2  放松采集中"
+        assert "border: 12px solid #8b5cf6" in window.video_label.styleSheet()
+        banner_geometry = window.calibration_camera_stage_banner.geometry()
+        assert window.video_label.rect().contains(banner_geometry)
+        assert relaxed_style not in {preferred_style, transition_style}
+        for index in range(4):
+            backend.sample = make_sample(
+                T0 + timedelta(seconds=(7 + index if index < 3 else 11)),
+                relaxed=1.0,
+            )
+            window.update_frame()
+
+        assert window.analyzer.calibration_profile is not None
+        assert window.analyzer.require_dual_anchor
+        assert window.analyzer.calibration_profile.stage_counts == {
+            "preferred": 5,
+            "relaxed": 5,
+        }
+        assert window.calibration_label.text().startswith("双锚点科学校准完成")
+        assert window._calibration_visual_phase == "validating"
+        assert window.calibration_stage_badge.text() == "复验"
+        assert "正在复验正常范围" in window.calibration_stage_title.text()
+        assert window.calibration_camera_stage_banner.isHidden()
+        assert window.calibration_phase_rail.isHidden()
+        assert window.calibration_stage_card.styleSheet() not in {
+            preferred_style,
+            transition_style,
+            relaxed_style,
+        }
+        backend.sample = make_sample(T0 + timedelta(seconds=12.5), relaxed=1.0)
+        window.update_frame()
+        assert window._calibration_visual_phase == "validating"
+        backend.sample = make_sample(T0 + timedelta(seconds=14.1), relaxed=1.0)
+        window.update_frame()
+        assert window._calibration_visual_phase == "active"
+        assert window.calibration_stage_badge.text() == "监测"
+        assert window.calibration_stage_progress.value() == 100
+        assert "正式监测中" in window.calibration_stage_title.text()
+        assert window.target_state_label.text() == "目标已锁定"
+        assert window.target_track_label.text() == "1"
+        assert window.target_count_label.text() == "1"
+        assert window.current_sample is not None
+        assert window.current_sample.target_track_id == 1
+        assert window.current_sample.target_state == "TARGET_LOCKED"
+
+        profile = window.analyzer.calibration_profile
+        window.start_dual_anchor_calibration()
+        window.dual_calibration_timer.stop()
+        window.cancel_dual_anchor_calibration()
+        assert window.analyzer.calibration_profile is profile
+        assert window.calibration_label.text().startswith("已取消双锚点校准")
+        assert window.legacy_calibrate_button.isEnabled()
+        assert window.precision_checkbox.isEnabled()
+    finally:
+        window.close()
+        app.processEvents()
+        assert backend.closed
+    print("test_debug_panel_runs_full_dual_anchor_calibration OK")
+
+
+def test_debug_panel_places_stage_card_above_camera() -> None:
+    app = QApplication.instance() or QApplication([])
+    backend = FakeDebugBackend()
+    window = make_window(app, backend)
+    try:
+        window.show()
+        app.processEvents()
+        stage_geometry = window.calibration_stage_card.geometry()
+        video_geometry = window.video_label.geometry()
+        assert stage_geometry.width() == video_geometry.width()
+        assert stage_geometry.height() >= 136
+        assert stage_geometry.bottom() < video_geometry.top()
+        assert window.calibration_stage_badge.width() >= 92
+        assert window.calibration_stage_progress.width() > 0
+        window.start_dual_anchor_calibration()
+        window.dual_calibration_timer.stop()
+        app.processEvents()
+        banner_geometry = window.calibration_camera_stage_banner.geometry()
+        assert window.video_label.rect().contains(banner_geometry)
+        assert (
+            window.calibration_phase_preferred.contentsRect().height()
+            >= window.calibration_phase_preferred.fontMetrics().height()
+        )
+        assert (
+            window.calibration_phase_relaxed.contentsRect().height()
+            >= window.calibration_phase_relaxed.fontMetrics().height()
+        )
+    finally:
+        window.close()
+        app.processEvents()
+    print("test_debug_panel_places_stage_card_above_camera OK")
+
+
+def test_debug_panel_accepts_identical_anchor_postures() -> None:
+    app = QApplication.instance() or QApplication([])
+    backend = FakeDebugBackend()
+    window = make_window(app, backend)
+    try:
+        window.update_frame()
+        window.start_dual_anchor_calibration()
+        window.dual_calibration_timer.stop()
+        for index in range(5):
+            backend.sample = make_sample(T0 + timedelta(seconds=index), relaxed=0.0)
+            window.update_frame()
+        window.complete_preferred_stage(T0 + timedelta(seconds=5))
+        for timestamp_seconds in (6, 7, 8, 9, 11):
+            backend.sample = make_sample(
+                T0 + timedelta(seconds=timestamp_seconds),
+                relaxed=0.0,
+            )
+            window.update_frame()
+
+        assert window.analyzer.calibration_profile is not None
+        assert window.analyzer.calibration_profile.scientific_ready
+        assert window.analyzer.calibration_profile.stage_counts == {
+            "preferred": 5,
+            "relaxed": 5,
+        }
+        assert window._calibration_visual_phase == "validating"
+        assert "双锚点科学校准完成" in window.calibration_label.text()
+    finally:
+        window.close()
+        app.processEvents()
+    print("test_debug_panel_accepts_identical_anchor_postures OK")
+
+
+def test_debug_panel_keeps_legacy_single_frame_comparison() -> None:
+    app = QApplication.instance() or QApplication([])
+    backend = FakeDebugBackend()
+    window = make_window(app, backend)
+    try:
+        window.update_frame()
+        window.calibrate_current_sample()
+        assert window.calibration_label.text().startswith("已校准（旧版调试）")
+        assert window.analyzer.calibration_profile is None
+        assert window.analyzer.legacy_calibration_used
+        assert not window.analyzer.require_dual_anchor
+    finally:
+        window.close()
+        app.processEvents()
+    print("test_debug_panel_keeps_legacy_single_frame_comparison OK")
+
+
+def test_debug_panel_reports_incomplete_dual_anchor_profile() -> None:
+    app = QApplication.instance() or QApplication([])
+    backend = FakeDebugBackend()
+    window = make_window(app, backend)
+    try:
+        window.update_frame()
+        window.start_dual_anchor_calibration()
+        window.dual_calibration_timer.stop()
+        for index in range(3):
+            backend.sample = make_sample(T0 + timedelta(seconds=index * 0.2))
+            window.update_frame()
+        window.complete_preferred_stage(T0 + timedelta(seconds=5))
+        window.finish_dual_anchor_calibration()
+        assert window.analyzer.calibration_profile is None
+        assert window.calibration_label.text().startswith("双锚点校准失败")
+        assert "有效样本不足" in window.calibration_label.text()
+        assert window._calibration_visual_phase == "failed"
+        assert "有效样本不足" in window.calibration_stage_detail.text()
+        assert "坐直 3/5" in window.calibration_stage_detail.text()
+        assert "放松 0/5" in window.calibration_stage_detail.text()
+        assert window.legacy_calibrate_button.isEnabled()
+        assert window.precision_checkbox.isEnabled()
+    finally:
+        window.close()
+        app.processEvents()
+    print("test_debug_panel_reports_incomplete_dual_anchor_profile OK")
+
+
+if __name__ == "__main__":
+    test_debug_panel_exposes_non_intervention_statuses()
+    test_debug_panel_exposes_three_vision_modes_and_explicit_availability()
+    test_professional_mode_switches_and_degrades_through_standard()
+    test_unavailable_mode_keeps_actual_compatibility_backend_visible()
+    test_compatibility_face_detector_fallback_is_visible_after_start()
+    test_debug_panel_recovers_after_transient_frame_error()
+    test_debug_panel_exposes_projected_axes_and_target_activity()
+    test_debug_panel_runs_full_dual_anchor_calibration()
+    test_debug_panel_places_stage_card_above_camera()
+    test_debug_panel_accepts_identical_anchor_postures()
+    test_debug_panel_keeps_legacy_single_frame_comparison()
+    test_debug_panel_reports_incomplete_dual_anchor_profile()
+    print("ALL TESTS PASSED")

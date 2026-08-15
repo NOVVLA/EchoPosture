@@ -15,7 +15,9 @@ flowchart LR
     Tray --> Flyout[tray_flyout.py]
     Tray --> Console[posture_console.py]
     Tray --> Worker[vision_worker.py / worker thread]
-    Worker --> Engine[VisionEngine / OpenCV + MediaPipe]
+    Worker --> Backend[VisionBackend / selected mode]
+    Backend --> Engine[VisionEngine / OpenCV + MediaPipe]
+    Worker --> Target[TargetManager / tracks + target state]
     Worker --> Analyzer[HighPrecisionPostureAnalyzer]
     Analyzer --> Snapshot[latest immutable decision snapshot]
     Snapshot --> Tray
@@ -78,7 +80,12 @@ modules alongside the executable.
 - intervention gating and calls into the overlay controller;
 - user-facing camera and screen-capture warnings.
 
-The GUI thread must not perform continuous camera capture or MediaPipe inference.
+The GUI thread must not perform continuous camera capture or model inference. The current production backend is
+`FaceEnhancedBackend(CompatibilityBackend(...))` with MediaPipe posture extraction. `vision_modes.py` defines the
+compatibility/standard/professional-beta contract, and Debug UI exposes all three with explicit availability reasons.
+The source Debug UI registers the local CPU `StandardPoseBackend`; Professional mode remains a capability reservation.
+A selectable mode is not active unless its backend factory actually initializes. The packaged tray/EXE does not yet
+register Standard mode.
 
 ### Vision worker thread
 
@@ -97,13 +104,121 @@ freshness is more important than processing every captured frame.
 `vision_test.py` contains the domain layer:
 
 - `VisionEngine` opens the camera and produces `VisionSample` values from face and pose landmarks;
-- `PostureAnalyzer` provides the basic baseline-threshold model;
-- `HighPrecisionPostureAnalyzer` adds risk scoring, sustained-risk tracking, presence checks, and profile-consistency
-  protection;
-- `PostureDecision` carries status, reason, calibration state, risk score, and sustained duration.
+- `PostureAnalyzer` provides the explicitly legacy baseline-threshold model for debug/self-test compatibility;
+- `posture_science.py` owns two-anchor statistics (mean/std/n/SEM/MDC/CV), continuous within-person deviation,
+  group de-duplication, and real-time exposure accumulation;
+- `HighPrecisionPostureAnalyzer` uses the scientific profile in production, while retaining the legacy path behind an
+  explicit compatibility flag; presence and profile-consistency protection remain independent;
+- `PostureDecision` carries posture deviation, equivalent exposure seconds, confidence, calibration quality, activity
+  state, and the old `risk_score` / `sustained_seconds` compatibility aliases.
 
-The analyzer produces states such as `GOOD`, `WATCH`, `BAD`, `CRITICAL`, `UNKNOWN`, `AWAY`, `MULTI_USER`, and
-`PROFILE_MISMATCH`. These are ergonomic application states, not medical diagnoses or identity recognition.
+The analyzer produces states such as `GOOD`, `MOVING`, `ADJUSTING`, `OBSERVING`, `WATCH`, `BAD`, `CRITICAL`,
+`UNKNOWN`, `AWAY`, `MULTI_USER`, and `PROFILE_MISMATCH`. `MOVING` and `ADJUSTING` are measured activity states;
+`OBSERVING` keeps a known target visible while one frame is not eligible for exposure. `UNKNOWN` is reserved for
+genuinely unavailable posture measurements or unresolved targets. These are ergonomic application states, not
+medical diagnoses or identity recognition.
+
+### Unified backend and target management
+
+`vision_backend.py` defines model-independent `PersonObservation`, `VisionCapabilities`, `VisionBackend`, and
+`PostureFeatureExtractor` contracts. `CompatibilityBackend` wraps the current MediaPipe engine, preserves
+`VisionSample` output for the posture analyzer, and publishes a unified observation for target management. The worker
+reconstructs the analyzer sample from the selected target observation, so a future multi-person backend cannot score a
+bystander's posture just because it was returned in the same frame. Because MediaPipe Pose is single-person, a frame
+with multiple faces cannot prove which face belongs to its one body; the adapter marks that observation ambiguous
+instead of combining the first face with the pose. Even with one face, the adapter requires a face anchor inside the
+expanded body envelope; a missing or out-of-envelope anchor is marked ambiguous rather than guessed.
+
+`standard_pose_backend.py` implements the source-only CPU `StandardPoseBackend`. It loads an explicitly local
+YOLO26n-pose model, validates the `pose` task and COCO `[17, 3]` contract, and emits a separate body box, 17-keypoint
+skeleton, confidence, and posture feature set for every detected person. It never downloads a model. A multi-person
+scene remains a collection of independent observations; the backend does not collapse their posture values into one
+global sample.
+
+`face_observation_enhancer.py` provides the mode-independent `FaceEnhancedBackend` decorator used by the Debug UI for
+both Compatibility and Standard and by the production tray around Compatibility. It uses BlazeFace to detect faces,
+globally associates one clear face to each body, runs FaceMesh on the associated crop for five alignment points, and
+publishes the same enriched `PersonObservation` shape before `TargetManager` sees it. Existing complete Compatibility
+face output is preserved instead of processed twice. Ambiguous or unconfirmed ownership remains explicit and cannot
+silently attach a bystander's face to a body.
+
+Identity decisions are downstream of this observation boundary. The local CVLFace adapter runs asynchronously through
+an isolated interpreter when available; geometry may establish ownership and track continuity but cannot confirm or
+reject identity. Candidate-scoped sessions reject stale or wrong-track results. Face crops, embeddings, and session
+templates remain transient and are not persisted by the runtime path. Identity-runtime availability is independent of
+pose-backend availability: Standard posture can initialize while CVLFace is unavailable, and the GA package does not
+yet claim to include either Standard dependencies or the isolated P5 runtime.
+
+`vision_tracking.py` owns `TargetManager`. It associates observations using stable detection IDs when available,
+predicted motion, center distance, and bounding-box overlap; maintains track lifetimes; locks the calibration target;
+and emits `TARGET_LOCKED`, `MULTI_PRESENT`, `TARGET_OCCLUDED`, `TARGET_REACQUIRING`, `IDENTITY_UNCERTAIN`, `AWAY`, or
+`TARGET_AMBIGUOUS`. Frame association is global one-to-one: predicted motion is scored with box overlap and area
+continuity, while near-tied candidates enter `TARGET_AMBIGUOUS`; immutable track output carries the last match score.
+A non-target track is never promoted automatically. A short-gap, high-quality face-continuity signal can repair a
+compatibility-mode torso-box jump for the already locked target; a separately created rebind still enters
+`IDENTITY_UNCERTAIN` until the local verifier confirms it. When a backend can keep the target observation separate,
+`MULTI_PRESENT` is attached to the immutable worker snapshot while posture scoring continues for the target.
+The locked target also publishes a time-normalized motion value and `STATIC` / `MOVING` activity state. It combines
+smoothed box-centre translation with signed relative box-scale velocity, so forward/backward movement can be detected
+without turning alternating scale jitter into activity. Motion does not accumulate static exposure.
+
+### Scientific calibration and measurement abstention
+
+Production calibration uses explicit phases. The visible dialog stays open for five seconds and every sample in that
+window belongs only to the preferred comfortable anchor. After the dialog closes, the tray tells the user that they may
+relax; about one second of transition samples is ignored, then the worker collects the relaxed anchor in the background for about
+five seconds. If fewer than five valid relaxed samples are available at the nominal target, collection may extend by at
+most two seconds. Each anchor needs at least five complete, single-person, quality-gated samples. A multi-person or
+ambiguous observation clears only the active anchor window because it can contaminate identity. A low-quality, moving,
+temporarily uncertain, or missing-keypoint observation abstains for that frame without erasing earlier accepted
+samples; transition observations neither count nor reset a window. Landmark quality is feature-specific: low hip
+visibility disables hip-dependent torso evidence for that observation but does not discard reliable face/shoulder
+evidence. The calibration-only shoulder usability floor is `0.30`, allowing a five-second repeatability window to
+assess stable edge-of-frame landmarks instead of discarding every frame before statistics exist. Runtime intervention
+confidence remains `0.65`, and hip-dependent features retain their separate `0.50` landmark floor. Repeatability is
+evaluated per feature through SEM/MDC rather than an unvalidated stricter whole-frame cutoff. The worker applies the
+resulting `CalibrationProfile` only after the target manager locks one unambiguous track.
+`set_baseline_from_sample()` remains available only for explicit legacy debugging/self-test.
+
+The posture score uses scale-relative face/shoulder and torso/shoulder ratios, optional ear/shoulder position,
+pelvis-relative shoulder asymmetry, and pelvis-relative trunk lean. Using the pelvis rather than the image axes keeps
+lateral posture evidence unchanged when the whole camera frame rolls. Runtime extraction repeats the feature-local
+landmark gate used during calibration:
+shoulder evidence may remain usable while low-confidence hips remove only torso/hip-dependent features, and decision
+confidence is computed from the features that actually reached scoring. Raw shoulder width and distance remain
+separate environment prompts. A uniform whole-person scale change preserves normalized posture evidence and remains
+measurable at the new distance. A shoulder-span change is suppressed only when it manufactures corroborated ratios
+without corresponding raw numerator changes. Turned-head, low-confidence, moving, camera-reference, and partial
+evidence observations pause exposure and use explicit `MOVING`, `ADJUSTING`, or `OBSERVING` states; they do not claim
+that the person is unrecognized. Truly absent posture features or unresolved target ownership can still use `UNKNOWN`.
+
+The preferred and relaxed anchors are both user-accepted postures. For each enabled feature, the calibrated interval
+between their ordered means is a personal normal band with deviation `0.0`. Similar or identical anchors remain a
+valid narrow range; calibration never requires the user to manufacture posture separation. Scoring begins only after
+an observation passes either range boundary by more than the runtime measurement-noise band and natural-movement
+margin. After the profile is accepted, the
+target-locked runtime stream must stay inside that band for about two stable seconds before exposure is enabled. This
+validation returns `OBSERVING`, reports zero deviation, and pauses exposure; it guards the adapter/target-replacement
+boundary and prevents the relaxed calibration ending pose from creating an exposure episode. Runtime
+single-frame measurement noise uses the largest of reported MDC, `3.0 ×` within-anchor standard deviation, and a
+conservative per-feature resolution floor (`0.025` for normalized ratios, `2.5°` for angle features). The runtime
+acceptance boundary then adds a separate natural-movement deadband (`0.05` for normalized ratios, `3°` for angle
+features). SEM/MDC remains in the audit
+report, but is not treated as the full single-observation noise band or as an anchor-separation gate. Beyond the
+accepted range, noise band, and movement margin, normalized ratios use a fixed `0.10` response scale and angle features a fixed `10°`
+response scale. These mappings are independent of anchor spacing, so a narrow range cannot amplify ordinary jitter.
+Small uncorroborated deviations remain `GOOD`; a corroborated change must persist for about two seconds in
+`ADJUSTING` before entering WATCH, and the adjustment interval is never backfilled as exposure. WATCH hysteresis
+remains available for observation, but exposure integrates only while alert hysteresis is active at
+deviation `0.70` or above; WATCH-only drift cannot accumulate an alert budget. Observation gaps longer than two
+seconds pause integration instead of backfilling unobserved time. These floors, multipliers, and durations are
+adjustable product policy, not biological standards.
+
+A pronounced pelvis-relative trunk lean may be the sole lateral evidence when the shoulder line remains parallel;
+the explicit `lone_trunk_lean_deviation` policy gate prevents small one-feature jitter from opening WATCH while
+preserving real side-reclining. Static-hold time is a bounded add-on only for an already corroborated, confirmed
+deviation. It starts after the adjustment window, ramps after about 60 seconds, caps at `0.12`, and resets on
+movement, recovery, low quality, or observation gaps; normal posture never earns static-hold score by elapsed time.
 
 ### Overlay controller and native host
 
@@ -139,18 +254,26 @@ that writes a report, under the package-local `logs` directory.
 1. The launcher prepares the run root and starts `tray_app.py`.
 2. `TrayMonitor` starts `VisionWorker` and waits up to 15 seconds for the camera handshake.
 3. The tray icon appears and the onboarding toast asks the user to enable monitoring.
-4. A five-second calibration dialog is shown while the worker samples at 180 ms intervals.
-5. The worker averages usable samples and asks the analyzer to set its baseline.
-6. A successful result starts monitoring; a failed startup calibration shows a warning and stops the application.
+4. A five-second calibration dialog is shown while the worker collects only the preferred anchor at 180 ms intervals.
+5. The dialog closes before the user is told to relax. The worker ignores an approximately one-second transition and
+   samples the relaxed anchor in the background for approximately five seconds, with at most two seconds of bounded extension.
+6. `CalibrationAccumulator` builds per-feature repeatability statistics and `CalibrationProfile`; the analyzer accepts
+   it only when both stages meet the minimum and at least one posture feature has five valid values in both stages.
+7. A successful result starts monitoring immediately with both anchors and their interval treated as the personal
+   normal posture range; a failed startup calibration shows a warning and stops the application.
 
 ### Monitoring and intervention
 
-1. The worker captures a frame, extracts a `VisionSample`, evaluates it, and replaces the mailbox snapshot.
+1. The worker captures a frame, extracts a `VisionSample`, evaluates it, and replaces the mailbox snapshot. When local
+   identity verification is enabled, `FaceEmbeddingPipeline` creates a transient in-memory face crop, applies the
+   official 112x112 five-point alignment contract, and returns only a numeric embedding; the crop is cleared after
+   inference.
 2. The GUI timer reads the newest snapshot without blocking the worker.
-3. Intervention is eligible only for `BAD` or `CRITICAL`, risk score at least `45`, sustained risk at least `12`
-   seconds, followed by another `3` seconds of continuous confirmation.
+3. Intervention is eligible only for a quality-valid `BAD`/`CRITICAL` scientific decision, deviation at least `0.70`,
+   equivalent exposure at least `12` seconds, followed by another `3` seconds of continuous confirmation. A completed
+   episode has a `60` second cooldown; these are product policy values, not medical thresholds.
 4. `GpuBlurOverlayController` activates the native host or the fallback overlay.
-5. Returning to a non-risk state clears the candidate timer and deactivates the overlay.
+5. Returning to a non-risk state ends the intervention episode; exposure decays gradually and the overlay deactivates.
 
 The manual max-effect command bypasses posture gating for an eight-second preview but uses the same overlay controller.
 
@@ -174,12 +297,18 @@ Preserve these rules unless an intentional architecture change is documented and
 7. User-facing text belongs in `i18n.py`; language listeners must be added and removed with widget lifetime.
 8. `ui/index.html` remains a frozen reference unless the task explicitly targets the reference itself.
 9. Release code and package metadata must use the same version, ASCII bridge label, tag, asset name, and checksum.
+10. Target tracking may retain or suspend the calibrated target, but it must never promote another active track without
+    explicit identity confirmation.
+11. Compatibility mode must emit `TARGET_AMBIGUOUS` whenever its single pose cannot be associated with exactly one
+    face; ambiguous observations must not reach normal posture scoring.
 
 ## Change Map and Test Map
 
 | Change area | Primary files | Minimum focused verification |
 | --- | --- | --- |
 | Camera extraction or scoring | `vision_test.py` | `python -m py_compile ...`, `test_vision_worker.py`, relevant camera diagnostic |
+| Vision backend contract | `vision_backend.py`, `vision_worker.py` | `test_vision_tracking.py`, `test_vision_worker.py` |
+| Target association or state | `vision_tracking.py`, `vision_test.py` | `test_vision_tracking.py`, `test_feature_toggles.py` |
 | Worker lifecycle or calibration | `vision_worker.py`, `tray_app.py` | `test_vision_worker.py`, `test_startup_guards.py` |
 | Tray flyout | `tray_flyout.py`, `i18n.py` | `test_tray_flyout.py`, `test_startup_guards.py` |
 | Console switches | `posture_console.py`, `vision_test.py`, `gpu_blur_overlay.py` | `test_feature_toggles.py` plus focused manual console check |
