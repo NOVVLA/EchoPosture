@@ -28,9 +28,9 @@ Build command:
 - `build_launcher.cmd`
 - `build_blur_overlay_host.cmd` builds only the GPU blur helper.
 
-The EXE is a lightweight native launcher. It does not bundle the full Python runtime into a single binary. Instead, it launches the embedded runtime in `runtime/python311`, sets the required environment variables, and creates an ASCII path bridge at `%LOCALAPPDATA%\EchoPostureGA121\current` before starting the app.
+The EXE is a lightweight native launcher. It does not bundle the full Python runtime into a single binary. Instead, it launches the embedded runtime in `runtime/python311`, sets the required environment variables, and creates an ASCII path bridge at `%LOCALAPPDATA%\EchoPostureGA200\current` before starting the app.
 
-This keeps the GA-1.2.1 package as a one-folder portable app while avoiding `.cmd` as the user-facing entry point.
+This keeps the GA-2.0.0 portable package as a one-folder app while avoiding `.cmd` as the user-facing entry point.
 
 The main UI starts with high precision mode and high performance mode enabled. Visual intervention requires a repeatedly confirmed `BAD` or `CRITICAL` decision, risk score `>= 45`, sustained risk for at least `12` seconds, and an extra `3` seconds of continuous confirmation. It then applies a gradual click-through visual overlay without changing system brightness.
 
@@ -44,13 +44,16 @@ Use `EchoPosture.exe --disable-gpu-blur` to skip the native host and use the PyQ
 
 Use `EchoPosture.exe --debug-ui` to open the older visual debug window.
 
-The packaged tray/EXE currently runs Compatibility mode. The source Debug UI can also run Standard mode with an
-explicitly local `yolo26n-pose.pt` and `requirements-standard.txt`; that optional model, its dependencies, and the
-Standard backend are not yet part of the GA package allowlist. In the current source pipeline, both Compatibility and
-Standard are wrapped by the same local face-enrichment and CVLFace identity-verification boundary. Face crops and
-embeddings are transient in-memory inputs and are not written by that path. This source capability does not imply that
-the packaged EXE contains the Standard pose model or the isolated P5 identity runtime. See `docs/STANDARD_MODE.md` for
-the exact development and evidence boundary.
+The packaged tray/EXE now also includes Standard mode and Professional Beta mode application code and their runtime
+dependencies (`ultralytics`, and for Professional Beta, CUDA `torch`/`torchvision`), embedded in `runtime/python311`
+alongside the Compatibility-mode dependencies. **No model weights are bundled.** The user must run one of the four
+scripts in `tools/fetch_pose_models/` after installing the package to fetch the Ultralytics YOLO26 pose weights
+before Standard or Professional Beta mode will work; Compatibility mode requires no download. Both Compatibility and
+Standard/Professional Beta are wrapped by the same local face-enrichment and CVLFace identity-verification boundary.
+Face crops and embeddings are transient in-memory inputs and are not written by that path. See `docs/STANDARD_MODE.md`
+and `docs/PROFESSIONAL_MODE.md` for the development and evidence boundary, and
+`docs/decisions/ADR-0005-ga-2-0-portable-standard-professional.md` for the packaging decision behind including these
+modes in this build.
 
 EchoPosture is licensed under GNU AGPLv3 only (`AGPL-3.0-only`). The project accepts the corresponding source-code and
 network-interaction obligations. Distributing an EXE or portable package therefore requires the matching complete

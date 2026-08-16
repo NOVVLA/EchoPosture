@@ -182,24 +182,24 @@ Get-ChildItem -Recurse $Package -Include *.pt,*.safetensors,*.onnx,*.tflite | Sh
 
 Any hit is a release blocker.
 
-### 4b. Portable channel (currently not published)
+### 4b. Portable channel — semi-portable, weights excluded (published from GA-2.0.0 onward)
 
-A current GA portable package requires this top-level allowlist:
+As of [ADR-0005](decisions/ADR-0005-ga-2-0-portable-standard-professional.md), the portable channel is published
+alongside the §4a source-only package, under the **same** release tag. It bundles the embedded runtime and built
+executables so the user does not need Python or a compiler, but it still contains **no model weights** — the user
+still runs one of the four `tools/fetch_pose_models/` scripts after installing it, exactly as with the source-only
+package. Compatibility mode needs no download either way.
+
+The portable-channel allowlist is:
 
 ```text
 BlurOverlayHost.exe
 EchoPosture.exe
 EchoPostureSelfTest.exe
-debug_ui.py
-gpu_blur_overlay.py
-i18n.py
-onboarding_toast.py
-posture_console.py
-posture_science.py
-tray_app.py
-tray_flyout.py
-vision_test.py
-vision_worker.py
+*.py application modules (excluding test_*.py) — including standard_pose_backend.py
+  and professional_pose_backend.py now that ADR-0005 has approved them for this channel
+tools/fetch_pose_models/
+docs/  NOTICE  THIRD_PARTY_NOTICES.md
 logo.png
 LICENSE
 GA_BUILD.txt
@@ -207,13 +207,17 @@ README_GA.md
 runtime/
 ```
 
-`runtime/` must contain the tested embedded CPython 3.11 runtime, PyQt5, OpenCV, MediaPipe, and transitive modules
-needed by the application. A system Python installation must not be required by the finished package.
+`runtime/` must contain the tested embedded CPython 3.11 runtime, PyQt5, OpenCV, MediaPipe, Ultralytics, and — for
+Professional Beta — CUDA `torch`/`torchvision`, plus any other transitive modules needed by the application. A system
+Python installation must not be required by the finished package.
 
 `GA_BUILD.txt` must identify at least the release label, build date, exact source commit, platform, embedded Python
-version, primary and diagnostic entries, and versioned bridge. `README_GA.md` must state how to start the app, run the
-self-test, find its log, interpret SmartScreen, verify the ZIP checksum, and obtain the complete corresponding source
-for that exact build under GNU AGPLv3.
+version, primary and diagnostic entries, and versioned bridge. Per ADR-0005, this exact source commit may be newer
+than the commit the release tag targets when the delta is packaging/versioning-label corrections only (e.g. the
+launcher bridge label); it must never silently diverge in application behavior from the tagged source. `README_GA.md`
+must state how to start the app, run the self-test, find its log, interpret SmartScreen, verify the ZIP checksum, that
+no model weights are bundled and how to fetch them via `tools/fetch_pose_models/`, and how to obtain the complete
+corresponding source for that exact build under GNU AGPLv3.
 
 The package must not contain:
 
@@ -221,13 +225,10 @@ The package must not contain:
 .git/  .github/  .codex/  .agents/  .claude/  logs/  _backups/  dist/
 review folders  build scripts  test_*.py  *.obj  *.pdb  credentials  API keys
 personal screenshots  local absolute paths  internal process documents
-unapproved model weights  training data  models/  requirements-standard.txt
+any model weight  training data  models/
 ```
 
-Third-party notices and files inside the embedded runtime are allowed when required by those dependencies. Before a
-future package enables Standard mode, separately approve and add `standard_pose_backend.py`, its tested runtime
-dependencies, model provenance/hash, redistribution decision, and notices to the allowlist. The project-wide AGPLv3
-decision does not by itself authorize shipping `yolo26n-pose.pt`.
+Third-party notices and files inside the embedded runtime are allowed when required by those dependencies.
 
 The CVLFace P5 identity weights under `models/p5/` are **blocked from every channel**. They are trained on WebFace4M,
 whose terms restrict use to academic research and forbid redistribution; the model cards require downstream users to
