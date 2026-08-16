@@ -15,7 +15,7 @@ GA-2.0 is a **source-only** release. There is no portable/exe package — see
 
 - Release: [EchoPosture GA-2.0.0](https://github.com/NOVVLA/EchoPosture/releases/tag/ga-2.0.0)
 - Download: [EchoPosture-GA-2.0.0-source.zip](https://github.com/NOVVLA/EchoPosture/releases/download/ga-2.0.0/EchoPosture-GA-2.0.0-source.zip)
-- SHA256: `PENDING-FILLED-AFTER-BUILD`
+- SHA256: `64f5b75fa42a5ef253a84ad5ade0a4c39765e5fc0820708371ecf6fdf48b9c94`
 
 The release package contains this project's source, `docs/`, `NOTICE`, `THIRD_PARTY_NOTICES.md`,
 `GA_BUILD.txt`, `README_GA.md`, and `tools/fetch_pose_models/`. It does **not** contain an embedded
