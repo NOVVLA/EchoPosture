@@ -1,2 +1,4 @@
-models/p5/**/*.safetensors filter=lfs diff=lfs merge=lfs -text
-models/p5/**/*.pt filter=lfs diff=lfs merge=lfs -text
+# Model weights are never committed to this repository. `models/` is ignored in
+# .gitignore because the pose weights are fetched by the user at install time and
+# the CVLFace weights carry training-data terms that forbid redistribution.
+# Do not reintroduce LFS rules for models/ without a new licensing decision.

@@ -131,7 +131,60 @@ as evidence of a successful build.
 ## 4. Assemble from an Allowlist
 
 Create a new, empty staging directory under `dist`. Never copy the repository wholesale and then try to delete unsafe
-content. A current GA portable package requires this top-level allowlist:
+content.
+
+### 4a. GA-2.0 source-only channel
+
+GA-2.0 is a **source-only** release. It is not a portable package: it contains no embedded runtime, no built
+executables, and no model weights. This is a licensing decision, not a packaging regression — see
+[ADR-0004](decisions/ADR-0004-ga-2-0-source-only-distribution.md).
+
+The GA-2.0 allowlist is the tracked source tree plus the model-fetch tooling:
+
+```text
+*.py application modules (excluding test_*.py)
+tools/fetch_pose_models/
+docs/  CHANGELOG.md  CONTRIBUTING.md  SECURITY.md  README.md
+LICENSE  NOTICE  THIRD_PARTY_NOTICES.md
+GA_BUILD.txt  README_GA.md
+logo.png
+```
+
+`tools/fetch_pose_models/` holds four scripts: `fetch_pose_models.ps1` and `fetch_pose_models_mirror.ps1` (English, the
+canonical release scripts) plus `fetch_pose_models_zh.ps1` and `fetch_pose_models_mirror_zh.ps1` (Chinese
+localizations with identical behavior — same catalog, same hashes, same Y/N confirmation, same face-model notice,
+translated text only).
+
+`README_GA.md` for this channel must state, in English, near the top and before any install instructions:
+
+- the package contains **no model weights** and is **not a portable package**;
+- a portable build is not offered for legal reasons;
+- Compatibility mode works without any download;
+- Standard mode and Professional Beta mode **require** running one of the scripts in `tools\fetch_pose_models\` first
+  (official source or mirror, English or Chinese — all four install the identical, identically verified weights);
+- the fetched weights are Ultralytics AGPL-3.0 artifacts governed by their own terms;
+- how to obtain the complete corresponding source for that exact build under GNU AGPLv3.
+
+The GA-2.0 package must not contain:
+
+```text
+.git/  .github/  .codex/  .agents/  .claude/  logs/  _backups/  dist/  runtime/
+review folders  test_*.py  *.obj  *.pdb  *.exe  credentials  API keys
+personal screenshots  local absolute paths  internal process documents
+models/  any model weight  training data
+```
+
+Verify before compressing:
+
+```powershell
+Get-ChildItem -Recurse $Package -Include *.pt,*.safetensors,*.onnx,*.tflite | Should -BeNullOrEmpty
+```
+
+Any hit is a release blocker.
+
+### 4b. Portable channel (currently not published)
+
+A current GA portable package requires this top-level allowlist:
 
 ```text
 BlurOverlayHost.exe
@@ -168,13 +221,18 @@ The package must not contain:
 .git/  .github/  .codex/  .agents/  .claude/  logs/  _backups/  dist/
 review folders  build scripts  test_*.py  *.obj  *.pdb  credentials  API keys
 personal screenshots  local absolute paths  internal process documents
-unapproved model weights  training data  models/pose/  requirements-standard.txt
+unapproved model weights  training data  models/  requirements-standard.txt
 ```
 
 Third-party notices and files inside the embedded runtime are allowed when required by those dependencies. Before a
 future package enables Standard mode, separately approve and add `standard_pose_backend.py`, its tested runtime
 dependencies, model provenance/hash, redistribution decision, and notices to the allowlist. The project-wide AGPLv3
 decision does not by itself authorize shipping `yolo26n-pose.pt`.
+
+The CVLFace P5 identity weights under `models/p5/` are **blocked from every channel**. They are trained on WebFace4M,
+whose terms restrict use to academic research and forbid redistribution; the model cards require downstream users to
+follow that training-data license. No packaging step, notice file, or source offer cures this. Do not add a fetch
+script for them either — this project does not help users obtain weights it cannot itself redistribute.
 
 ## 5. Test the Staged Package
 
