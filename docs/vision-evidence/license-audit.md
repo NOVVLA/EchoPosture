@@ -8,7 +8,7 @@
 
 | 候选 | 官方代码来源 | 代码许可证 | 精确权重/版本 | 权重许可证 | 训练数据限制 | 当前结论 |
 | --- | --- | --- | --- | --- | --- | --- |
-| Ultralytics YOLO26n/l/x-pose | [Ultralytics repository](https://github.com/ultralytics/ultralytics)；[license guidance](https://www.ultralytics.com/license) | AGPL-3.0（GitHub API `license.spdx_id`） | 本地开发权重 `models/pose/yolo26n-pose.pt`；7,878,574 bytes；SHA-256 `EB3BB8268828AEAF515CEC23A4BFAFD793944A86FE9AF94BA7823609C14522A9`；未加入 Git/发行包 | 官方许可页称 Ultralytics 训练模型默认受 AGPL-3.0 覆盖；EchoPosture 已由 GPLv3 切换并接受 `AGPL-3.0-only` | 未从模型卡取得可用于本项目发行的训练数据条款 | `conditional`; 本地开发可进入原型，权重再分发与训练数据条款补证前仍不得进入 Git/CI/发行包 |
+| Ultralytics YOLO26n/l/x-pose | [Ultralytics repository](https://github.com/ultralytics/ultralytics)；[license guidance](https://www.ultralytics.com/license) | AGPL-3.0（GitHub API `license.spdx_id`） | `ultralytics/assets` release `v8.4.0`：`yolo26n-pose.pt` 7,878,574 bytes SHA-256 `eb3bb8268828aeaf515cec23a4bfafd793944a86fe9af94ba7823609c14522a9`；`yolo26l-pose.pt` 57,995,961 bytes SHA-256 `ad33da8a29ea5772318c4c980844e47b56792d2b63815ad4e8e09c078c7d1abf`；`yolo26x-pose.pt` 126,242,553 bytes SHA-256 `08ed9e01d22a6f248b04f2f9992016aca9a32250b9ab57057d886a09d026700d`。三者均已通过 `tools/fetch_pose_models/` 四个脚本逐字节下载并校验（含官方源与 ghfast.top/gh-proxy.com 镜像复验一致），不加入 Git，仅在用户本机运行脚本后落地 | 官方许可页称 Ultralytics 训练模型默认受 AGPL-3.0 覆盖；EchoPosture 已接受 `AGPL-3.0-only`（ADR-0003），再分发/引用该权重与项目自身许可证兼容 | 权重本身不含可再分发性的训练数据限制条款；风险点仅在于本项目自身需按 AGPL-3.0 履行相应源码开放义务，已通过本仓库满足 | `approved`；限定于上述三个文件与哈希，仅通过 `tools/fetch_pose_models/` 的四个脚本获取，不由本项目直接打包分发（详见 ADR-0004） |
 | CVLFace AdaFace ViT-Base KP-RPE | [CVLFace](https://github.com/mk-minchul/CVLface) | MIT（仓库 LICENSE，GitHub API） | `minchul/cvlface_adaface_vit_base_kprpe_webface4m`, revision `6530d73fb0af4d1d8287f31d559780c648ebd22a`; `model.safetensors` 460344344 bytes, SHA-256 `3c6d37ea874c2f38ffc9a7f0e9247efc994c3fb5c12d044759ac294e19d127f7`; `pretrained_model/model.pt` 460381841 bytes, SHA-256 `b8d5adde0a00f6482b5e866b6e37eeaa947302a40d9af31c211af72f34d38afb` | 模型卡没有给出可替代精确权重条款 | 模型卡明确要求遵守训练数据许可证；WebFace4M 的再分发/商业使用尚未核实 | `conditional`; 训练数据和精确权重许可补证前 `blocked` |
 | AdaFace IR101 | [AdaFace](https://github.com/mk-minchul/AdaFace)；[CVLFace model card](https://huggingface.co/minchul/cvlface_adaface_ir101_webface4m) | MIT（仓库 LICENSE，GitHub API） | `minchul/cvlface_adaface_ir101_webface4m`, revision `f2b38d9e24bfe301490d8dd081d8924b102333dd`; `model.safetensors` 260980552 bytes, SHA-256 `21adb6220e8799a0e658f16946df9649c7269f432fe9810a7b9c4ad1241080a8`; `pretrained_model/model.pt` 261111273 bytes, SHA-256 `7a3341c3afc507fd6f50345638d2f3ef2f0e931d5b4f5aba60e15709853fcf5e` | 未核实 | README/仓库未提供本审计所需的完整训练数据再分发结论 | `conditional`; 精确 checkpoint 和数据条款补证前 `blocked` |
 | CAFace 聚合器 | [CAFace](https://github.com/mk-minchul/caface) | MIT（仓库 LICENSE，GitHub API） | 未选定；无权重文件纳入本次审计 | 不适用（尚未选权重） | 未核实；仅可作为研究候选 | `conditional`; 不得进入发行包 |
@@ -18,7 +18,11 @@
 - GitHub 官方 API 在审计日返回：Ultralytics `AGPL-3.0`、CVLFace/AdaFace/CAFace `MIT`。这只描述仓库检测到的许可证，不替代文件级许可证或权重条款。
 - Ultralytics 官方许可页写明：使用其代码、模型、架构、训练流程或训练/微调模型时，需要在 AGPL-3.0 下开源整个项目，或取得 Enterprise License；该判断必须由发行方式和法律审查最终确认。
 - CVLFace 模型卡写明要引用论文并遵守训练数据许可证；因此模型卡没有明确授权时，不能把模型上传到发行包或 CI 缓存。
-- 本次没有下载候选权重，也没有计算 SHA-256；所有“精确权重”字段仍是未验证项。
+- 本次没有下载候选权重，也没有计算 SHA-256；所有"精确权重"字段仍是未验证项。
+- **2026-08-15 更新**：Ultralytics YOLO26n/l/x-pose 三个权重文件已实际下载并逐字节校验完毕
+  （SHA-256 与官方 `v8.4.0` release 资产一致，另经 ghfast.top/gh-proxy.com 镜像复验），因此该行
+  的"未验证项"状态已解除，结论更新为 `approved`（见 ADR-0004、`tools/fetch_pose_models/`）。
+  CVLFace 三个候选仍未下载、未核实，继续保持 `conditional`/`blocked`。
 
 ## 集成前必须补齐
 

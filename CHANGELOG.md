@@ -1,5 +1,27 @@
 # CHANGELOG（Changelog，版本变更记录）
 
+## 2026-08-16
+
+### Changed
+
+- Set the release channel and package labeling to `GA-2.0.0`. GA-2.0 is a **source-only** release:
+  it ships as a source archive with no embedded Python runtime, no built executables, and no model
+  weights. See [ADR-0004](docs/decisions/ADR-0004-ga-2-0-source-only-distribution.md).
+- Standard mode and Professional Beta mode now require the user to run one of four one-click
+  scripts in `tools/fetch_pose_models/` to fetch the Ultralytics YOLO26 pose weights themselves
+  (official source or mirror, English or Chinese interface — all four verify the identical
+  pinned SHA-256). Compatibility mode still requires no download.
+- Marked the Ultralytics YOLO26n/l/x-pose weights `approved` in
+  `docs/vision-evidence/license-audit.md`, limited to the exact files/hashes fetched by those
+  scripts; CVLFace P5 weights remain `blocked` and are never fetched or bundled.
+
+### Added
+
+- Added `NOTICE` and `THIRD_PARTY_NOTICES.md` documenting the licenses of Ultralytics YOLO26
+  (AGPL-3.0), MediaPipe (Apache-2.0), OpenCV (Apache-2.0), and PyQt5 (GPL-3.0), plus an explicit
+  notice that CVLFace P5 face-identity weights are never distributed by this project.
+- Added `GA_BUILD.txt` and a bilingual `README_GA.md` describing the source-only package.
+
 ## 2026-07-11
 
 ### Fixed

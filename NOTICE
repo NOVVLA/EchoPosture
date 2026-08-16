@@ -1,0 +1,17 @@
+EchoPosture
+Copyright (c) the EchoPosture project contributors (NOVVLA/EchoPosture)
+
+This product is licensed under the GNU Affero General Public License,
+version 3 (AGPL-3.0-only). See LICENSE for the full license text.
+
+EchoPosture depends on and, in some distribution channels, bundles
+third-party components released under other licenses, including the
+Apache License, Version 2.0 and the GNU General Public License,
+version 3. See THIRD_PARTY_NOTICES.md for the complete list of
+third-party components, their licenses, and the attribution notices
+required by those licenses.
+
+This project does not distribute, and disclaims any obligation to
+provide, the CVLFace face-identity model weights. See
+THIRD_PARTY_NOTICES.md and docs/decisions/ADR-0004-ga-2-0-source-only-distribution.md
+for the reasoning.

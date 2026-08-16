@@ -10,29 +10,42 @@ It is intended as an ergonomics aid, not a medical diagnostic tool.
 
 ## Download
 
-Use the latest GitHub release instead of cloning the source repository if you only want to run the app:
+GA-2.0 is a **source-only** release. There is no portable/exe package — see
+[ADR-0004](docs/decisions/ADR-0004-ga-2-0-source-only-distribution.md) for why.
 
-- Release: [EchoPosture GA-1.2.1](https://github.com/NOVVLA/EchoPosture/releases/tag/ga-1.2.1)
-- Download: [EchoPosture-GA-1.2.1-win-x64.zip](https://github.com/NOVVLA/EchoPosture/releases/download/ga-1.2.1/EchoPosture-GA-1.2.1-win-x64.zip)
-- SHA256: `7d8f6142eb760ad456155f327b7c4550ee222a85bb24a3a6964318ca5267b618`
+- Release: [EchoPosture GA-2.0.0](https://github.com/NOVVLA/EchoPosture/releases/tag/ga-2.0.0)
+- Download: [EchoPosture-GA-2.0.0-source.zip](https://github.com/NOVVLA/EchoPosture/releases/download/ga-2.0.0/EchoPosture-GA-2.0.0-source.zip)
+- SHA256: `PENDING-FILLED-AFTER-BUILD`
 
-The release package is a portable folder for Windows x64. It includes the embedded Python runtime and required Python dependencies. The source repository does not include `runtime/`, `dist/`, or built `.exe` files.
+The release package contains this project's source, `docs/`, `NOTICE`, `THIRD_PARTY_NOTICES.md`,
+`GA_BUILD.txt`, `README_GA.md`, and `tools/fetch_pose_models/`. It does **not** contain an embedded
+Python runtime, built `.exe` files, or any model weights.
 
 ## Run
 
-1. Download the release ZIP.
-2. Extract it to a simple local folder, for example `C:\EchoPosture`.
-3. Open the extracted folder.
-4. Double-click `EchoPosture.exe`.
-5. Allow camera access if Windows asks.
-6. Hold the comfortable upright posture you want to use for the entire 5-second prompt. When the countdown closes and the tray says you may relax, relax naturally; EchoPosture then waits about one second and measures that relaxed posture in the background for about five seconds. Keep only one person in frame and remain naturally relaxed until calibration completes.
+1. Install Python 3.11 and the packages in `requirements.txt` (`python -m pip install -r requirements.txt`).
+2. Download and extract the release ZIP (or clone the repository at the tagged commit).
+3. Compatibility mode needs no extra download and works immediately.
+4. For Standard mode or Professional Beta mode, first fetch the Ultralytics YOLO26 pose weights by
+   running one of the four scripts in `tools\fetch_pose_models\` (official source or mirror, English
+   or Chinese interface — pick whichever fits your network and language; all four verify the same
+   pinned SHA-256):
+
+   ```powershell
+   powershell -ExecutionPolicy Bypass -File .\tools\fetch_pose_models\fetch_pose_models.ps1
+   ```
+
+5. Run `python tray_app.py` from the package root.
+6. Allow camera access if Windows asks.
+7. Hold the comfortable upright posture you want to use for the entire 5-second prompt. When the countdown closes and the tray says you may relax, relax naturally; EchoPosture then waits about one second and measures that relaxed posture in the background for about five seconds. Keep only one person in frame and remain naturally relaxed until calibration completes.
 
 Both calibrated postures and the interval between them form your personal normal posture range. After calibration,
 EchoPosture briefly rechecks that the target-locked measurements reproduce this range; static exposure stays paused
 during that check. The anchors may be similar or identical; users do not need to exaggerate the relaxed posture.
 Only sustained movement beyond either side of the range, the measured repeatability band, and a small explicit natural-movement deadband can accumulate exposure. The deadband is a product interaction margin, not a medical threshold.
 
-Windows SmartScreen may warn about unsigned builds. Only run the package if it came from the release link above and the SHA256 matches.
+See `README_GA.md` inside the release package for the full bilingual overview, including third-party
+license notices and how to obtain the complete corresponding source under AGPLv3.
 
 ## Tray Controls
 

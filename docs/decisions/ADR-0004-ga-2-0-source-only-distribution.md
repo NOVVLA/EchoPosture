@@ -69,11 +69,15 @@ ADR-0003 已接受 AGPL-3.0-only，因此**再分发 YOLO 权重本身在许可�
   （huggingface.co 连接被拒），结论依据搜索结果与本项目既有的
   `docs/vision-evidence/license-audit.md`。法律签字前应复核原文。
 
-## 待办
+## 已完成
 
-1. 创建 `NOTICE` 与 `THIRD_PARTY_NOTICES.md`（Ultralytics AGPL-3.0、MediaPipe/OpenCV
-   Apache-2.0 及其 NOTICE 转录、PyQt5 GPL-3.0）。既有便携包已发行版本可能缺失 Apache-2.0
-   第 4 条要求的 NOTICE 传递，需一并复核。
-2. 判断应用是否触发 AGPLv3 第 13 条（网络交互远程用户），若触发需在界面显著提供源码入口。
+1. **已完成**：创建了根目录 `NOTICE` 与 `THIRD_PARTY_NOTICES.md`，覆盖 Ultralytics
+   YOLO26（AGPL-3.0）、MediaPipe（Apache-2.0）、OpenCV（Apache-2.0，含逐字转录的
+   `COPYRIGHT` 文件内容）、PyQt5（GPL-3.0）及 CVLFace P5 排除声明。OpenCV 与 MediaPipe
+   上游均未提供独立 NOTICE 文件，因此无需转录传递；`THIRD_PARTY_NOTICES.md` 中已注明，
+   若未来便携渠道内嵌这些组件的二进制运行时，需随包附上其原始 LICENSE/COPYRIGHT 文件。
+2. **已判断**：AGPLv3 第 13 条（网络交互远程用户）**不适用**于 EchoPosture。已对整个
+   代码库做过网络服务端代码模式搜索（socket 监听、HTTP server 等），零匹配——EchoPosture
+   是纯本地桌面应用，不通过网络向远程用户提供交互，因此不触发第 13 条的源码入口义务。
 3. 更新 `docs/vision-evidence/license-audit.md`：YOLO 转为 `approved`（限定文件与哈希），
    CVLFace 维持 `blocked` 并写明阻断理由为训练数据条款。
