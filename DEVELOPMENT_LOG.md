@@ -2493,6 +2493,9 @@
   - Both official and mirror PowerShell scripts were read back and confirmed to accept `Tier`, `DestinationRoot`,
     and `Yes`; the mirror script also retains its independently selected proxy/fallback behavior.
   - `git diff --check`: passed before the initial source commit.
+  - The first formal `build_installer.cmd` invocation failed before reading or writing release parts because
+    `$PSScriptRoot` was unavailable while PowerShell evaluated `param(...)` default values. Default path resolution
+    was moved into the script body; no formal asset was created or overwritten by the failed invocation.
 - Artifacts: formal split assets have not yet been generated or uploaded. No release or GitHub digest is claimed in
   this entry yet.
 - Gaps: live official-part download, installed-package self-test, all four real weight-script combinations, visible

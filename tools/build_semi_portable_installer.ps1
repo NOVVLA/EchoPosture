@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
-    [string]$ArchivePath = (Join-Path $PSScriptRoot '..\dist\EchoPosture-GA-2.0.0-portable-win-x64.zip'),
-    [string]$OutputDirectory = (Join-Path $PSScriptRoot '..\dist'),
+    [string]$ArchivePath = '',
+    [string]$OutputDirectory = '',
     [long]$PartSize = 1000000000,
     [string]$InstallerSourceCommit = ''
 )
@@ -15,6 +15,12 @@ $SetupName = 'EchoPosture-GA-2.0.0-semi-portable-setup.exe'
 $ManifestName = 'EchoPosture-GA-2.0.0-semi-portable-manifest.json'
 $ChecksumsName = 'EchoPosture-GA-2.0.0-semi-portable-SHA256SUMS.txt'
 $RepositoryRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
+if ([string]::IsNullOrWhiteSpace($ArchivePath)) {
+    $ArchivePath = Join-Path $RepositoryRoot 'dist\EchoPosture-GA-2.0.0-portable-win-x64.zip'
+}
+if ([string]::IsNullOrWhiteSpace($OutputDirectory)) {
+    $OutputDirectory = Join-Path $RepositoryRoot 'dist'
+}
 $ArchivePath = [IO.Path]::GetFullPath($ArchivePath)
 $OutputDirectory = [IO.Path]::GetFullPath($OutputDirectory)
 
