@@ -2496,6 +2496,9 @@
   - The first formal `build_installer.cmd` invocation failed before reading or writing release parts because
     `$PSScriptRoot` was unavailable while PowerShell evaluated `param(...)` default values. Default path resolution
     was moved into the script body; no formal asset was created or overwritten by the failed invocation.
+  - The second formal invocation also stopped before splitting: the system `powershell.exe` used by the public build
+    entry did not expose `Get-FileHash`, although the newer shell used for the earlier syntax check did. The builder
+    now computes SHA-256 through .NET and avoids newer-shell-only generic-list construction.
 - Artifacts: formal split assets have not yet been generated or uploaded. No release or GitHub digest is claimed in
   this entry yet.
 - Gaps: live official-part download, installed-package self-test, all four real weight-script combinations, visible

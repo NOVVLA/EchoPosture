@@ -24,6 +24,18 @@ if ([string]::IsNullOrWhiteSpace($OutputDirectory)) {
 $ArchivePath = [IO.Path]::GetFullPath($ArchivePath)
 $OutputDirectory = [IO.Path]::GetFullPath($OutputDirectory)
 
+function Get-Sha256([string]$Path) {
+    $stream = [IO.File]::OpenRead($Path)
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try {
+        $bytes = $sha.ComputeHash($stream)
+        return ([BitConverter]::ToString($bytes)).Replace('-', '').ToLowerInvariant()
+    } finally {
+        $sha.Dispose()
+        $stream.Dispose()
+    }
+}
+
 if (-not (Test-Path -LiteralPath $ArchivePath -PathType Leaf)) {
     throw "Archive not found: $ArchivePath"
 }
@@ -32,7 +44,7 @@ if ($PartSize -le 0 -or $PartSize -ge 2147483648) {
 }
 
 $archiveItem = Get-Item -LiteralPath $ArchivePath
-$archiveHash = (Get-FileHash -LiteralPath $ArchivePath -Algorithm SHA256).Hash.ToLowerInvariant()
+$archiveHash = Get-Sha256 $ArchivePath
 if ($archiveItem.Length -ne $ExpectedArchiveBytes -or $archiveHash -ne $ExpectedArchiveSha256) {
     throw "The input archive is not the approved GA-2.0.0 semi-portable package. Got $($archiveItem.Length) bytes, SHA-256 $archiveHash."
 }
@@ -56,7 +68,7 @@ try {
     $zip.Dispose()
 }
 
-$parts = [Collections.Generic.List[object]]::new()
+$parts = New-Object 'System.Collections.Generic.List[object]'
 $input = [IO.File]::OpenRead($ArchivePath)
 try {
     $buffer = New-Object byte[] (4MB)
@@ -77,7 +89,7 @@ try {
         } finally {
             $output.Dispose()
         }
-        $partHash = (Get-FileHash -LiteralPath $partPath -Algorithm SHA256).Hash.ToLowerInvariant()
+        $partHash = Get-Sha256 $partPath
         $parts.Add([ordered]@{
             index = $index
             fileName = $partName
@@ -131,12 +143,12 @@ $compilerArguments = @(
 & $csc @compilerArguments
 if ($LASTEXITCODE -ne 0) { throw "Installer compilation failed with exit code $LASTEXITCODE." }
 
-$checksumPaths = [Collections.Generic.List[string]]::new()
+$checksumPaths = New-Object 'System.Collections.Generic.List[string]'
 $checksumPaths.Add($setupPath)
 foreach ($part in $parts) { $checksumPaths.Add((Join-Path $OutputDirectory $part.fileName)) }
 $checksumPaths.Add($manifestPath)
 $checksumLines = foreach ($path in $checksumPaths) {
-    $hash = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
+    $hash = Get-Sha256 $path
     "$hash  $([IO.Path]::GetFileName($path))"
 }
 $checksumsPath = Join-Path $OutputDirectory $ChecksumsName
