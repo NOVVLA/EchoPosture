@@ -10,7 +10,9 @@ It is intended as an ergonomics aid, not a medical diagnostic tool.
 
 ## Download
 
-GA-2.0.0 publishes two assets under the same [release tag](https://github.com/NOVVLA/EchoPosture/releases/tag/ga-2.0.0).
+GA-2.0.0 currently publishes its [source-only asset](https://github.com/NOVVLA/EchoPosture/releases/tag/ga-2.0.0).
+The semi-portable asset below has been prepared but cannot be uploaded as one GitHub Release asset because its
+embedded runtime exceeds GitHub's 2 GiB asset limit.
 **Neither one bundles the downloadable YOLO pose or CVLFace P5 identity weights** — the
 semi-portable runtime does include MediaPipe's redistributable assets required by Compatibility mode. See
 [ADR-0004](docs/decisions/ADR-0004-ga-2-0-source-only-distribution.md) and
@@ -18,7 +20,7 @@ semi-portable runtime does include MediaPipe's redistributable assets required b
 
 | | Source-only | Semi-portable |
 | --- | --- | --- |
-| Asset | [EchoPosture-GA-2.0.0-source.zip](https://github.com/NOVVLA/EchoPosture/releases/download/ga-2.0.0/EchoPosture-GA-2.0.0-source.zip) | [EchoPosture-GA-2.0.0-portable-win-x64.zip](https://github.com/NOVVLA/EchoPosture/releases/download/ga-2.0.0/EchoPosture-GA-2.0.0-portable-win-x64.zip) |
+| Asset | [EchoPosture-GA-2.0.0-source.zip](https://github.com/NOVVLA/EchoPosture/releases/download/ga-2.0.0/EchoPosture-GA-2.0.0-source.zip) | Prepared locally; blocked from single-asset upload by GitHub's 2 GiB limit |
 | SHA256 | `64f5b75fa42a5ef253a84ad5ade0a4c39765e5fc0820708371ecf6fdf48b9c94` | `353a7880a07ec7885e1f1fe0d902e75f8c67a67754129586ea827c5579c262c1` |
 | Contains | Project source, `docs/`, `NOTICE`, `THIRD_PARTY_NOTICES.md`, `GA_BUILD.txt`, `README_GA.md`, `tools/fetch_pose_models/` | All of the above, plus the embedded Python 3.11 runtime and the built `EchoPosture.exe` / `EchoPostureSelfTest.exe` / `BlurOverlayHost.exe` |
 | Requires | Python 3.11 + `pip install -r requirements.txt` | Nothing — extract and run |

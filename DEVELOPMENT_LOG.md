@@ -2441,7 +2441,7 @@
   `371fb71b2bc20834608f1edd59d1de4fd88b3126`).
 - Backup: `_backups/EchoPosture-source-backup-20260817-semi-portable-release/source-head-957f42a.zip`, with
   `BACKUP_MANIFEST.txt`, was created before the release-document changes. It is local-only and not staged.
-- Scope: publish `EchoPosture-GA-2.0.0-portable-win-x64.zip` under the existing `ga-2.0.0` release without replacing
+- Scope: prepare `EchoPosture-GA-2.0.0-portable-win-x64.zip` for publication under the existing `ga-2.0.0` release without replacing
   `EchoPosture-GA-2.0.0-source.zip`. The semi-portable asset includes the embedded CPython 3.11 runtime, three
   executables, application modules, notices, and the four `tools/fetch_pose_models/` scripts. It excludes
   downloadable Ultralytics YOLO pose weights (`*.pt`) and CVLFace P5 identity weights (`*.safetensors`); MediaPipe's
@@ -2461,7 +2461,8 @@
 - Artifact: `dist/EchoPosture-GA-2.0.0-portable-win-x64.zip`, 2,313,314,546 bytes, SHA-256
   `353a7880a07ec7885e1f1fe0d902e75f8c67a67754129586ea827c5579c262c1`.
 - Gaps: a complete tray self-test requires a live camera scene exposing the torso sufficiently for calibration; that
-  condition was not present in this run. Remote asset upload, GitHub digest, release body, and repository visibility
-  are verified only after publication.
-- Conclusion: the archive structure and runtime dependencies are ready for remote publication, with the live
-  full-calibration result explicitly left as a hardware-dependent gap.
+  condition was not present in this run. On 2026-08-17 GitHub rejected the upload with `HTTP 422: size must be less
+  than 2147483648`; the 2,313,314,546-byte archive exceeds that limit by 165,830,898 bytes. No release asset or
+  GitHub digest was written. A split-asset or smaller-runtime distribution decision is required before publication.
+- Conclusion: the archive structure and runtime dependencies are locally ready, but remote publication is blocked by
+  GitHub's single-asset size limit and the recorded hardware-dependent calibration gap.
