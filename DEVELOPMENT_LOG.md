@@ -2466,3 +2466,37 @@
   GitHub digest was written. A split-asset or smaller-runtime distribution decision is required before publication.
 - Conclusion: the archive structure and runtime dependencies are locally ready, but remote publication is blocked by
   GitHub's single-asset size limit and the recorded hardware-dependent calibration gap.
+
+## 2026-08-17 +08:00 - GA-2.0.0 semi-portable graphical installer
+
+- Source: user-approved implementation plan for a visible Windows installer that downloads application parts only
+  from the project release and lets the user choose the source only for separately licensed model weights.
+- Git: commit `pending`, branch `main`, existing release tag `ga-2.0.0` remains at
+  `371fb71b2bc20834608f1edd59d1de4fd88b3126` and will not be moved.
+- Backup: `_backups/EchoPosture-source-backup-20260817-semi-portable-installer/source-head-69bb60a.zip`,
+  1,068,597 bytes, SHA-256 `9e2db005505a2fe9d65815e51b6adc30e0122273b7c5ad1e5a432e552cfb147c`,
+  with `BACKUP_MANIFEST.txt`; local-only and not staged.
+- Scope: add a .NET Framework WinForms installer, a separately testable download/verification/extraction core,
+  deterministic C# tests, and a formal asset builder. The UI explicitly labels official/mirror selection as the
+  **model weight download source**. Application parts are hard-limited to the canonical NOVVLA/EchoPosture GitHub
+  Release URL. The installer maps language and selected weight source to the four existing scripts and supplies
+  `-Yes`, the selected `-Tier`, and an explicit installed-package `models\pose` destination only after consent.
+- Risk: network interruption and range behavior; archive and part integrity; unsafe ZIP paths; non-empty target
+  directories; UI cancellation and non-exit behavior; third-party weight proxies; unsigned SmartScreen warnings;
+  and keeping the already-published application tag immutable.
+- Verification:
+  - `build_installer_tests.cmd`: passed 7 deterministic tests covering the four language/source mappings, consent
+    and arguments, manifest source restriction, range resume, per-part and final archive verification, safe extract,
+    matching-install detection, corrupt-part deletion, ZIP path traversal rejection, and non-empty-target protection.
+  - The same command compiled the complete WinForms installer with the repository's .NET Framework compiler;
+    `INSTALLER UI COMPILE CHECK PASSED`.
+  - Both official and mirror PowerShell scripts were read back and confirmed to accept `Tier`, `DestinationRoot`,
+    and `Yes`; the mirror script also retains its independently selected proxy/fallback behavior.
+  - `git diff --check`: passed before the initial source commit.
+- Artifacts: formal split assets have not yet been generated or uploaded. No release or GitHub digest is claimed in
+  this entry yet.
+- Gaps: live official-part download, installed-package self-test, all four real weight-script combinations, visible
+  GUI interaction, formal asset hashes, and post-upload GitHub/repository checks remain pending after the source
+  commit.
+- Conclusion: installer source and deterministic checks are ready for the initial reviewed source commit; remote
+  publication is not yet claimed.

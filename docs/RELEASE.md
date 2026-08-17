@@ -281,6 +281,31 @@ must expand to one top-level package folder, not scatter files into the extracti
 Record the final file size and SHA256. Use that exact lowercase or uppercase digest consistently in `README.md`, release
 notes, and `DEVELOPMENT_LOG.md`.
 
+### 6b. Build the GA-2.0 semi-portable installer assets
+
+Per [ADR-0006](decisions/ADR-0006-ga-2-0-semi-portable-installer.md), the approved GA-2.0.0 archive is transported as
+three official GitHub Release parts. The graphical installer embeds the official part names, byte sizes, and SHA-256
+digests; it never obtains its trust manifest from the network. Run:
+
+```powershell
+.\build_installer_tests.cmd
+.\build_installer.cmd
+```
+
+`build_installer.cmd` refuses an input archive whose byte size or SHA-256 differs from the approved GA-2.0.0 archive.
+It splits at exactly 1,000,000,000 bytes, writes the public JSON manifest and checksum file, and compiles the WinForms
+installer with that manifest embedded. All generated files stay under `dist/` and are not committed.
+
+The installer UI's source choice is named **model weight download source**. It selects only one of the four existing
+`tools/fetch_pose_models/` scripts after the user confirms the model license notice. Application parts always use the
+canonical `https://github.com/NOVVLA/EchoPosture/releases/download/ga-2.0.0/` base URL; do not add a proxy or mirror
+fallback for application files.
+
+Before upload, concatenate the three generated parts in index order and prove that the result has the same byte size
+and SHA-256 as the approved archive. Audit both the original and reconstructed ZIP for forbidden weight extensions.
+Compile and test the installer source before building formal assets, then build formal assets only after the installer
+source commit is pushed so `installerSourceCommit` records an existing remote commit.
+
 ## 7. Tag and Publish
 
 Create an annotated tag on the reviewed release source commit and push it:
@@ -302,6 +327,10 @@ gh release create $Tag $Zip `
 ```
 
 For TEAM_ALPHA, use the TEAM_ALPHA naming convention and pass `--prerelease`.
+
+For the already-published GA-2.0.0 installer addition, keep the tag and source asset unchanged. Upload the setup EXE,
+three numbered parts, public manifest, and SHA256SUMS file to the existing release. Do not upload the original archive
+as one asset, and do not move or recreate the published tag.
 
 ## 8. Post-Publication Verification
 
