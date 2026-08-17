@@ -216,16 +216,18 @@ version, primary and diagnostic entries, and versioned bridge. Per ADR-0005, thi
 than the commit the release tag targets when the delta is packaging/versioning-label corrections only (e.g. the
 launcher bridge label); it must never silently diverge in application behavior from the tagged source. `README_GA.md`
 must state how to start the app, run the self-test, find its log, interpret SmartScreen, verify the ZIP checksum, that
-no model weights are bundled and how to fetch them via `tools/fetch_pose_models/`, and how to obtain the complete
+no downloadable YOLO/CVLFace weights are bundled and how to fetch the YOLO weights via `tools/fetch_pose_models/`, and how to obtain the complete
 corresponding source for that exact build under GNU AGPLv3.
 
-The package must not contain:
+The package must not contain user-downloadable model artifacts:
 
 ```text
 .git/  .github/  .codex/  .agents/  .claude/  logs/  _backups/  dist/
 review folders  build scripts  test_*.py  *.obj  *.pdb  credentials  API keys
 personal screenshots  local absolute paths  internal process documents
-any model weight  training data  models/
+*.pt  *.safetensors  *.onnx  training data  models/
+
+MediaPipe `.tflite` files under its embedded runtime are allowed when required by Compatibility mode.
 ```
 
 Third-party notices and files inside the embedded runtime are allowed when required by those dependencies.

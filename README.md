@@ -10,16 +10,22 @@ It is intended as an ergonomics aid, not a medical diagnostic tool.
 
 ## Download
 
-GA-2.0 is a **source-only** release. There is no portable/exe package — see
-[ADR-0004](docs/decisions/ADR-0004-ga-2-0-source-only-distribution.md) for why.
+GA-2.0.0 publishes two assets under the same [release tag](https://github.com/NOVVLA/EchoPosture/releases/tag/ga-2.0.0).
+**Neither one bundles the downloadable YOLO pose or CVLFace P5 identity weights** — the
+semi-portable runtime does include MediaPipe's redistributable assets required by Compatibility mode. See
+[ADR-0004](docs/decisions/ADR-0004-ga-2-0-source-only-distribution.md) and
+[ADR-0005](docs/decisions/ADR-0005-ga-2-0-portable-standard-professional.md) for why.
 
-- Release: [EchoPosture GA-2.0.0](https://github.com/NOVVLA/EchoPosture/releases/tag/ga-2.0.0)
-- Download: [EchoPosture-GA-2.0.0-source.zip](https://github.com/NOVVLA/EchoPosture/releases/download/ga-2.0.0/EchoPosture-GA-2.0.0-source.zip)
-- SHA256: `64f5b75fa42a5ef253a84ad5ade0a4c39765e5fc0820708371ecf6fdf48b9c94`
+| | Source-only | Semi-portable |
+| --- | --- | --- |
+| Asset | [EchoPosture-GA-2.0.0-source.zip](https://github.com/NOVVLA/EchoPosture/releases/download/ga-2.0.0/EchoPosture-GA-2.0.0-source.zip) | [EchoPosture-GA-2.0.0-portable-win-x64.zip](https://github.com/NOVVLA/EchoPosture/releases/download/ga-2.0.0/EchoPosture-GA-2.0.0-portable-win-x64.zip) |
+| SHA256 | `64f5b75fa42a5ef253a84ad5ade0a4c39765e5fc0820708371ecf6fdf48b9c94` | `353a7880a07ec7885e1f1fe0d902e75f8c67a67754129586ea827c5579c262c1` |
+| Contains | Project source, `docs/`, `NOTICE`, `THIRD_PARTY_NOTICES.md`, `GA_BUILD.txt`, `README_GA.md`, `tools/fetch_pose_models/` | All of the above, plus the embedded Python 3.11 runtime and the built `EchoPosture.exe` / `EchoPostureSelfTest.exe` / `BlurOverlayHost.exe` |
+| Requires | Python 3.11 + `pip install -r requirements.txt` | Nothing — extract and run |
+| Downloadable pose/identity weights | Not included | Not included |
 
-The release package contains this project's source, `docs/`, `NOTICE`, `THIRD_PARTY_NOTICES.md`,
-`GA_BUILD.txt`, `README_GA.md`, and `tools/fetch_pose_models/`. It does **not** contain an embedded
-Python runtime, built `.exe` files, or any model weights.
+Both packages require running one of the four scripts in `tools/fetch_pose_models/` before Standard
+or Professional Beta mode will work; Compatibility mode needs no download either way.
 
 ## Run
 

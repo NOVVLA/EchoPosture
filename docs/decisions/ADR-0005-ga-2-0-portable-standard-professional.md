@@ -22,11 +22,14 @@
 - `tools/fetch_pose_models/` 四个脚本，供用户在安装后自行获取权重；
 - `LICENSE`、`NOTICE`、`THIRD_PARTY_NOTICES.md`、`GA_BUILD.txt`、`README_GA.md`、`logo.png`。
 
-半便携包**不包含**：
+半便携包**不包含用户需另行获取的模型**：
 
-- 任何模型权重文件（`*.pt`、`*.safetensors`、`*.onnx`、`*.tflite`）；
+- Ultralytics YOLO 姿态权重（`*.pt`）或 CVLFace P5 身份权重（`*.safetensors`）；
 - `models/` 目录、CVLFace P5 相关任何内容；
 - `.git/`、构建脚本、测试文件、开发文档以外的内部资料。
+
+为保证兼容模式解压即用，运行时仍包含 MediaPipe 包自身要求的 `.tflite` 资源；这些是
+第三方运行时组成部分，不是本项目要求用户下载的 YOLO/CVLFace 权重。
 
 用户拿到半便携包后，仍需运行 `tools/fetch_pose_models/` 中的一个脚本获取姿态权重，
 才能使用标准模式或专业 Beta 模式；兼容模式无需下载即可使用。这与 §4a 纯源码包对
@@ -48,8 +51,9 @@ the allowlist。" 本 ADR 即完成这一单独批准：
   一致。
 - 模型来源与哈希已在 ADR-0004 与 `docs/vision-evidence/license-audit.md` 中批准
   （Ultralytics YOLO26n/l/x-pose，`approved`）。
-- 再分发决策：本包**不分发**任何权重文件本身，只分发获取权重所需的应用代码与
-  校验脚本；因此不产生 ADR-0004 第 1 条所述"内嵌权重"的合规缺口。
+- 再分发决策：本包**不分发**用户需另行获取的 YOLO/CVLFace 权重本身，只分发获取
+  YOLO 权重所需的应用代码与校验脚本；因此不产生 ADR-0004 第 1 条所述"内嵌权重"
+  的合规缺口。MediaPipe 的运行时资源仅随其依赖一起提供，以保留兼容模式的直接运行能力。
 - Notice：`NOTICE`、`THIRD_PARTY_NOTICES.md` 已覆盖 Ultralytics（AGPL-3.0）、
   MediaPipe/OpenCV（Apache-2.0）、PyQt5（GPL-3.0）；本次追加确认这些通知条款
   同样适用于半便携包内嵌的运行时副本。

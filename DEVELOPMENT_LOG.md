@@ -2431,3 +2431,37 @@
   was performed. The exact animation timings and mode-theme recognizability remain manual product validation gates.
 - Conclusion: deterministic source, UI, and regression evidence is ready for a reviewed commit. Hardware, packaged
   EXE, and remote CI evidence remain explicitly unclaimed.
+
+## 2026-08-17 - GA-2.0.0 semi-portable release asset
+
+- Source: user request to publish a GA-2.0.0 semi-portable distribution that includes everything required to run
+  except the separately downloaded model weights.
+- Git: commit `pending`, branch `main`, release tag `ga-2.0.0`; package build commit
+  `957f42ace82856d2c686da4d271c9443cad29aaf` (packaging/version-label corrections on top of tagged source
+  `371fb71b2bc20834608f1edd59d1de4fd88b3126`).
+- Backup: `_backups/EchoPosture-source-backup-20260817-semi-portable-release/source-head-957f42a.zip`, with
+  `BACKUP_MANIFEST.txt`, was created before the release-document changes. It is local-only and not staged.
+- Scope: publish `EchoPosture-GA-2.0.0-portable-win-x64.zip` under the existing `ga-2.0.0` release without replacing
+  `EchoPosture-GA-2.0.0-source.zip`. The semi-portable asset includes the embedded CPython 3.11 runtime, three
+  executables, application modules, notices, and the four `tools/fetch_pose_models/` scripts. It excludes
+  downloadable Ultralytics YOLO pose weights (`*.pt`) and CVLFace P5 identity weights (`*.safetensors`); MediaPipe's
+  dependency-owned `.tflite` runtime resources remain included so Compatibility mode can run immediately.
+- Verification:
+  - `EchoPostureSelfTest.exe` from the staged package: stages 1 (GPU blur host), 2 (offscreen Debug UI), and 3
+    (one-frame vision) exited `0`. Stage 4 opened the tray/runtime chain but exited `1` because the live camera sample
+    lacked `trunk_lean_deg`; it reported `startup_calibrated=False` and `baseline=False`. This is recorded as a
+    hardware/calibration gap, not a pass.
+  - The staged runtime reported `Python 3.11.9` and contained PyQt5, OpenCV, MediaPipe, Ultralytics,
+    `torch-2.13.0+cu130`, and `torchvision-0.28.0+cu130`.
+  - File inventory found zero `*.pt`, `*.safetensors`, or `*.onnx` files. The only model-format files were 15
+    MediaPipe `.tflite` resources in its installed dependency runtime; release and package wording was corrected to
+    distinguish these Compatibility-mode resources from excluded, user-downloadable weights.
+  - The ZIP documentation entries were rebuilt and checked to contain exactly one copy each at the intended package
+    paths; no accidental `dist\\...` ZIP entries remain.
+- Artifact: `dist/EchoPosture-GA-2.0.0-portable-win-x64.zip`, 2,313,314,546 bytes, SHA-256
+  `353a7880a07ec7885e1f1fe0d902e75f8c67a67754129586ea827c5579c262c1`.
+- Gaps: a complete tray self-test requires a live camera scene exposing the torso sufficiently for calibration; that
+  condition was not present in this run. Remote asset upload, GitHub digest, release body, and repository visibility
+  are verified only after publication.
+- Conclusion: the archive structure and runtime dependencies are ready for remote publication, with the live
+  full-calibration result explicitly left as a hardware-dependent gap.

@@ -21,6 +21,15 @@
   (AGPL-3.0), MediaPipe (Apache-2.0), OpenCV (Apache-2.0), and PyQt5 (GPL-3.0), plus an explicit
   notice that CVLFace P5 face-identity weights are never distributed by this project.
 - Added `GA_BUILD.txt` and a bilingual `README_GA.md` describing the source-only package.
+- Published a second, semi-portable release asset under the same `ga-2.0.0` tag:
+  `EchoPosture-GA-2.0.0-portable-win-x64.zip`. It embeds the CPython 3.11 runtime and the three
+  built executables (`EchoPosture.exe`, `EchoPostureSelfTest.exe`, `BlurOverlayHost.exe`) so no
+  Python install or compiler is required, and now includes Standard mode and Professional Beta
+  mode application code and their runtime dependencies. It still ships with **no downloadable
+  YOLO pose or CVLFace P5 identity weights** (MediaPipe's required runtime assets remain embedded);
+  the user runs one of the four `tools/fetch_pose_models/` scripts after installing, exactly as
+  with the source-only package. See
+  [ADR-0005](docs/decisions/ADR-0005-ga-2-0-portable-standard-professional.md).
 
 ## 2026-07-11
 
