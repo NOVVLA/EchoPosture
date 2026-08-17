@@ -15,10 +15,10 @@
 #     --extra-index-url http://pypi.tuna.tsinghua.edu.cn/simple \
 #     --trusted-host pypi.tuna.tsinghua.edu.cn --index-strategy unsafe-best-match \
 #     --no-python-downloads --reinstall-package torch --reinstall-package torchvision \
-#     torch==2.13.0 torchvision==0.28.0
+#     torch==2.13.0 torchvision==0.19.0
 # On a fast link, --torch-backend cu130 against the official index works too.
 #
 # Resolve and record the exact wheel used by each packaged runtime before release.
 ultralytics==8.4.120
 torch==2.13.0
-torchvision==0.28.0
+torchvision==0.19.0
