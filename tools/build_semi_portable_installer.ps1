@@ -68,7 +68,7 @@ try {
     $zip.Dispose()
 }
 
-$parts = New-Object 'System.Collections.Generic.List[object]'
+$parts = @()
 $input = [IO.File]::OpenRead($ArchivePath)
 try {
     $buffer = New-Object byte[] (4MB)
@@ -90,12 +90,12 @@ try {
             $output.Dispose()
         }
         $partHash = Get-Sha256 $partPath
-        $parts.Add([ordered]@{
+        $parts += [ordered]@{
             index = $index
             fileName = $partName
             bytes = $remaining
             sha256 = $partHash
-        })
+        }
         Write-Output "Prepared $partName ($remaining bytes, SHA-256 $partHash)"
         $index++
     }
@@ -116,7 +116,7 @@ $manifest = [ordered]@{
         uncompressedBytes = $uncompressedBytes
         sha256 = $archiveHash
     }
-    parts = @($parts)
+    parts = $parts
 }
 
 $manifestPath = Join-Path $OutputDirectory $ManifestName
@@ -143,10 +143,9 @@ $compilerArguments = @(
 & $csc @compilerArguments
 if ($LASTEXITCODE -ne 0) { throw "Installer compilation failed with exit code $LASTEXITCODE." }
 
-$checksumPaths = New-Object 'System.Collections.Generic.List[string]'
-$checksumPaths.Add($setupPath)
-foreach ($part in $parts) { $checksumPaths.Add((Join-Path $OutputDirectory $part.fileName)) }
-$checksumPaths.Add($manifestPath)
+$checksumPaths = @($setupPath)
+foreach ($part in $parts) { $checksumPaths += (Join-Path $OutputDirectory $part.fileName) }
+$checksumPaths += $manifestPath
 $checksumLines = foreach ($path in $checksumPaths) {
     $hash = Get-Sha256 $path
     "$hash  $([IO.Path]::GetFileName($path))"

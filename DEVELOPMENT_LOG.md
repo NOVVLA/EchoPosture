@@ -2499,6 +2499,10 @@
   - The second formal invocation also stopped before splitting: the system `powershell.exe` used by the public build
     entry did not expose `Get-FileHash`, although the newer shell used for the earlier syntax check did. The builder
     now computes SHA-256 through .NET and avoids newer-shell-only generic-list construction.
+  - The third formal invocation created and hashed all three local parts, then stopped before writing the manifest
+    because Windows PowerShell 5.1 throws `Argument types do not match` when an ordered manifest embeds a generic
+    list through `@($parts)`. The builder now uses native PowerShell arrays for both parts and checksum paths; no
+    installer, manifest, checksum file, or remote asset was produced by that failed invocation.
 - Artifacts: formal split assets have not yet been generated or uploaded. No release or GitHub digest is claimed in
   this entry yet.
 - Gaps: live official-part download, installed-package self-test, all four real weight-script combinations, visible
