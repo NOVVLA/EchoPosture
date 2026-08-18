@@ -2507,10 +2507,25 @@
     Authenticode status because `Microsoft.PowerShell.Security` could not load in the system shell. Signature
     reporting is now best-effort and reports `Unavailable` without converting a complete artifact build into a
     failure; those local outputs were not uploaded and will be deterministically rebuilt after this fix.
+  - The installer weight runner now invokes the selected existing script through a hidden PowerShell `-Command`
+    wrapper that supplies a process-local .NET `Get-FileHash` compatibility function. This keeps the locked
+    semi-portable ZIP and all four packaged scripts byte-for-byte unchanged while working on the minimal system
+    PowerShell present on this machine.
+  - `build_installer_tests.cmd` passed all 7 deterministic tests and the UI compile check after the wrapper change.
+    A real Standard download through the same wrapper fetched and verified `yolo26n-pose.pt` and then removed the
+    temporary weight directory. The four direct English/Chinese official/mirror Standard script runs also passed
+    earlier with the same fixed catalog and were cleaned up; the wrapper path is the installer-specific evidence.
+  - The packaged self-test passed stages 1-3 (GPU host, Debug UI, one-frame vision) and stage 4 exited `1` because
+    this host had no usable camera calibration sample (`face_detected`, `pose_detected`, and related fields missing).
+    The staged runtime separately imported `CompatibilityBackend` and `tray_app` successfully.
+  - Through the installer-compatible wrapper, English official, English mirror, and Chinese mirror Standard runs
+    fetched and verified `yolo26n-pose.pt`; the Chinese official run failed twice at the network request with
+    `无法连接到远程服务器` before any verified file was produced. The Chinese mirror path succeeded, so this is
+    recorded as an official-source network gap rather than a script or digest failure.
 - Artifacts: formal split assets have not yet been generated or uploaded. No release or GitHub digest is claimed in
   this entry yet.
-- Gaps: live official-part download, installed-package self-test, all four real weight-script combinations, visible
-  GUI interaction, formal asset hashes, and post-upload GitHub/repository checks remain pending after the source
-  commit.
+- Gaps: visible GUI interaction remains unverified because desktop control authorization was not granted; a live
+  camera calibration sample remains unavailable; the wrapper change requires a deterministic rebuild and replacement
+  of the six already-uploaded installer assets before their final hashes can be recorded in this entry.
 - Conclusion: installer source and deterministic checks are ready for the initial reviewed source commit; remote
   publication is not yet claimed.

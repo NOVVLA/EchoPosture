@@ -41,7 +41,15 @@ namespace EchoPostureInstaller
 
         private static void Run(string name, Action test)
         {
-            test();
+            try
+            {
+                test();
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine("[FAIL] " + name + " " + ex.GetType().FullName + ": " + ex.Message);
+                throw;
+            }
             passed++;
             Console.WriteLine("[PASS] " + name);
         }
@@ -57,9 +65,10 @@ namespace EchoPostureInstaller
         private static void TestWeightArguments()
         {
             string arguments = WeightScriptSelector.BuildArguments("C:\\app\\fetch.ps1", WeightTier.All, "C:\\app\\models\\pose", true);
-            Contains(arguments, "-Tier All");
-            Contains(arguments, "-DestinationRoot \"C:\\app\\models\\pose\"");
+            Contains(arguments, "-Tier 'All'");
+            Contains(arguments, "-DestinationRoot 'C:\\app\\models\\pose'");
             Contains(arguments, "-Yes");
+            Contains(arguments, "function Get-FileHash");
             Throws<InvalidOperationException>(delegate { WeightScriptSelector.BuildArguments("x", WeightTier.Standard, "y", false); });
             Throws<InvalidOperationException>(delegate { WeightScriptSelector.BuildArguments("x", WeightTier.Skip, "y", true); });
         }

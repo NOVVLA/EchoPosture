@@ -133,8 +133,21 @@ namespace EchoPostureInstaller
         {
             if (!confirmed) throw new InvalidOperationException("Model license consent is required.");
             if (tier == WeightTier.Skip) throw new InvalidOperationException("No model script is used for Compatibility mode.");
-            return "-NoLogo -NoProfile -ExecutionPolicy Bypass -File " + Quote(script)
-                + " -Tier " + tier.ToString() + " -DestinationRoot " + Quote(destination) + " -Yes";
+            string command =
+                "function Get-FileHash { param([string]$LiteralPath, [string]$Algorithm) "
+                + "$stream = [IO.File]::OpenRead($LiteralPath); $sha = [Security.Cryptography.SHA256]::Create(); "
+                + "try { [pscustomobject]@{ Algorithm = 'SHA256'; Hash = ([BitConverter]::ToString($sha.ComputeHash($stream))).Replace('-', '').ToLowerInvariant(); Path = $LiteralPath } } "
+                + "finally { $sha.Dispose(); $stream.Dispose() } }; "
+                + "& " + QuotePowerShellLiteral(script)
+                + " -Tier " + QuotePowerShellLiteral(tier.ToString())
+                + " -DestinationRoot " + QuotePowerShellLiteral(destination)
+                + " -Yes; exit $LASTEXITCODE";
+            return "-NoLogo -NoProfile -ExecutionPolicy Bypass -Command " + Quote(command);
+        }
+
+        private static string QuotePowerShellLiteral(string value)
+        {
+            return "'" + (value ?? string.Empty).Replace("'", "''") + "'";
         }
 
         public static string Quote(string value)
