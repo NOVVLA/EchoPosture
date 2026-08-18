@@ -10,24 +10,31 @@ It is intended as an ergonomics aid, not a medical diagnostic tool.
 
 ## Download
 
-GA-2.0.0 currently publishes its [source-only asset](https://github.com/NOVVLA/EchoPosture/releases/tag/ga-2.0.0).
-The semi-portable asset below has been prepared but cannot be uploaded as one GitHub Release asset because its
-embedded runtime exceeds GitHub's 2 GiB asset limit.
-**Neither one bundles the downloadable YOLO pose or CVLFace P5 identity weights** — the
-semi-portable runtime does include MediaPipe's redistributable assets required by Compatibility mode. See
+GA-2.0.0 publishes a source-only package and a **semi-portable graphical installer** under the same release.
+EchoPosture program files and runtime content are downloaded only from the project's official GitHub Release.
+The installer's **model weight download source** choice applies only to the separately licensed YOLO pose weights;
+it never changes the program download source. The original 2,313,314,546-byte package is split into three official
+Release assets because GitHub does not accept a single asset over 2 GiB.
+**Neither channel bundles downloadable YOLO pose or CVLFace P5 identity weights** — the semi-portable package does
+include MediaPipe's redistributable assets required by Compatibility mode. See
 [ADR-0004](docs/decisions/ADR-0004-ga-2-0-source-only-distribution.md) and
-[ADR-0005](docs/decisions/ADR-0005-ga-2-0-portable-standard-professional.md) for why.
+[ADR-0005](docs/decisions/ADR-0005-ga-2-0-portable-standard-professional.md) and
+[ADR-0006](docs/decisions/ADR-0006-ga-2-0-semi-portable-installer.md) for why.
 
 | | Source-only | Semi-portable |
 | --- | --- | --- |
-| Asset | [EchoPosture-GA-2.0.0-source.zip](https://github.com/NOVVLA/EchoPosture/releases/download/ga-2.0.0/EchoPosture-GA-2.0.0-source.zip) | Prepared locally; blocked from single-asset upload by GitHub's 2 GiB limit |
-| SHA256 | `64f5b75fa42a5ef253a84ad5ade0a4c39765e5fc0820708371ecf6fdf48b9c94` | `353a7880a07ec7885e1f1fe0d902e75f8c67a67754129586ea827c5579c262c1` |
+| Asset | [EchoPosture-GA-2.0.0-source.zip](https://github.com/NOVVLA/EchoPosture/releases/download/ga-2.0.0/EchoPosture-GA-2.0.0-source.zip) | [Graphical setup](https://github.com/NOVVLA/EchoPosture/releases/download/ga-2.0.0/EchoPosture-GA-2.0.0-semi-portable-setup.exe) + [part 001](https://github.com/NOVVLA/EchoPosture/releases/download/ga-2.0.0/EchoPosture-GA-2.0.0-semi-portable-win-x64.zip.001) + [part 002](https://github.com/NOVVLA/EchoPosture/releases/download/ga-2.0.0/EchoPosture-GA-2.0.0-semi-portable-win-x64.zip.002) + [part 003](https://github.com/NOVVLA/EchoPosture/releases/download/ga-2.0.0/EchoPosture-GA-2.0.0-semi-portable-win-x64.zip.003) |
+| SHA256 | `64f5b75fa42a5ef253a84ad5ade0a4c39765e5fc0820708371ecf6fdf48b9c94` | Setup `fc5de97df3fbd31c337fb6775947c21968beba7be3ad553b9a23a6292940975e`; parts and manifest are recorded in [SHA256SUMS](https://github.com/NOVVLA/EchoPosture/releases/download/ga-2.0.0/EchoPosture-GA-2.0.0-semi-portable-SHA256SUMS.txt) |
 | Contains | Project source, `docs/`, `NOTICE`, `THIRD_PARTY_NOTICES.md`, `GA_BUILD.txt`, `README_GA.md`, `tools/fetch_pose_models/` | All of the above, plus the embedded Python 3.11 runtime and the built `EchoPosture.exe` / `EchoPostureSelfTest.exe` / `BlurOverlayHost.exe` |
-| Requires | Python 3.11 + `pip install -r requirements.txt` | Nothing — extract and run |
+| Requires | Python 3.11 + `pip install -r requirements.txt` | Run the visible installer; no administrator rights or system Python required |
 | Downloadable pose/identity weights | Not included | Not included |
 
 Both packages require running one of the four scripts in `tools/fetch_pose_models/` before Standard
-or Professional Beta mode will work; Compatibility mode needs no download either way.
+or Professional Beta mode will work; Compatibility mode needs no download either way. The installer keeps its
+window visible through download, verification, extraction, and script output, and remains open after success or
+failure until the user closes it. Mirrors are third-party proxies and every fetched file is checked against the
+official SHA-256. The installer's complete public manifest is
+[here](https://github.com/NOVVLA/EchoPosture/releases/download/ga-2.0.0/EchoPosture-GA-2.0.0-semi-portable-manifest.json).
 
 ## Run
 

@@ -332,6 +332,23 @@ For the already-published GA-2.0.0 installer addition, keep the tag and source a
 three numbered parts, public manifest, and SHA256SUMS file to the existing release. Do not upload the original archive
 as one asset, and do not move or recreate the published tag.
 
+The published GA-2.0.0 semi-portable asset set is:
+
+```text
+EchoPosture-GA-2.0.0-semi-portable-setup.exe       52,224 bytes
+EchoPosture-GA-2.0.0-semi-portable-win-x64.zip.001 1,000,000,000 bytes
+EchoPosture-GA-2.0.0-semi-portable-win-x64.zip.002 1,000,000,000 bytes
+EchoPosture-GA-2.0.0-semi-portable-win-x64.zip.003 313,314,546 bytes
+EchoPosture-GA-2.0.0-semi-portable-manifest.json   1,641 bytes
+EchoPosture-GA-2.0.0-semi-portable-SHA256SUMS.txt  582 bytes
+```
+
+The three program parts and the reconstructed archive are official-only downloads. The installer's source selector
+is **model weight download source** and applies only to the four existing YOLO scripts; third-party mirrors are never
+used for application files. The installer injects a process-local .NET SHA-256 compatibility function when invoking
+legacy scripts, so the locked package scripts remain unchanged on disk while minimal Windows PowerShell hosts still
+verify their downloads.
+
 ## 8. Post-Publication Verification
 
 Query the live release rather than relying on upload output:

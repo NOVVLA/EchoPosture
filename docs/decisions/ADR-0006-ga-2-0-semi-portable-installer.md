@@ -43,3 +43,26 @@ SHA-256。网络上的 JSON 清单只供公开审计，不取代安装器内嵌�
 - 成功、失败或取消后都不自动退出；只有用户主动点击才关闭。
 - 权重下载失败不回滚已校验的程序安装；界面明确告知 Compatibility 模式仍可运行。
 - 安装器与现有启动 EXE 均未代码签名，公开文档需提示 SmartScreen 并公布完整摘要。
+
+## 已发布资产证据
+
+`ga-2.0.0` Release 现已追加以下六个资产；程序分片均为官方 GitHub Release 下载，权重来源选择不适用于
+它们：
+
+| 资产 | 大小 | SHA-256 |
+|---|---:|---|
+| `EchoPosture-GA-2.0.0-semi-portable-setup.exe` | 52,224 | `fc5de97df3fbd31c337fb6775947c21968beba7be3ad553b9a23a6292940975e` |
+| `EchoPosture-GA-2.0.0-semi-portable-win-x64.zip.001` | 1,000,000,000 | `3a76ed1e17787f6f188aded0b26deecea7659d41c41a9c52845033a59e801994` |
+| `EchoPosture-GA-2.0.0-semi-portable-win-x64.zip.002` | 1,000,000,000 | `9354260cbc18c3ed01113adcb9252b3d7cc04088601a717da7548af7c3cdaf63` |
+| `EchoPosture-GA-2.0.0-semi-portable-win-x64.zip.003` | 313,314,546 | `cecea0f3ea30a480ae51057fdfd95195292e088aab19dd79db7d30f9871c9d2b` |
+| `EchoPosture-GA-2.0.0-semi-portable-manifest.json` | 1,641 | `e1a384313e32af41780c9167f5836000ca5a95bc356002f6d1808dbb9ac1d77e` |
+| `EchoPosture-GA-2.0.0-semi-portable-SHA256SUMS.txt` | 582 | `fbbd52357f7c174699a22b588c92491cbba56655abb29904e8f5b5c6e706429b` |
+
+The reconstructed program ZIP remains `2,313,314,546` bytes with SHA-256
+`353a7880a07ec7885e1f1fe0d902e75f8c67a67754129586ea827c5579c262c1`. The installer embeds the same manifest as the
+public JSON, and the PE certificate table is absent (unsigned). The installed package contains no `.pt`,
+`.safetensors`, or `.onnx` files; MediaPipe runtime `.tflite` resources are the only model-format runtime assets.
+
+Because some supported hosts expose a minimal Windows PowerShell without `Get-FileHash`, the installer invokes the
+selected existing weight script through a hidden process-local .NET compatibility wrapper. It does not modify the
+script, change the source mapping, or make the program download path indirect.

@@ -21,16 +21,16 @@
   (AGPL-3.0), MediaPipe (Apache-2.0), OpenCV (Apache-2.0), and PyQt5 (GPL-3.0), plus an explicit
   notice that CVLFace P5 face-identity weights are never distributed by this project.
 - Added `GA_BUILD.txt` and a bilingual `README_GA.md` describing the source-only package.
-- Prepared a second, semi-portable release asset for the same `ga-2.0.0` tag:
-  `EchoPosture-GA-2.0.0-portable-win-x64.zip`. It embeds the CPython 3.11 runtime and the three
-  built executables (`EchoPosture.exe`, `EchoPostureSelfTest.exe`, `BlurOverlayHost.exe`) so no
-  Python install or compiler is required, and now includes Standard mode and Professional Beta
-  mode application code and their runtime dependencies. It still ships with **no downloadable
-  YOLO pose or CVLFace P5 identity weights** (MediaPipe's required runtime assets remain embedded);
-  the user runs one of the four `tools/fetch_pose_models/` scripts after installing, exactly as
-  with the source-only package. It exceeds GitHub Releases' 2 GiB single-asset limit and is not yet
-  remotely published. See
-  [ADR-0005](docs/decisions/ADR-0005-ga-2-0-portable-standard-professional.md).
+- Published the semi-portable graphical installer for the same `ga-2.0.0` release. The installer
+  downloads the application/runtime only from the official EchoPosture GitHub Release as three
+  verified ZIP parts, then keeps its visible window open through success, partial success, failure,
+  or cancellation. The selectable **model weight download source** applies only to the four existing
+  English/Chinese official/mirror weight scripts; it is not a program mirror or an alternate installer
+  source. The package contains no downloadable YOLO pose or CVLFace P5 identity weights. MediaPipe's
+  dependency-owned `.tflite` runtime assets remain embedded for Compatibility mode. The installer and
+  existing EXE are unsigned and may trigger SmartScreen; all final hashes are published in the Release.
+  See [ADR-0005](docs/decisions/ADR-0005-ga-2-0-portable-standard-professional.md) and
+  [ADR-0006](docs/decisions/ADR-0006-ga-2-0-semi-portable-installer.md).
 
 ## 2026-07-11
 

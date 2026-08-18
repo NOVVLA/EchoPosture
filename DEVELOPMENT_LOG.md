@@ -2471,8 +2471,8 @@
 
 - Source: user-approved implementation plan for a visible Windows installer that downloads application parts only
   from the project release and lets the user choose the source only for separately licensed model weights.
-- Git: commit `pending`, branch `main`, existing release tag `ga-2.0.0` remains at
-  `371fb71b2bc20834608f1edd59d1de4fd88b3126` and will not be moved.
+- Git: installer source commit `3cfd5533a2b53dcf8711f4f2e6d79249bb9732bf` on `main`; existing release tag
+  `ga-2.0.0` remains at `371fb71b2bc20834608f1edd59d1de4fd88b3126` and was not moved.
 - Backup: `_backups/EchoPosture-source-backup-20260817-semi-portable-installer/source-head-69bb60a.zip`,
   1,068,597 bytes, SHA-256 `9e2db005505a2fe9d65815e51b6adc30e0122273b7c5ad1e5a432e552cfb147c`,
   with `BACKUP_MANIFEST.txt`; local-only and not staged.
@@ -2522,10 +2522,32 @@
     fetched and verified `yolo26n-pose.pt`; the Chinese official run failed twice at the network request with
     `无法连接到远程服务器` before any verified file was produced. The Chinese mirror path succeeded, so this is
     recorded as an official-source network gap rather than a script or digest failure.
-- Artifacts: formal split assets have not yet been generated or uploaded. No release or GitHub digest is claimed in
-  this entry yet.
-- Gaps: visible GUI interaction remains unverified because desktop control authorization was not granted; a live
-  camera calibration sample remains unavailable; the wrapper change requires a deterministic rebuild and replacement
-  of the six already-uploaded installer assets before their final hashes can be recorded in this entry.
-- Conclusion: installer source and deterministic checks are ready for the initial reviewed source commit; remote
-  publication is not yet claimed.
+- Final local artifacts (rebuilt after the wrapper change) and SHA-256:
+  - `EchoPosture-GA-2.0.0-semi-portable-setup.exe`, 52,224 bytes,
+    `fc5de97df3fbd31c337fb6775947c21968beba7be3ad553b9a23a6292940975e`;
+  - `.zip.001`, 1,000,000,000 bytes,
+    `3a76ed1e17787f6f188aded0b26deecea7659d41c41a9c52845033a59e801994`;
+  - `.zip.002`, 1,000,000,000 bytes,
+    `9354260cbc18c3ed01113adcb9252b3d7cc04088601a717da7548af7c3cdaf63`;
+  - `.zip.003`, 313,314,546 bytes,
+    `cecea0f3ea30a480ae51057fdfd95195292e088aab19dd79db7d30f9871c9d2b`;
+  - manifest, 1,641 bytes,
+    `e1a384313e32af41780c9167f5836000ca5a95bc356002f6d1808dbb9ac1d77e`;
+  - SHA256SUMS, 582 bytes,
+    `fbbd52357f7c174699a22b588c92491cbba56655abb29904e8f5b5c6e706429b`.
+- Release evidence: all six assets are present on the public `ga-2.0.0` Release with GitHub state
+  `uploaded`; returned names, sizes, and digests match the local files. The source ZIP remains present
+  and unchanged. The three parts reconstruct to 2,313,314,546 bytes with SHA-256
+  `353a7880a07ec7885e1f1fe0d902e75f8c67a67754129586ea827c5579c262c1`; the reconstructed archive has
+  no `.pt`, `.safetensors`, or `.onnx` files and contains the expected runtime and launch files.
+- Release/tag evidence: repository is public, the release is neither draft nor prerelease, and the
+  annotated `ga-2.0.0` tag still resolves to the original application source commit. Program parts
+  were downloaded from the official GitHub Release URL only; weight-source selection remains limited
+  to the four existing scripts.
+- Gaps: visible GUI interaction remains unverified because desktop control authorization was not granted;
+  packaged self-test stages 1-3 passed but stage 4 still lacks a usable live-camera calibration sample.
+  English official/mirror and Chinese mirror weight runs passed through the installer wrapper; Chinese
+  official-source runs failed twice at the network request with `无法连接到远程服务器` before producing
+  a verified file. This is recorded as an environment-specific network gap.
+- Conclusion: Release assets are published and independently audited; GUI desktop interaction and live
+  camera evidence remain explicitly documented residual gaps rather than claimed as complete.
