@@ -156,4 +156,10 @@ $checksumsPath = Join-Path $OutputDirectory $ChecksumsName
 Write-Output "Installer: $setupPath"
 Write-Output "Manifest:  $manifestPath"
 Write-Output "Checksums: $checksumsPath"
-Write-Output "Installer signature: $((Get-AuthenticodeSignature -LiteralPath $setupPath).Status)"
+$signatureStatus = 'Unavailable (Microsoft.PowerShell.Security could not be loaded)'
+try {
+    $signatureStatus = (Get-AuthenticodeSignature -LiteralPath $setupPath -ErrorAction Stop).Status.ToString()
+} catch {
+    # Signature reporting is diagnostic only. The release audit still publishes SHA-256 and records that the EXE is unsigned.
+}
+Write-Output "Installer signature: $signatureStatus"

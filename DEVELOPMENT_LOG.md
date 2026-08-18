@@ -2503,6 +2503,10 @@
     because Windows PowerShell 5.1 throws `Argument types do not match` when an ordered manifest embeds a generic
     list through `@($parts)`. The builder now uses native PowerShell arrays for both parts and checksum paths; no
     installer, manifest, checksum file, or remote asset was produced by that failed invocation.
+  - The fourth formal invocation wrote all six local assets, then returned failure only while printing the optional
+    Authenticode status because `Microsoft.PowerShell.Security` could not load in the system shell. Signature
+    reporting is now best-effort and reports `Unavailable` without converting a complete artifact build into a
+    failure; those local outputs were not uploaded and will be deterministically rebuilt after this fix.
 - Artifacts: formal split assets have not yet been generated or uploaded. No release or GitHub digest is claimed in
   this entry yet.
 - Gaps: live official-part download, installed-package self-test, all four real weight-script combinations, visible
